@@ -7,10 +7,19 @@ import pathlib
 import httpx
 from fastapi.testclient import TestClient
 
+import os
+import tempfile
+
 from app.config import load_config
 from app.ids import IdCodec
 from app.kavita import KavitaClient
 from app.main import create_app
+from app.store import Store
+
+
+def _test_store() -> Store:
+    """A fresh, isolated Store backed by a unique temp file (no cross-test bleed)."""
+    return Store(os.path.join(tempfile.mkdtemp(), "state.json"))
 
 FIX = pathlib.Path(__file__).parent / "fixtures"
 ROOT_XML = (FIX / "opds_root.xml").read_text(encoding="utf-8")
@@ -64,6 +73,7 @@ def make_client(handler) -> TestClient:
             a.state.kavita = KavitaClient(cfg, http)
             a.state.ids = IdCodec(cfg.bridge_id_secret)
             a.state.cache = FeedCache(cfg.cache_feeds_seconds)
+            a.state.store = _test_store()
             try:
                 yield
             finally:
@@ -171,6 +181,7 @@ def test_access_key_enforced_when_configured():
         a.state.kavita = KavitaClient(cfg, http)
         a.state.ids = IdCodec(cfg.bridge_id_secret)
         a.state.cache = FeedCache(cfg.cache_feeds_seconds)
+        a.state.store = _test_store()
         yield
         await http.aclose()
     app.router.lifespan_context = ls
@@ -233,6 +244,7 @@ def _client_for_cfg(cfg, handler):
         a.state.kavita = KavitaClient(cfg, http)
         a.state.ids = IdCodec(cfg.bridge_id_secret)
         a.state.cache = FeedCache(0)
+        a.state.store = _test_store()
         a.state.search_templates = {}
         yield
         await http.aclose()
@@ -327,6 +339,50 @@ def test_fan_out_one_feed_down_still_shows_others():
         assert r.status_code == 200
         assert "The Time Machine" in r.text          # working library still shown
         assert "library unavailable" in r.text       # broken library flagged, not fatal
+
+
+def _first_book_id(client):
+    import re
+    home = client.get("/").text
+    fid = re.search(r'/feed/([\w\-.]+)', home).group(1)
+    for f2 in re.findall(r'/feed/([\w\-.]+)"', client.get(f"/feed/{fid}").text):
+        m = re.search(r'/book/([\w\-.]+)"', client.get(f"/feed/{f2}").text)
+        if m:
+            return m.group(1)
+    return None
+
+
+def test_reading_list_star_and_unstar():
+    import re
+    with make_client(make_handler()) as client:
+        bid = _first_book_id(client)
+        assert bid
+        assert "reading list is empty" in client.get("/list").text.lower()
+        client.get(f"/star/{bid}")            # add (303 → /list)
+        lst = client.get("/list").text
+        assert "The Time Machine" in lst and "/unstar/" in lst
+        assert "Remove from Reading List" in client.get(f"/book/{bid}").text
+        key = re.search(r"/unstar/(\w+)", lst).group(1)
+        client.get(f"/unstar/{key}")          # remove
+        assert "reading list is empty" in client.get("/list").text.lower()
+
+
+def test_download_recorded_in_history_and_marked():
+    import re
+    with make_client(make_handler()) as client:
+        bid = _first_book_id(client)
+        detail = client.get(f"/book/{bid}").text
+        m = re.search(r'/download/([\w\-.]+)/([^"]+)', detail)
+        client.get(f"/download/{m.group(1)}/{m.group(2)}")  # GET records history
+        assert "Recently sent to iBooks" in client.get("/").text
+        assert "already sent" in client.get(f"/book/{bid}").text
+
+
+def test_prefs_large_print_cookie_sets_body_class():
+    with make_client(make_handler()) as client:
+        assert 'class="big"' not in client.get("/").text
+        home = client.get("/prefs?big=toggle&next=/").text   # follows 303 → /
+        assert 'class="big"' in home
 
 
 def test_help_page():

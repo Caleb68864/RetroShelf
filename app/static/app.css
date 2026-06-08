@@ -291,3 +291,50 @@ h2:before { content: ">> "; color: #6e5410; }
   white-space: nowrap;
 }
 .colophon { margin-top: 10px; text-align: center; color: #8c8c5a; font-size: 13px; letter-spacing: 1px; }
+
+/* ---- Reading List + download-history markers ----------------------------- */
+.done {
+  display: inline-block;
+  font-size: 12px;
+  color: #0a0a0a;
+  background-color: #4ee44e;
+  padding: 1px 7px;
+  margin-left: 6px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.from { display: inline-block; font-size: 13px; color: #46d0d0; margin-top: 4px; }
+.from:before { content: "from "; color: #6e7a7a; }
+.unstar { display: inline-block; padding: 12px 8px; font-size: 14px; color: #ff5a4a; }
+.unstar:active { color: #0a0a0a; background-color: #ff5a4a; }
+/* Starred state of the Reading-List button. */
+.button.on { background-color: #4ee44e; color: #0a0a0a; border: 1px solid #7af07a; }
+.button.on:before { content: ""; }
+.button.on:active { background-color: #7af07a; }
+
+/* ---- Footer accessibility prefs ------------------------------------------ */
+.prefs { text-align: center; margin: 10px 0 4px; }
+.prefs a {
+  display: inline-block;
+  margin: 4px 5px;
+  padding: 11px 13px;
+  color: #ffb000;
+  font-size: 13px;
+  letter-spacing: 1px;
+  border: 1px solid #3a2a08;
+}
+.prefs a:active { color: #0a0a0a; background-color: #ffb000; }
+
+/* ---- Large-print accessibility mode -------------------------------------- */
+body.big { font-size: 24px; }
+body.big .brand { font-size: 44px; }
+body.big h1, body.big .sectionhead { font-size: 28px; }
+body.big h2 { font-size: 22px; }
+body.big .lead { font-size: 24px; }
+body.big .button { font-size: 24px; padding: 20px; }
+body.big .button.big { font-size: 28px; padding: 24px; }
+body.big .booktitle { font-size: 24px; }
+body.big .author { font-size: 19px; }
+body.big .navlink { font-size: 24px; padding: 22px 8px; }
+body.big .search input[type=text] { font-size: 22px; padding: 18px 12px; }
+body.big .ascii { font-size: 15px; }

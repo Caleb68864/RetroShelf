@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import opds
@@ -34,6 +34,7 @@ from .kavita import KavitaClient, build_client
 from .opds import OpdsParseError
 from .render import STATIC_DIR, templates
 from .security import access_key_ok, ip_allowed, sanitize_filename
+from .store import Store, book_key
 
 log = logging.getLogger("retroshelf")
 
@@ -173,6 +174,7 @@ async def lifespan(app: FastAPI):
     app.state.ids = IdCodec(cfg.bridge_id_secret or cfg.bridge_access_key)
     app.state.cache = FeedCache(cfg.cache_feeds_seconds)
     app.state.search_templates = {}  # per-feed-origin OpenSearch templates, cached
+    app.state.store = Store(cfg.state_path)  # Reading List + download history
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
     mask_filter = _SecretMaskingFilter(cfg)
     for handler in logging.getLogger().handlers:
@@ -377,9 +379,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """
         return request.app.state.ids
 
+    def store(request: Request) -> Store:
+        """Return the :class:`~app.store.Store` (Reading List + history)."""
+        return request.app.state.store
+
     # -- view-model seam: encode every upstream href as a bridge id [H-2] ----
     def _to_view_model(feed: opds.Feed, ids: IdCodec, kavita: KavitaClient,
-                       base_url: str | None = None) -> list[dict]:
+                       base_url: str | None = None, downloaded: set | None = None) -> list[dict]:
         """Convert a parsed OPDS *feed* into a list of template-ready dicts.
 
         Every upstream URL (navigation href, acquisition href, cover URL) is
@@ -436,6 +442,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 "badge": badge,
                 "detail_url": f"/book/{ids.encode(record)}",
                 "cover_url": cover_bridge,
+                "downloaded": bool(downloaded) and book_key(acq_url) in downloaded,
             })
         return entries
 
@@ -559,12 +566,22 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             menu.append({"name": f.name, "url": f"/feed/{fid}"})
         primary_id = codec(request).encode(kc(request).resolve_url(primary.url))
         multi = len(cfg.feeds) > 1
+        # "Recently sent to iBooks" shelf + Reading List count.
+        recent = []
+        for rec in store(request).recent_downloads(8):
+            bid = codec(request).encode(json.dumps(
+                {k: rec.get(k) for k in ("u", "m", "t", "a", "s", "c")}, separators=(",", ":")))
+            fmt = format_of(rec.get("m", "")) or "epub"
+            recent.append({"title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
+                           "badge": "EPUB" if fmt == "epub" else "PDF", "detail_url": f"/book/{bid}"})
         return templates.TemplateResponse(request, "home.html", {
             "kavita_ok": kavita_ok, "status_detail": detail,
             "feeds": menu, "multi": multi,
             "root_feed_url": menu[0]["url"],   # back-compat for single-feed
             # From home, search every library at once; a single feed searches itself.
             "search_feed": "*" if multi else primary_id,
+            "reading_count": len(store(request).favorite_keys()),
+            "recent": recent,
         })
 
     @app.get("/feed/{fid}", response_class=HTMLResponse)
@@ -588,7 +605,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """
         url = kc(request).resolve_url(codec(request).decode(fid))  # decode + re-validate SSRF
         parsed = await _load_feed(request, url, fid)
-        entries = _to_view_model(parsed, codec(request), kc(request), base_url=url)
+        entries = _to_view_model(parsed, codec(request), kc(request), base_url=url,
+                                 downloaded=store(request).downloaded_keys())
         next_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.next_url, base=url))}" if parsed.next_url else None
         prev_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.prev_url, base=url))}" if parsed.prev_url else None
         # Scope the on-page search box to the library this feed belongs to.
@@ -623,15 +641,21 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             raise BadIdError("Malformed book id") from exc
         fmt = format_of(rec.get("m", "")) or "epub"
         badge = "EPUB" if fmt == "epub" else "PDF"
-        download_id = codec(request).encode(rec["u"])
         filename = sanitize_filename(rec.get("t"), "epub" if fmt == "epub" else "pdf")
         cover_url = None
         if rec.get("c"):
             cover_url = f"/cover/{codec(request).encode(rec['c'])}"
+        key = book_key(rec.get("u", ""))
+        is_fav = store(request).is_favorite(key)
         return templates.TemplateResponse(request, "book.html", {
             "title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
             "summary": rec.get("s") or "", "badge": badge, "cover_url": cover_url,
-            "download_url": f"/download/{download_id}/{filename}",
+            # Download routes through the record id so history captures the title.
+            "download_url": f"/download/{bid}/{filename}",
+            "downloaded": key in store(request).downloaded_keys(),
+            "is_fav": is_fav,
+            "star_url": f"/unstar/{key}" if is_fav else f"/star/{bid}",
+            "star_label": "Remove from Reading List" if is_fav else "Add to Reading List",
             "back_url": _back_to(request),
         })
 
@@ -660,7 +684,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             try:
                 su = await _resolve_search_url(request, q, source.url)
                 body = await kc(request).fetch_feed(su)
-                ents = _to_view_model(opds.parse(body), codec(request), kc(request), base_url=source.url)
+                ents = _to_view_model(opds.parse(body), codec(request), kc(request),
+                                      base_url=source.url, downloaded=store(request).downloaded_keys())
                 return {"name": source.name, "entries": ents, "error": False}
             except RetroShelfError as exc:
                 log.info("search failed in %r for %r: %s", source.name, q, cfg.mask(str(exc)))
@@ -702,6 +727,58 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """
         return templates.TemplateResponse(request, "help.html", {})
 
+    # -- Reading List (cross-feed favourites) --------------------------------
+    @app.get("/list", response_class=HTMLResponse)
+    async def reading_list(request: Request):
+        """GET ``/list`` — the cross-library Reading List of starred books."""
+        items = []
+        for rec in store(request).favorites():
+            bid = codec(request).encode(json.dumps(
+                {k: rec.get(k) for k in ("u", "m", "t", "a", "s", "c")}, separators=(",", ":")))
+            fmt = format_of(rec.get("m", "")) or "epub"
+            items.append({
+                "title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
+                "badge": "EPUB" if fmt == "epub" else "PDF",
+                "detail_url": f"/book/{bid}", "feed_name": rec.get("feed_name"),
+                "unstar_url": f"/unstar/{rec.get('key')}",
+                "cover_url": f"/cover/{codec(request).encode(rec['c'])}" if rec.get("c") else None,
+            })
+        return templates.TemplateResponse(request, "list.html", {"items": items})
+
+    @app.get("/star/{bid}")
+    async def star(request: Request, bid: str):
+        """GET ``/star/{bid}`` — add a book to the Reading List, then go back."""
+        try:
+            rec = json.loads(codec(request).decode(bid))
+        except (ValueError, TypeError) as exc:
+            raise BadIdError("Malformed book id") from exc
+        rec["feed_name"] = _feed_for_url(kc(request).resolve_url(rec["u"])).name
+        store(request).add_favorite(rec)
+        return RedirectResponse(_back_to(request, default="/list"), status_code=303)
+
+    @app.get("/unstar/{key}")
+    async def unstar(request: Request, key: str):
+        """GET ``/unstar/{key}`` — remove a book from the Reading List."""
+        store(request).remove_favorite(key)
+        return RedirectResponse(_back_to(request, default="/list"), status_code=303)
+
+    # -- Accessibility preferences (optional cookies) ------------------------
+    @app.get("/prefs")
+    async def prefs(request: Request, big: str = "", covers: str = "", next: str = "/"):
+        """GET ``/prefs`` — toggle large-print / cover prefs via a cookie.
+
+        Everything works without the cookie; this only enhances. ``big=toggle``
+        flips large-print; ``covers=off``/``on`` hides/shows covers.
+        """
+        target = next if next.startswith("/") else "/"
+        resp = RedirectResponse(target, status_code=303)
+        cur_big = request.cookies.get("rs_big") == "1"
+        if big == "toggle":
+            resp.set_cookie("rs_big", "0" if cur_big else "1", max_age=31536000)
+        if covers in ("on", "off"):
+            resp.set_cookie("rs_covers", "1" if covers == "on" else "0", max_age=31536000)
+        return resp
+
     @app.get("/health")
     async def health():
         """GET ``/health`` — container health-check endpoint.
@@ -740,11 +817,23 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             fails SSRF validation.
         :raises KavitaError: If the upstream download request fails.
         """
-        url = kc(request).resolve_url(codec(request).decode(did))  # decode + re-validate
-        # Media type is derived from the acquisition URL suffix (download URLs
-        # end in the real file extension), defaulting to EPUB.
+        decoded = codec(request).decode(did)
+        # The id may encode a full book record (JSON, so history gets a title) or
+        # a bare URL (cover/legacy). Handle both.
+        record = None
+        try:
+            parsed = json.loads(decoded)
+            if isinstance(parsed, dict) and "u" in parsed:
+                record, raw = parsed, parsed["u"]
+            else:
+                raw = decoded
+        except (ValueError, TypeError):
+            raw = decoded
+        url = kc(request).resolve_url(raw)  # re-validate
         media_type, disposition, ext = _media_for_url(url, cfg)
-        filename = sanitize_filename(name_hint or _basename(url), ext)
+        filename = sanitize_filename(name_hint or (record or {}).get("t") or _basename(url), ext)
+        if request.method == "GET" and record is not None:
+            store(request).record_download({**record, "feed_name": _feed_for_url(url).name})
         if request.method == "HEAD":
             # Answer header probes (e.g. `curl -I`, Safari) without fetching the
             # body. Same headers a GET would produce.
@@ -834,24 +923,26 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             return Response(status_code=404, media_type="image/gif")
 
 
-def _back_to(request: Request) -> str:
+def _back_to(request: Request, default: str = "/") -> str:
     """Return a same-site path to go "back" to, derived from the Referer.
 
-    If the user arrived from a ``/feed/`` or ``/search`` page we return there;
-    otherwise we fall back to the home page. Only the path+query is used (never
-    the full referrer URL), so the result is always same-origin and safe.
+    If the user arrived from a ``/feed/``, ``/search``, ``/book/`` or ``/list``
+    page we return there; otherwise we fall back to *default*. Only the
+    path+query is used (never the full referrer URL), so it is always
+    same-origin and safe.
 
     :param request: The incoming request.
-    :returns: A relative path such as ``/feed/<id>`` or ``/``.
+    :param default: Path to use when there is no usable Referer.
+    :returns: A relative path such as ``/feed/<id>`` or *default*.
     :rtype: str
     """
     from urllib.parse import urlsplit
     ref = request.headers.get("referer", "")
     if ref:
         rp = urlsplit(ref)
-        if rp.path.startswith(("/feed/", "/search")):
+        if rp.path.startswith(("/feed/", "/search", "/book/", "/list")):
             return rp.path + (f"?{rp.query}" if rp.query else "")
-    return "/"
+    return default
 
 
 def _basename(url: str) -> str:

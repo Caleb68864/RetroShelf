@@ -4,15 +4,22 @@
 <h1>{{ title }}</h1>
 {% if author %}<p class="author big">{{ author }}</p>{% endif %}
 
-{% if cover_url %}<p><img class="cover big" src="{{ cover_url }}" alt=""></p>{% endif %}
+{% if cover_url and request.cookies.get('rs_covers') != '0' %}<p><img class="cover big" src="{{ cover_url }}" alt=""></p>{% endif %}
 
-<p class="format">Format: <span class="badge badge-{{ badge|lower }}">{{ badge }}</span></p>
+<p class="format">Format: <span class="badge badge-{{ badge|lower }}">{{ badge }}</span>
+{% if downloaded %}<span class="done">already sent to iBooks</span>{% endif %}</p>
 
 {% if summary %}<p class="summary">{{ summary }}</p>{% endif %}
 
 <p>
   <a class="button big" href="{{ download_url }}" target="_blank">
     {% if badge == 'EPUB' %}Open in iBooks{% else %}Open PDF{% endif %}
+  </a>
+</p>
+
+<p>
+  <a class="button small {{ 'on' if is_fav else '' }}" href="{{ star_url }}">
+    {% if is_fav %}&#9733; {{ star_label }}{% else %}&#9734; {{ star_label }}{% endif %}
   </a>
 </p>
 

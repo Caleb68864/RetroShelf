@@ -57,7 +57,10 @@ t=httpx.MockTransport(h)
 @asynccontextmanager
 async def ls(a):
     c=httpx.AsyncClient(transport=t,timeout=httpx.Timeout(connect=5,read=None,write=None,pool=5))
+    from app.store import Store
+    import tempfile, os as _os
     a.state.http=c; a.state.kavita=KavitaClient(cfg,c); a.state.ids=IdCodec("s"); a.state.cache=FeedCache(0)
+    a.state.search_templates={}; a.state.store=Store(_os.path.join(tempfile.mkdtemp(),"s.json"))
     yield
     await c.aclose()
 app.router.lifespan_context=ls

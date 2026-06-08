@@ -325,8 +325,15 @@ class Config:
     extra_origins: tuple[str, ...] = ()
     # Override the upstream User-Agent (None → a browser-like default).
     upstream_user_agent: str | None = None
+    # Directory for the JSON state file (Reading List + download history).
+    state_dir: str = "/config"
     # All configured OPDS feeds (the portal menu). The first is the primary.
     feeds: tuple[FeedSource, ...] = ()
+
+    @property
+    def state_path(self) -> str:
+        """Path to the JSON state file (Reading List + history)."""
+        return os.path.join(self.state_dir, "retroshelf-state.json")
 
     @property
     def allowed_origins(self) -> tuple[str, ...]:
@@ -472,6 +479,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
     return Config(
         feeds=tuple(feeds),
+        state_dir=(e.get("STATE_DIR") or "/config").strip(),
         extra_origins=extra_origins,
         upstream_user_agent=(e.get("UPSTREAM_USER_AGENT") or "").strip() or None,
         kavita_base_url=base_url,

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Reading List - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; My Reading List</div>
+<p class="lead">Books you starred from any library &mdash; all in one place.</p>
+
+{% if not items %}
+  <p class="muted">[ your reading list is empty ]</p>
+  <p class="muted">Browse a library, open a book, and tap <strong>&#9734; Add to Reading List</strong>.</p>
+{% else %}
+<ul class="list">
+{% for e in items %}
+  <li class="item">
+    <a class="book" href="{{ e.detail_url }}">
+      {% if e.cover_url and request.cookies.get('rs_covers') != '0' %}<img class="cover" src="{{ e.cover_url }}" alt="">{% endif %}
+      <span class="bookmeta">
+        <span class="booktitle">{{ e.title }}</span>
+        {% if e.author %}<span class="author">{{ e.author }}</span>{% endif %}
+        <span class="badge badge-{{ e.badge|lower }}">{{ e.badge }}</span>
+        {% if e.feed_name %}<span class="from">{{ e.feed_name }}</span>{% endif %}
+      </span>
+    </a>
+    <a class="unstar" href="{{ e.unstar_url }}">&#9733; remove</a>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
+<p><a class="back" href="/">Main Menu</a></p>
+{% endblock %}

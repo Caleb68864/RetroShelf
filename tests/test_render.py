@@ -8,7 +8,14 @@ from app.render import templates, TEMPLATES_DIR, STATIC_DIR
 CSS = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
 
 
+from types import SimpleNamespace
+
+# Templates read request.cookies / request.url.path; supply a minimal stand-in.
+_FAKE_REQUEST = SimpleNamespace(cookies={}, url=SimpleNamespace(path="/"))
+
+
 def render(name: str, **ctx) -> str:
+    ctx.setdefault("request", _FAKE_REQUEST)
     return templates.env.get_template(name).render(**ctx)
 
 
