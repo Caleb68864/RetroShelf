@@ -1075,8 +1075,12 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             if request.method == "HEAD":
                 return Response(status_code=200, media_type="image/jpeg",
                                 headers={"Cache-Control": "private, max-age=86400"})
-            range_header = request.headers.get("range")
-            return await stream_cover(kc(request), url, range_header=range_header)
+            return await stream_cover(
+                kc(request), url,
+                cache_dir=cfg.cache_dir,
+                cover_max_edge=cfg.cover_max_edge,
+                cover_jpeg_quality=cfg.cover_jpeg_quality,
+            )
         except RetroShelfError as exc:
             log.info("cover unavailable on %s: %s", request.url.path, cfg.mask(str(exc)))
             return Response(status_code=404, media_type="image/gif")

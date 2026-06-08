@@ -383,6 +383,10 @@ class Config:
     upstream_user_agent: str | None = None
     # Directory for the JSON state file (Reading List + download history).
     state_dir: str = "/config"
+    # Cover image disk cache
+    cache_dir: str = "/cache"
+    cover_max_edge: int = 320
+    cover_jpeg_quality: int = 80
     # All configured OPDS feeds (the portal menu). The first is the primary.
     feeds: tuple[FeedSource, ...] = ()
 
@@ -536,6 +540,9 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     return Config(
         feeds=tuple(feeds),
         state_dir=(e.get("STATE_DIR") or "/config").strip(),
+        cache_dir=(e.get("CACHE_DIR") or "/cache").strip(),
+        cover_max_edge=_as_int(e.get("COVER_MAX_EDGE"), 320, "COVER_MAX_EDGE"),
+        cover_jpeg_quality=_as_int(e.get("COVER_JPEG_QUALITY"), 80, "COVER_JPEG_QUALITY"),
         extra_origins=extra_origins,
         upstream_user_agent=(e.get("UPSTREAM_USER_AGENT") or "").strip() or None,
         kavita_base_url=base_url,
