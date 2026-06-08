@@ -40,6 +40,14 @@ body {
 a { color: #4ee44e; text-decoration: none; }
 a:active { color: #ffe24a; }
 
+/* ---- Touch ergonomics (old iPad: capacitive, no hover, fat fingers) -------
+   Every interactive target is at least ~44px tall (Apple HIG), with a themed
+   amber tap-highlight so a press is obviously registered. */
+a, .button, .navlink, .book, .menubar a, .back, .toplink,
+input[type=submit], input[type=text] {
+  -webkit-tap-highlight-color: rgba(255, 176, 0, 0.32);
+}
+
 /* ---- Masthead ------------------------------------------------------------ */
 .topbar { text-align: center; padding-bottom: 10px; border-bottom: 1px dashed #6e5410; margin-bottom: 14px; }
 .ascii {
@@ -74,8 +82,9 @@ a:active { color: #ffe24a; }
 .menubar { margin-top: 12px; }
 .menubar a {
   display: inline-block;
-  margin: 4px 3px;
-  padding: 9px 12px;
+  margin: 5px 4px;
+  padding: 13px 16px;
+  min-width: 96px;
   color: #ffb000;
   font-size: 16px;
   letter-spacing: 1px;
@@ -145,9 +154,10 @@ h2:before { content: ">> "; color: #6e5410; }
 .button.small {
   display: inline-block;
   width: auto;
-  padding: 9px 14px;
-  font-size: 15px;
-  margin: 6px 4px;
+  min-width: 132px;
+  padding: 15px 22px;
+  font-size: 16px;
+  margin: 8px 8px;
   color: #ffb000;
   background-color: transparent;
   border: 1px solid #b87d12;
@@ -189,7 +199,7 @@ h2:before { content: ">> "; color: #6e5410; }
 
 .navlink {
   display: block;
-  padding: 15px 8px;
+  padding: 18px 8px;
   font-size: 19px;
   color: #4ee44e;
   letter-spacing: 1px;
@@ -200,9 +210,9 @@ h2:before { content: ">> "; color: #6e5410; }
 /* Each book is an inventory line; "+" is the NetHack spellbook glyph. */
 .book {
   display: block;
-  padding: 13px 8px 13px 6px;
+  padding: 16px 8px 16px 6px;
   color: #d6d6d6;
-  min-height: 58px;
+  min-height: 64px;
 }
 .book:active { background-color: #14140a; }
 .cover {
@@ -255,8 +265,17 @@ h2:before { content: ">> "; color: #6e5410; }
 .hint strong { color: #ffe24a; }
 .error { color: #ff5a4a; }
 .error:before { content: "*** "; }
-.back { color: #ffb000; }
+.back {
+  display: inline-block;
+  margin: 6px 0;
+  padding: 13px 18px;
+  color: #ffb000;
+  font-size: 16px;
+  border: 1px solid #3a2a08;
+}
 .back:before { content: "<< "; color: #6e5410; }
+.back:active { color: #0a0a0a; background-color: #ffb000; }
+.back:active:before { color: #0a0a0a; }
 
 /* ---- Footer: NetHack status line ----------------------------------------- */
 .footer { margin-top: 26px; }

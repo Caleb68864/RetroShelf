@@ -1,4 +1,5 @@
 """Tests for app.render + templates + CSS — old-Safari safety + correct links."""
+import re
 
 import pytest
 
@@ -74,3 +75,37 @@ def test_book_detail_pdf_hint():
 def test_error_page():
     html = render("error.html", heading="Not found", message="No such book.")
     assert "Not found" in html and "No such book." in html
+
+
+# -- touch-friendliness: every interactive target must be a comfortable size --
+
+def _block(css: str, selector: str) -> str:
+    """Return the declaration block for *selector* (first match)."""
+    i = css.index(selector)
+    return css[i:css.index("}", i)]
+
+
+def _vpad(block: str) -> int:
+    """Approximate vertical padding (top+bottom) from a `padding:` declaration."""
+    m = re.search(r"padding:\s*([0-9]+)px", block)
+    return int(m.group(1)) * 2 if m else 0
+
+
+def test_touch_targets_are_large_enough():
+    # Interactive elements need ~44px tap height. With ~23-28px line-height for
+    # the font sizes used, that means >= ~12px vertical padding (or min-height).
+    assert "-webkit-tap-highlight-color" in CSS, "themed tap feedback missing"
+    # Primary + small buttons
+    assert _vpad(_block(CSS, ".button {")) >= 28
+    assert _vpad(_block(CSS, ".button.small {")) >= 26
+    # Menu bar + back chips (were bare inline text before the touch pass)
+    assert _vpad(_block(CSS, ".menubar a {")) >= 24
+    assert _vpad(_block(CSS, ".back {")) >= 24
+    # List rows (whole-row tap targets)
+    assert _vpad(_block(CSS, ".navlink {")) >= 32
+    book = _block(CSS, ".book {")
+    assert _vpad(book) >= 28
+    assert re.search(r"min-height:\s*(\d+)px", book) and int(re.search(r"min-height:\s*(\d+)px", book).group(1)) >= 60
+    # Search controls (also >=16px font so iOS doesn't zoom on focus)
+    assert _vpad(_block(CSS, ".search input[type=text]")) >= 24
+    assert _vpad(_block(CSS, ".search input[type=submit]")) >= 24
