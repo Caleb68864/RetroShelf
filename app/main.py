@@ -12,6 +12,7 @@ the SSRF guard before any upstream fetch. [C-3][C-6][H-2]
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import time
@@ -266,6 +267,38 @@ def create_app(config: Config | None = None) -> FastAPI:
             if not access_key_ok(provided, cfg.bridge_access_key):
                 return _error_response(request, "Access key required", "Append ?key=YOURKEY to the address.", 403)
         return await call_next(request)
+
+    # -- middleware: static caching + HTML-only gzip (SS-04 polish) -----------
+    @app.middleware("http")
+    async def polish(request: Request, call_next):
+        """Add a long cache header to ``/static`` and gzip HTML pages.
+
+        Gzip is applied **only** to ``text/html`` responses when the client
+        sent ``Accept-Encoding: gzip`` — the content-type is checked *before*
+        the body is consumed, so streaming proxy responses (``/download``,
+        ``/cover``) and any Range request are never buffered or compressed.
+        This protects book import and ``206``/``Content-Range`` behaviour.
+        """
+        response = await call_next(request)
+        if request.url.path.startswith("/static"):
+            response.headers["Cache-Control"] = "public, max-age=604800"
+        accepts_gzip = "gzip" in request.headers.get("accept-encoding", "")
+        ctype = response.headers.get("content-type", "")
+        if (accepts_gzip and ctype.startswith("text/html")
+                and response.status_code == 200
+                and "range" not in request.headers
+                and "content-encoding" not in response.headers):
+            body = b"".join([chunk async for chunk in response.body_iterator])
+            packed = gzip.compress(body)
+            headers = dict(response.headers)
+            headers.pop("content-length", None)
+            headers["content-encoding"] = "gzip"
+            headers["content-length"] = str(len(packed))
+            vary = headers.get("vary")
+            headers["vary"] = f"{vary}, Accept-Encoding" if vary else "Accept-Encoding"
+            return Response(content=packed, status_code=response.status_code,
+                            headers=headers, media_type=ctype)
+        return response
 
     # -- error handlers ------------------------------------------------------
     @app.exception_handler(RetroShelfError)

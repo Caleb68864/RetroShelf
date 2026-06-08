@@ -25,7 +25,7 @@
 
 <form class="search" action="/search" method="get">
   <input type="hidden" name="feed" value="{{ search_feed }}">
-  <input type="text" name="q" placeholder="{{ 'search all libraries' if multi else 'search the stacks' }}" value="">
+  <input type="text" name="q" placeholder="{{ 'search all libraries' if multi else 'search the stacks' }}" value="" autocorrect="off" autocapitalize="off" autocomplete="off" spellcheck="false">
   <input type="submit" value="Find">
 </form>
 

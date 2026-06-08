@@ -185,6 +185,67 @@ def test_feed_current_page_sort_and_control():
         assert tm < ar
 
 
+def test_search_inputs_have_ios_keyboard_hints():
+    # SS-04: the q input must suppress iOS auto-correct/auto-capitalize so it
+    # doesn't mangle titles/authors. Rendered on home, search, and feed pages.
+    import re
+    with make_client(make_handler()) as client:
+        home = client.get("/").text
+        assert 'autocorrect="off"' in home and 'autocapitalize="off"' in home
+        srch = client.get("/search?q=").text
+        assert 'autocorrect="off"' in srch and 'autocapitalize="off"' in srch
+        fid = re.search(r'/feed/([A-Za-z0-9_\-.]+)', home).group(1)
+        feed = client.get(f"/feed/{fid}").text
+        assert 'autocorrect="off"' in feed and 'autocapitalize="off"' in feed
+
+
+def test_static_has_long_cache_and_is_not_gzipped():
+    # SS-04: /static gets a one-week cache; CSS (non-HTML) is never gzipped.
+    with make_client(make_handler()) as client:
+        r = client.get("/static/app.css", headers={"Accept-Encoding": "gzip"})
+        assert r.status_code == 200
+        assert r.headers["cache-control"] == "public, max-age=604800"
+        assert "Accept-Encoding" not in r.headers.get("vary", "")
+
+
+def test_html_pages_gzipped_when_accepted():
+    # SS-04: HTML responses are gzipped (Vary: Accept-Encoding is set only by the
+    # gzip branch; httpx transparently decodes the body).
+    with make_client(make_handler()) as client:
+        r = client.get("/", headers={"Accept-Encoding": "gzip"})
+        assert r.status_code == 200
+        assert "Accept-Encoding" in r.headers.get("vary", "")
+        assert "RetroShelf" in r.text
+
+
+def test_download_stream_is_never_gzipped():
+    # SS-04: streaming proxy responses must not be gzipped/buffered.
+    import re
+    with make_client(make_handler()) as client:
+        home = client.get("/").text
+        fid = re.search(r'/feed/([A-Za-z0-9_\-.]+)', home).group(1)
+        root = client.get(f"/feed/{fid}").text
+        did = fname = None
+        for f2 in re.findall(r'/feed/([A-Za-z0-9_\-.]+)"', root):
+            detail_link = re.search(r'/book/([A-Za-z0-9_\-.]+)"', client.get(f"/feed/{f2}").text)
+            if detail_link:
+                dm = re.search(r'/download/([A-Za-z0-9_\-.]+)/([^"]+)',
+                               client.get(f"/book/{detail_link.group(1)}").text)
+                if dm:
+                    did, fname = dm.group(1), dm.group(2)
+                    break
+        assert did, "expected a download link"
+        r = client.get(f"/download/{did}/{fname}", headers={"Accept-Encoding": "gzip"})
+        assert r.headers.get("content-encoding") != "gzip"
+        assert "Accept-Encoding" not in r.headers.get("vary", "")
+
+
+def test_big_mode_enlarges_tap_targets():
+    import pathlib
+    css = (pathlib.Path(__file__).resolve().parent.parent / "app" / "static" / "app.css").read_text()
+    assert "body.big .menubar a" in css        # tap-target enlargement in large-print mode
+
+
 def test_full_chain_feed_to_download():
     with make_client(make_handler()) as client:
         home = client.get("/").text

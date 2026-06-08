@@ -29,7 +29,7 @@
 
 <form class="search" action="/search" method="get">
   {% if search_feed %}<input type="hidden" name="feed" value="{{ search_feed }}">{% endif %}
-  <input type="text" name="q" placeholder="title or author" value="{{ query }}">
+  <input type="text" name="q" placeholder="title or author" value="{{ query }}" autocorrect="off" autocapitalize="off" autocomplete="off" spellcheck="false">
   <input type="submit" value="Search">
 </form>
 

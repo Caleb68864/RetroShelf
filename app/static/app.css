@@ -346,6 +346,12 @@ body.big .author { font-size: 19px; }
 body.big .navlink { font-size: 24px; padding: 22px 8px; }
 body.big .search input[type=text] { font-size: 22px; padding: 18px 12px; }
 body.big .ascii { font-size: 15px; }
+/* Larger tap targets in large-print mode (SS-04 polish). */
+body.big .menubar a { padding: 14px 12px; }
+body.big .item { padding: 6px 0; }
+body.big .book { padding: 16px 4px; }
+body.big .prefs a, body.big .sortopt { display: inline-block; padding: 14px 10px; }
+body.big .back { display: inline-block; padding: 16px 8px; }
 
 /* ---- Phosphor color themes (amber default; green = P1, white = P4) -------- */
 /* GREEN phosphor */
