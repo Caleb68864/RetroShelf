@@ -172,8 +172,11 @@ installs deps, and serves on `0.0.0.0:8099`:
 ./run.sh "http://kavita:5000/api/opds/YOUR_KEY"  # or point at your Kavita OPDS URL
 ```
 
-Then open `http://<this-computer-ip>:8099` from the iPad. If other devices can't
-connect, open the firewall port — see **Troubleshooting → "The iPad can't connect"**.
+Then open `http://<this-computer-ip>:8099` from the iPad. `run.sh` **opens the
+firewall port automatically** (firewalld/ufw) so other devices can reach it — you
+may be prompted for your sudo password. Set `RS_OPEN_FIREWALL=0 ./run.sh` to skip
+that if you manage the firewall yourself (then see **Troubleshooting → "The iPad
+can't connect"** for the manual commands).
 
 ---
 
