@@ -32,6 +32,7 @@ from .errors import BadIdError, KavitaError, RetroShelfError, SsrfError
 from .ids import IdCodec
 from .kavita import KavitaClient, build_client
 from .opds import OpdsParseError
+from .publish import ACQ_TYPE, NAV_TYPE, build_feed
 from .render import STATIC_DIR, templates
 from .security import access_key_ok, ip_allowed, sanitize_filename
 from .store import Store, book_key
@@ -431,9 +432,21 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 except SsrfError:
                     cover_abs = None
             cover_bridge = f"/cover/{ids.encode(cover_abs)}" if cover_abs else None
+            # One download per format (first EPUB and/or first PDF) with size.
+            fmts = []
+            epub = next((a for a in e.acquisitions if a.is_epub), None)
+            pdf = next((a for a in e.acquisitions if a.is_pdf), None)
+            for a, fmt in ((epub, "epub"), (pdf, "pdf")):
+                if a is None:
+                    continue
+                try:
+                    furl = kavita.resolve_url(a.href, base=base_url)
+                except SsrfError:
+                    continue
+                fmts.append({"u": furl, "m": a.media_type, "f": fmt, "len": a.length})
             record = json.dumps({
                 "u": acq_url, "m": acq.media_type, "t": e.title, "a": e.author,
-                "s": e.summary, "c": cover_abs,
+                "s": e.summary, "c": cover_abs, "fmts": fmts,
             }, separators=(",", ":"))
             entries.append({
                 "is_nav": False,
@@ -641,18 +654,34 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             raise BadIdError("Malformed book id") from exc
         fmt = format_of(rec.get("m", "")) or "epub"
         badge = "EPUB" if fmt == "epub" else "PDF"
-        filename = sanitize_filename(rec.get("t"), "epub" if fmt == "epub" else "pdf")
         cover_url = None
         if rec.get("c"):
             cover_url = f"/cover/{codec(request).encode(rec['c'])}"
         key = book_key(rec.get("u", ""))
         is_fav = store(request).is_favorite(key)
+
+        # One download button per available format (EPUB/PDF), with size.
+        fmts = rec.get("fmts") or [{"u": rec.get("u"), "m": rec.get("m"), "f": fmt, "len": None}]
+        dlkeys = store(request).downloaded_keys()
+        downloads = []
+        for fm in fmts:
+            ext = "pdf" if fm.get("f") == "pdf" else "epub"
+            frec = {"u": fm["u"], "m": fm.get("m"), "t": rec.get("t"),
+                    "a": rec.get("a"), "s": rec.get("s"), "c": rec.get("c")}
+            fid = codec(request).encode(json.dumps(frec, separators=(",", ":")))
+            fname = sanitize_filename(rec.get("t"), ext)
+            downloads.append({
+                "badge": ext.upper(),
+                "url": f"/download/{fid}/{fname}",
+                "size": _human_size(fm.get("len")),
+                "label": "Open in iBooks" if ext == "epub" else "Open PDF",
+            })
+        downloaded = any(book_key(fm["u"]) in dlkeys for fm in fmts)
         return templates.TemplateResponse(request, "book.html", {
             "title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
             "summary": rec.get("s") or "", "badge": badge, "cover_url": cover_url,
-            # Download routes through the record id so history captures the title.
-            "download_url": f"/download/{bid}/{filename}",
-            "downloaded": key in store(request).downloaded_keys(),
+            "downloads": downloads,
+            "downloaded": downloaded,
             "is_fav": is_fav,
             "star_url": f"/unstar/{key}" if is_fav else f"/star/{bid}",
             "star_label": "Remove from Reading List" if is_fav else "Add to Reading List",
@@ -762,21 +791,79 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         store(request).remove_favorite(key)
         return RedirectResponse(_back_to(request, default="/list"), status_code=303)
 
+    # -- OPDS publisher: re-publish the Reading List as a real OPDS feed ------
+    def _public_base(request: Request) -> str:
+        return (cfg.bridge_public_url or str(request.base_url)).rstrip("/")
+
+    def _key_suffix() -> str:
+        return f"?key={cfg.bridge_access_key}" if cfg.bridge_access_key else ""
+
+    @app.get("/opds")
+    async def opds_root(request: Request):
+        """GET ``/opds`` — RetroShelf's own OPDS navigation catalog."""
+        base, ks = _public_base(request), _key_suffix()
+        xml = build_feed(
+            feed_id="urn:retroshelf:opds", title="RetroShelf",
+            self_href=f"{base}/opds{ks}", start_href=f"{base}/opds{ks}", kind="navigation",
+            entries=[{
+                "id": "urn:retroshelf:reading-list", "title": "My Reading List",
+                "summary": "Books you starred across all your libraries.",
+                "nav_href": f"{base}/opds/reading-list{ks}", "nav_type": ACQ_TYPE,
+            }],
+        )
+        return Response(content=xml, media_type=NAV_TYPE)
+
+    @app.get("/opds/reading-list")
+    async def opds_reading_list(request: Request):
+        """GET ``/opds/reading-list`` — the Reading List as an OPDS acquisition
+        feed, so any OPDS reader can subscribe to your curated shelf."""
+        base, ks = _public_base(request), _key_suffix()
+        entries = []
+        for rec in store(request).favorites():
+            fmts = rec.get("fmts") or [{"u": rec.get("u"), "m": rec.get("m"), "f": "epub"}]
+            acqs = []
+            for fm in fmts:
+                if not fm.get("u"):
+                    continue
+                ext = "pdf" if fm.get("f") == "pdf" else "epub"
+                frec = {"u": fm["u"], "m": fm.get("m"), "t": rec.get("t"),
+                        "a": rec.get("a"), "s": rec.get("s"), "c": rec.get("c")}
+                did = codec(request).encode(json.dumps(frec, separators=(",", ":")))
+                fname = sanitize_filename(rec.get("t"), ext)
+                mime = fm.get("m") or ("application/epub+zip" if ext == "epub" else "application/pdf")
+                acqs.append({"type": mime, "href": f"{base}/download/{did}/{fname}{ks}"})
+            entries.append({
+                "id": f"urn:retroshelf:book:{rec.get('key')}",
+                "title": rec.get("t"), "author": rec.get("a"), "summary": rec.get("s"),
+                "acquisitions": acqs,
+                "cover_href": f"{base}/cover/{codec(request).encode(rec['c'])}{ks}" if rec.get("c") else None,
+            })
+        xml = build_feed(
+            feed_id="urn:retroshelf:reading-list", title="RetroShelf — My Reading List",
+            self_href=f"{base}/opds/reading-list{ks}", start_href=f"{base}/opds{ks}",
+            kind="acquisition", entries=entries,
+        )
+        return Response(content=xml, media_type=ACQ_TYPE)
+
     # -- Accessibility preferences (optional cookies) ------------------------
     @app.get("/prefs")
-    async def prefs(request: Request, big: str = "", covers: str = "", next: str = "/"):
-        """GET ``/prefs`` — toggle large-print / cover prefs via a cookie.
+    async def prefs(request: Request, big: str = "", covers: str = "",
+                    color: str = "", next: str = "/"):
+        """GET ``/prefs`` — toggle display prefs via cookies (no JS, optional).
 
         Everything works without the cookie; this only enhances. ``big=toggle``
-        flips large-print; ``covers=off``/``on`` hides/shows covers.
+        flips large-print; ``covers=off``/``on`` hides/shows covers;
+        ``color=amber|green|white`` picks the CRT phosphor palette.
         """
         target = next if next.startswith("/") else "/"
         resp = RedirectResponse(target, status_code=303)
-        cur_big = request.cookies.get("rs_big") == "1"
         if big == "toggle":
-            resp.set_cookie("rs_big", "0" if cur_big else "1", max_age=31536000)
+            resp.set_cookie("rs_big", "0" if request.cookies.get("rs_big") == "1" else "1",
+                            max_age=31536000)
         if covers in ("on", "off"):
             resp.set_cookie("rs_covers", "1" if covers == "on" else "0", max_age=31536000)
+        if color in ("amber", "green", "white"):
+            resp.set_cookie("rs_color", color, max_age=31536000)
         return resp
 
     @app.get("/health")
@@ -943,6 +1030,22 @@ def _back_to(request: Request, default: str = "/") -> str:
         if rp.path.startswith(("/feed/", "/search", "/book/", "/list")):
             return rp.path + (f"?{rp.query}" if rp.query else "")
     return default
+
+
+def _human_size(n: int | None) -> str:
+    """Return a compact human-readable size (e.g. ``"1.2 MB"``) or ``""``.
+
+    :param n: A size in bytes, or ``None``.
+    :rtype: str
+    """
+    if not n or n <= 0:
+        return ""
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" or size >= 100 else f"{size:.1f} {unit}"
+        size /= 1024
+    return ""
 
 
 def _basename(url: str) -> str:

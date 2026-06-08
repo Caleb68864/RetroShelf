@@ -338,3 +338,58 @@ body.big .author { font-size: 19px; }
 body.big .navlink { font-size: 24px; padding: 22px 8px; }
 body.big .search input[type=text] { font-size: 22px; padding: 18px 12px; }
 body.big .ascii { font-size: 15px; }
+
+/* ---- Phosphor color themes (amber default; green = P1, white = P4) -------- */
+/* GREEN phosphor */
+body.color-green .brand, body.color-green h1, body.color-green .sectionhead,
+body.color-green .ascii, body.color-green .menubar a, body.color-green .toplink,
+body.color-green .back, body.color-green .prefs a, body.color-green .crest,
+body.color-green a { color: #43e06a; }
+body.color-green .brand, body.color-green h1, body.color-green .sectionhead,
+body.color-green .ascii { text-shadow: 0 0 3px rgba(67, 224, 106, 0.5); }
+body.color-green {
+  background-image: -webkit-radial-gradient(50% 30%, #0c1a10 0%, #050805 75%);
+  background-image: radial-gradient(circle at 50% 30%, #0c1a10 0%, #050805 75%);
+}
+body.color-green .wrap {
+  border-color: #1f7a3a;
+  -webkit-box-shadow: inset 0 0 0 1px #0d3a1c, 0 0 16px rgba(67, 224, 106, 0.14);
+  box-shadow: inset 0 0 0 1px #0d3a1c, 0 0 16px rgba(67, 224, 106, 0.14);
+}
+body.color-green .button, body.color-green .search input[type=submit] {
+  background-color: #43e06a; border-color: #7af09a; color: #04140a;
+}
+body.color-green .button:active, body.color-green .menubar a:active,
+body.color-green .back:active, body.color-green .prefs a:active,
+body.color-green .search input[type=submit]:active { background-color: #7af09a; color: #04140a; }
+body.color-green .statusline { background-color: #43e06a; color: #04140a; }
+body.color-green .booktitle:before, body.color-green .navlink .prompt { color: #2f9a4a; }
+body.color-green .search input[type=text] { color: #9af0b0; border-color: #1f7a3a; }
+body.color-green .brand:active { color: #7af09a; }
+
+/* WHITE phosphor */
+body.color-white .brand, body.color-white h1, body.color-white .sectionhead,
+body.color-white .ascii, body.color-white .menubar a, body.color-white .toplink,
+body.color-white .back, body.color-white .prefs a, body.color-white .crest { color: #ededed; }
+body.color-white a { color: #b9cbe0; }
+body.color-white .brand, body.color-white h1, body.color-white .sectionhead,
+body.color-white .ascii { text-shadow: 0 0 3px rgba(230, 230, 230, 0.45); }
+body.color-white {
+  background-image: -webkit-radial-gradient(50% 30%, #15171a 0%, #050505 75%);
+  background-image: radial-gradient(circle at 50% 30%, #15171a 0%, #050505 75%);
+}
+body.color-white .wrap {
+  border-color: #6f7782;
+  -webkit-box-shadow: inset 0 0 0 1px #2a2e33, 0 0 16px rgba(230, 230, 230, 0.12);
+  box-shadow: inset 0 0 0 1px #2a2e33, 0 0 16px rgba(230, 230, 230, 0.12);
+}
+body.color-white .button, body.color-white .search input[type=submit] {
+  background-color: #ededed; border-color: #ffffff; color: #111111;
+}
+body.color-white .button:active, body.color-white .menubar a:active,
+body.color-white .back:active, body.color-white .prefs a:active,
+body.color-white .search input[type=submit]:active { background-color: #ffffff; color: #111111; }
+body.color-white .statusline { background-color: #ededed; color: #111111; }
+body.color-white .booktitle:before, body.color-white .navlink .prompt { color: #9aa3ad; }
+body.color-white .search input[type=text] { color: #ededed; border-color: #6f7782; }
+body.color-white .brand:active { color: #ffffff; }

@@ -382,7 +382,39 @@ def test_prefs_large_print_cookie_sets_body_class():
     with make_client(make_handler()) as client:
         assert 'class="big"' not in client.get("/").text
         home = client.get("/prefs?big=toggle&next=/").text   # follows 303 → /
-        assert 'class="big"' in home
+        assert "big" in home and 'class="color-amber big"' in home
+
+
+def test_opds_republish_reading_list_roundtrips():
+    from app.opds import parse
+    with make_client(make_handler()) as client:
+        bid = _first_book_id(client)
+        client.get(f"/star/{bid}")
+        # Navigation catalog.
+        root = client.get("/opds")
+        assert root.status_code == 200
+        assert "kind=navigation" in root.headers["content-type"]
+        assert b"My Reading List" in root.content
+        # Acquisition feed — re-parse it with OUR OWN parser (consume == produce).
+        r = client.get("/opds/reading-list")
+        assert "kind=acquisition" in r.headers["content-type"]
+        feed = parse(r.text)
+        assert len(feed.entries) == 1
+        e = feed.entries[0]
+        assert e.title == "The Time Machine"
+        assert e.primary_acquisition is not None
+        assert "/download/" in e.primary_acquisition.href
+        # The republished feed leaks no upstream apiKey.
+        assert "SECRETKEY" not in r.text and "/api/opds/" not in r.text
+
+
+def test_prefs_phosphor_color_theme():
+    with make_client(make_handler()) as client:
+        assert 'class="color-amber"' in client.get("/").text  # default
+        green = client.get("/prefs?color=green&next=/").text
+        assert "color-green" in green
+        white = client.get("/prefs?color=white&next=/").text
+        assert "color-white" in white
 
 
 def test_help_page():

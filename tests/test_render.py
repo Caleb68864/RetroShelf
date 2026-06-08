@@ -66,17 +66,34 @@ def test_feed_renders_nav_and_book_entries():
 def test_book_detail_download_link_is_extension_bearing():
     html = render("book.html", title="The Time Machine", author="H. G. Wells",
                   badge="EPUB", summary="A tale.", cover_url=None,
-                  download_url="/download/xyz/The-Time-Machine.epub", back_url="/feed/abc")
+                  downloads=[{"badge": "EPUB", "url": "/download/xyz/The-Time-Machine.epub",
+                              "size": "1.2 MB", "label": "Open in iBooks"}],
+                  back_url="/feed/abc")
     assert 'href="/download/xyz/The-Time-Machine.epub"' in html
     assert "Open in iBooks" in html
+    assert "1.2 MB" in html
     assert 'href="/feed/abc"' in html
 
 
 def test_book_detail_pdf_hint():
     html = render("book.html", title="Report", author="", badge="PDF", summary="",
-                  cover_url=None, download_url="/download/p/report.pdf", back_url="/")
+                  cover_url=None,
+                  downloads=[{"badge": "PDF", "url": "/download/p/report.pdf",
+                              "size": "", "label": "Open PDF"}],
+                  back_url="/")
     assert "Open PDF" in html
     assert "Share" in html
+
+
+def test_book_detail_shows_both_formats():
+    html = render("book.html", title="Dual", author="", badge="EPUB", summary="",
+                  cover_url=None, back_url="/",
+                  downloads=[
+                      {"badge": "EPUB", "url": "/download/a/dual.epub", "size": "1.0 MB", "label": "Open in iBooks"},
+                      {"badge": "PDF", "url": "/download/b/dual.pdf", "size": "2.0 MB", "label": "Open PDF"},
+                  ])
+    assert "/download/a/dual.epub" in html and "/download/b/dual.pdf" in html
+    assert "(EPUB)" in html and "(PDF)" in html  # format labels shown when >1
 
 
 def test_error_page():

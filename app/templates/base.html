@@ -5,8 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}RetroShelf{% endblock %}</title>
 <link rel="stylesheet" href="/static/app.css">
+<link rel="alternate" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="/opds" title="RetroShelf OPDS">
 </head>
-<body class="{{ 'big' if request.cookies.get('rs_big') == '1' else '' }}">
+<body class="color-{{ request.cookies.get('rs_color') or 'amber' }}{{ ' big' if request.cookies.get('rs_big') == '1' else '' }}">
 <div class="page">
 <div class="wrap">
   <div class="topbar">
@@ -33,6 +34,12 @@
       {% else %}
         <a href="/prefs?covers=off&amp;next={{ request.url.path }}">[ Covers: ON ]</a>
       {% endif %}
+    </div>
+    <div class="prefs">
+      Phosphor:
+      <a href="/prefs?color=amber&amp;next={{ request.url.path }}">[ Amber ]</a>
+      <a href="/prefs?color=green&amp;next={{ request.url.path }}">[ Green ]</a>
+      <a href="/prefs?color=white&amp;next={{ request.url.path }}">[ White ]</a>
     </div>
     <div class="colophon">// press a link to turn the page</div>
   </div>

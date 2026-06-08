@@ -11,11 +11,13 @@
 
 {% if summary %}<p class="summary">{{ summary }}</p>{% endif %}
 
+{% for d in downloads %}
 <p>
-  <a class="button big" href="{{ download_url }}" target="_blank">
-    {% if badge == 'EPUB' %}Open in iBooks{% else %}Open PDF{% endif %}
+  <a class="button big" href="{{ d.url }}" target="_blank">
+    {{ d.label }}{% if downloads|length > 1 %} ({{ d.badge }}){% endif %}{% if d.size %} &middot; {{ d.size }}{% endif %}
   </a>
 </p>
+{% endfor %}
 
 <p>
   <a class="button small {{ 'on' if is_fav else '' }}" href="{{ star_url }}">

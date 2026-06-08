@@ -26,6 +26,29 @@ Your Kavita API key stays on the server and never appears in a page or a link.
 
 ---
 
+## Features
+
+More than an OPDS-to-HTML proxy — a personal cross-library reading manager:
+
+- **Multiple libraries (portal).** Front several OPDS catalogs at once (Kavita,
+  Project Gutenberg, ManyBooks, …) — `OPDS_FEEDS`. The home screen becomes a menu.
+- **Fan-out search.** From home, one search queries *every* library at once and
+  groups the results by library; in-library search stays scoped.
+- **Cross-feed Reading List.** Star books from any library into one persistent
+  list (`/list`). Survives restarts (stored in `/config`).
+- **"On this iPad" history.** Already-downloaded books get a ✓ *sent* mark, and
+  the home screen shows a "Recently sent to iBooks" shelf.
+- **Multi-format downloads.** When a book offers both EPUB and PDF you get a
+  button for each, with file sizes.
+- **Re-publishes as OPDS.** Your Reading List is itself a valid OPDS feed at
+  `/opds/reading-list` — subscribe to your curated shelf from any OPDS reader.
+- **Accessibility.** One-tap Large-Print mode, hide-covers (for speed), and an
+  amber / green / white **CRT phosphor** theme switch — all via the footer, no JS.
+
+Everything is server-rendered, no-JavaScript, and works on iOS 5.1.1–12 Safari.
+
+---
+
 ## Getting your Kavita OPDS URL
 
 1. In Kavita, click your user icon → **Settings** → **3rd Party Clients / OPDS**.

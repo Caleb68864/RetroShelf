@@ -64,6 +64,7 @@ class Acquisition:
     media_type: str
     href: str
     rel: str
+    length: int | None = None
 
     @property
     def is_epub(self) -> bool:
@@ -369,7 +370,11 @@ def _parse_entry(entry_el) -> Entry:
         if not href:
             continue
         if rel.startswith(ACQUISITION_REL_PREFIX):
-            entry.acquisitions.append(Acquisition(media_type=mtype, href=href, rel=rel))
+            length = None
+            raw_len = (link.get("length") or "").strip()
+            if raw_len.isdigit():
+                length = int(raw_len)
+            entry.acquisitions.append(Acquisition(media_type=mtype, href=href, rel=rel, length=length))
         elif rel in THUMB_RELS:
             entry.thumbnail_url = href
             entry.cover_url = entry.cover_url or href
