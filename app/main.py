@@ -19,7 +19,10 @@ from fastapi.staticfiles import StaticFiles
 
 from . import opds
 from .config import Config, ConfigError, load_config
-from .download import EPUB_MIME, PDF_MIME, format_of, stream_cover, stream_download
+from .download import (
+    EPUB_MIME, PDF_MIME, build_headers as build_download_headers,
+    format_of, stream_cover, stream_download,
+)
 from .errors import BadIdError, KavitaError, RetroShelfError, SsrfError
 from .ids import IdCodec
 from .kavita import KavitaClient, build_client
@@ -271,32 +274,39 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     # -- downloads / covers --------------------------------------------------
     async def _do_download(request: Request, did: str):
         url = kc(request).resolve_url(codec(request).decode(did))  # decode + re-validate
-        # Probe format by extension hint is unreliable; decide from the upstream
-        # acquisition we recorded. We re-derive media type from the URL suffix
-        # and Kavita's own typing, defaulting by extension.
+        # Media type is derived from the acquisition URL suffix (Kavita download
+        # URLs end in the real filename, .epub/.pdf), defaulting to EPUB.
         media_type, disposition, ext = _media_for_url(url, cfg)
         filename = sanitize_filename(_basename(url), ext)
+        if request.method == "HEAD":
+            # Answer header probes (e.g. `curl -I`, Safari) without fetching the
+            # body. Same headers a GET would produce.
+            headers = build_download_headers(filename=filename, disposition=disposition)
+            return Response(status_code=200, media_type=media_type, headers=headers)
         range_header = request.headers.get("range")
         return await stream_download(
             kc(request), url, media_type=media_type, filename=filename,
             disposition=disposition, range_header=range_header,
         )
 
-    @app.get("/download/{did}/{filename}")
+    @app.api_route("/download/{did}/{filename}", methods=["GET", "HEAD"])
     async def download_named(request: Request, did: str, filename: str):
         return await _do_download(request, did)
 
-    @app.get("/download/{did}")
+    @app.api_route("/download/{did}", methods=["GET", "HEAD"])
     async def download(request: Request, did: str):
         return await _do_download(request, did)
 
-    @app.get("/open/{did}")
+    @app.api_route("/open/{did}", methods=["GET", "HEAD"])
     async def open_alias(request: Request, did: str):
         return await _do_download(request, did)
 
-    @app.get("/cover/{cid}")
+    @app.api_route("/cover/{cid}", methods=["GET", "HEAD"])
     async def cover(request: Request, cid: str):
         url = kc(request).resolve_url(codec(request).decode(cid))
+        if request.method == "HEAD":
+            return Response(status_code=200, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=86400"})
         range_header = request.headers.get("range")
         return await stream_cover(kc(request), url, range_header=range_header)
 

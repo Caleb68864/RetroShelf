@@ -1,7 +1,7 @@
 """Tests for app.config — env parsing, validation, origin derivation, masking."""
 import pytest
 
-from app.config import Config, ConfigError, load_config, origin_tuple, _normalize_origin
+from app.config import ConfigError, load_config, origin_tuple, _normalize_origin
 
 BASE_ENV = {
     "KAVITA_BASE_URL": "http://kavita:5000",

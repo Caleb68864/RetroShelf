@@ -1,6 +1,4 @@
 """Tests for app.render + templates + CSS — old-Safari safety + correct links."""
-import pathlib
-import re
 
 import pytest
 

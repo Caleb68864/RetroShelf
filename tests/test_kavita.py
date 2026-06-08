@@ -102,5 +102,5 @@ async def test_stream_yields_bytes_and_forwards_range():
 async def test_stream_http_error_raises():
     kc = make_client(lambda r: httpx.Response(404, content=b"nope"))
     with pytest.raises(KavitaError):
-        async with kc.stream("/api/opds/SECRETKEY/x") as resp:
+        async with kc.stream("/api/opds/SECRETKEY/x"):
             pass

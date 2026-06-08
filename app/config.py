@@ -9,7 +9,7 @@ message — never a raw traceback leaked to the operator.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 # Redaction token used wherever a secret would otherwise appear.
@@ -48,7 +48,7 @@ def origin_tuple(url: str) -> tuple[str, str, int]:
     the SSRF guard so default-port and protocol variations compare correctly."""
     parts = urlsplit(url)
     if not parts.scheme or not parts.hostname:
-        raise ConfigError(f"Invalid URL (missing scheme or host)")
+        raise ConfigError("Invalid URL (missing scheme or host)")
     scheme = parts.scheme.lower()
     host = parts.hostname.lower()
     port = parts.port if parts.port is not None else _DEFAULT_PORTS.get(scheme, 0)

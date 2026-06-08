@@ -5,7 +5,6 @@ Kavita is mocked at the httpx transport layer so no real server is needed.
 import pathlib
 
 import httpx
-import pytest
 from fastapi.testclient import TestClient
 
 from app.config import load_config
@@ -53,9 +52,6 @@ def make_client(handler) -> TestClient:
     app = create_app(cfg)
     # Inject a mocked KavitaClient/ids/cache via a custom lifespan replacement.
     transport = httpx.MockTransport(handler)
-
-    class _State:
-        pass
 
     def _override_lifespan():
         from contextlib import asynccontextmanager
@@ -124,8 +120,7 @@ def test_full_chain_feed_to_download():
         fid = re.search(r'/feed/([A-Za-z0-9_\-.]+)', home).group(1)
         # Navigate root -> 'Recently Added' acquisition feed.
         root_feed = client.get(f"/feed/{fid}").text
-        nav_id = re.search(r'/feed/([A-Za-z0-9_\-.]+)"', root_feed)
-        # Find an acquisition feed link (second nav). Just follow all /feed ids until we get books.
+        # Follow every /feed id until we reach a page that has book detail links.
         ids = re.findall(r'/feed/([A-Za-z0-9_\-.]+)"', root_feed)
         book_detail_id = None
         for fid2 in ids:
@@ -141,6 +136,12 @@ def test_full_chain_feed_to_download():
         assert m, "expected an extension-bearing download link"
         did, fname = m.group(1), m.group(2)
         assert fname.endswith(".epub") or fname.endswith(".pdf")
+        # HEAD must work too (curl -I / Safari probes) — returns headers, no body.
+        head = client.head(f"/download/{did}/{fname}")
+        assert head.status_code == 200
+        assert head.headers["content-type"] in ("application/epub+zip", "application/pdf")
+        assert "filename=" in head.headers["content-disposition"]
+        assert head.headers["x-content-type-options"] == "nosniff"
         dl = client.get(f"/download/{did}/{fname}")
         assert dl.status_code == 200
         assert dl.content == b"PK\x03\x04BOOKBYTES"
