@@ -11,6 +11,7 @@ the SSRF guard before any upstream fetch. [C-3][C-6][H-2]
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -522,8 +523,12 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             while "{" in url and "}" in url:
                 start = url.index("{")
                 url = url[:start] + url[url.index("}", start) + 1:]
-            return url.rstrip("?&")
-        return f"{feed_url.rstrip('/')}/search?query={encoded}"
+            url = url.rstrip("?&")
+        else:
+            url = f"{feed_url.rstrip('/')}/search?query={encoded}"
+        # Resolve to an absolute, SSRF-checked URL against THIS feed's origin so a
+        # root-relative template on a secondary feed targets the right server.
+        return kc(request).resolve_url(url, base=feed_url)
 
     # -- pages ---------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
@@ -552,11 +557,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             fid = codec(request).encode(kc(request).resolve_url(f.url))
             menu.append({"name": f.name, "url": f"/feed/{fid}"})
         primary_id = codec(request).encode(kc(request).resolve_url(primary.url))
+        multi = len(cfg.feeds) > 1
         return templates.TemplateResponse(request, "home.html", {
             "kavita_ok": kavita_ok, "status_detail": detail,
-            "feeds": menu, "multi": len(cfg.feeds) > 1,
+            "feeds": menu, "multi": multi,
             "root_feed_url": menu[0]["url"],   # back-compat for single-feed
-            "search_feed": primary_id,
+            # From home, search every library at once; a single feed searches itself.
+            "search_feed": "*" if multi else primary_id,
         })
 
     @app.get("/feed/{fid}", response_class=HTMLResponse)
@@ -643,35 +650,44 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :rtype: HTMLResponse
         """
         q = (q or "").strip()
-        # Resolve which library to search (default: primary feed).
-        feed_url = None
-        if feed:
-            try:
-                feed_url = kc(request).resolve_url(codec(request).decode(feed))
-            except RetroShelfError:
-                feed_url = None
-        if feed_url is None:
-            feed_url = cfg.feeds[0].url
-            feed = codec(request).encode(kc(request).resolve_url(feed_url))
-        owner = _feed_for_url(feed_url)
+        multi = len(cfg.feeds) > 1
+        # ``feed == "*"`` means fan out across every configured library.
+        fan_out = feed == "*" and multi
 
-        entries = []
-        search_error = False
-        if q:
+        async def _search_one(source) -> dict:
+            """Search one library; never raises — failures become error groups."""
             try:
-                search_url = await _resolve_search_url(request, q, feed_url)
-                body = await kc(request).fetch_feed(search_url)
-                parsed = opds.parse(body)
-                # Resolve result hrefs against the (absolute) feed origin.
-                entries = _to_view_model(parsed, codec(request), kc(request), base_url=feed_url)
+                su = await _resolve_search_url(request, q, source.url)
+                body = await kc(request).fetch_feed(su)
+                ents = _to_view_model(opds.parse(body), codec(request), kc(request), base_url=source.url)
+                return {"name": source.name, "entries": ents, "error": False}
             except RetroShelfError as exc:
-                # Search endpoint missing/unreachable — tell the user it's
-                # unavailable rather than silently showing "no results". [H6]
-                search_error = True
-                log.info("search failed for %r: %s", q, cfg.mask(str(exc)))
+                log.info("search failed in %r for %r: %s", source.name, q, cfg.mask(str(exc)))
+                return {"name": source.name, "entries": [], "error": True}
+
+        groups: list[dict] = []
+        feed_name = None
+        if fan_out:
+            search_feed = "*"
+            if q:
+                groups = list(await asyncio.gather(*[_search_one(f) for f in cfg.feeds]))
+        else:
+            # Single library: the given feed id, or the primary feed.
+            target = cfg.feeds[0]
+            if feed and feed != "*":
+                try:
+                    target = _feed_for_url(kc(request).resolve_url(codec(request).decode(feed)))
+                except RetroShelfError:
+                    target = cfg.feeds[0]
+            feed_name = target.name
+            search_feed = codec(request).encode(kc(request).resolve_url(target.url))
+            if q:
+                groups = [await _search_one(target)]
+
+        total = sum(len(g["entries"]) for g in groups)
         return templates.TemplateResponse(request, "search.html", {
-            "query": q, "entries": entries, "search_error": search_error,
-            "search_feed": feed, "feed_name": owner.name, "multi": len(cfg.feeds) > 1,
+            "query": q, "groups": groups, "total": total, "fan_out": fan_out,
+            "multi": multi, "search_feed": search_feed, "feed_name": feed_name,
         })
 
     @app.get("/help", response_class=HTMLResponse)

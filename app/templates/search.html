@@ -1,8 +1,26 @@
 {% extends "base.html" %}
 {% block title %}Search - RetroShelf{% endblock %}
+
+{% macro book_item(e) %}
+  <li class="item">
+    <a class="book" href="{{ e.detail_url }}">
+      {% if e.cover_url %}<img class="cover" src="{{ e.cover_url }}" alt="">{% endif %}
+      <span class="bookmeta">
+        <span class="booktitle">{{ e.title }}</span>
+        {% if e.author %}<span class="author">{{ e.author }}</span>{% endif %}
+        {% if e.badge %}<span class="badge badge-{{ e.badge|lower }}">{{ e.badge }}</span>{% endif %}
+      </span>
+    </a>
+  </li>
+{% endmacro %}
+
 {% block content %}
 <h1>Search</h1>
-{% if multi and feed_name %}<p class="format">in library: {{ feed_name }}</p>{% endif %}
+{% if fan_out %}
+  <p class="format">across all libraries</p>
+{% elif multi and feed_name %}
+  <p class="format">in library: {{ feed_name }}</p>
+{% endif %}
 
 <form class="search" action="/search" method="get">
   {% if search_feed %}<input type="hidden" name="feed" value="{{ search_feed }}">{% endif %}
@@ -11,25 +29,34 @@
 </form>
 
 {% if query %}
-  {% if search_error %}
-    <p class="muted">Search is unavailable right now. Try browsing the library instead.</p>
-  {% elif entries %}
-    <ul class="list">
-    {% for e in entries %}
-      <li class="item">
-        <a class="book" href="{{ e.detail_url }}">
-          {% if e.cover_url %}<img class="cover" src="{{ e.cover_url }}" alt="">{% endif %}
-          <span class="bookmeta">
-            <span class="booktitle">{{ e.title }}</span>
-            {% if e.author %}<span class="author">{{ e.author }}</span>{% endif %}
-            {% if e.badge %}<span class="badge badge-{{ e.badge|lower }}">{{ e.badge }}</span>{% endif %}
-          </span>
-        </a>
-      </li>
+  {% if fan_out %}
+    {% for g in groups %}
+      {% if g.error %}
+        <div class="sectionhead">&gt;&gt; {{ g.name }}</div>
+        <p class="muted">[ library unavailable ]</p>
+      {% elif g.entries %}
+        <div class="sectionhead">&gt;&gt; {{ g.name }} &mdash; {{ g.entries|length }} found</div>
+        <ul class="list">
+        {% for e in g.entries %}{{ book_item(e) }}{% endfor %}
+        </ul>
+      {% endif %}
     {% endfor %}
-    </ul>
+    {% if total == 0 %}
+      <p class="muted">No results for &ldquo;{{ query }}&rdquo; in any library.</p>
+    {% endif %}
   {% else %}
-    <p class="muted">No results for &ldquo;{{ query }}&rdquo;.</p>
+    {% set g = groups[0] if groups else none %}
+    {% if g and g.error %}
+      <p class="muted">Search is unavailable right now. Try browsing the library instead.</p>
+    {% elif g and g.entries %}
+      <ul class="list">
+      {% for e in g.entries %}{{ book_item(e) }}{% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">No results for &ldquo;{{ query }}&rdquo;.</p>
+    {% endif %}
   {% endif %}
 {% endif %}
+
+<p><a class="back" href="/">Main Menu</a></p>
 {% endblock %}

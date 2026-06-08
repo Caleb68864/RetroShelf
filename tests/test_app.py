@@ -274,6 +274,61 @@ def test_portal_multi_feed_menu_and_browse():
         assert "SECRETKEY" not in sec.text and "/api/opds/" not in sec.text
 
 
+def test_fan_out_search_across_all_feeds():
+    cfg = load_config({
+        "KAVITA_OPDS_URL": "http://kavita:5000/api/opds/SECRETKEY",
+        "OPDS_FEEDS": "Public Domain|http://pub.example:8080/opds",
+        "BRIDGE_ID_SECRET": "s",
+    })
+    pub_root = ROOT_XML.replace("RetroShelf Library", "Public Domain Books")
+
+    def handler(request):
+        host = request.url.host
+        p = request.url.path
+        if host == "kavita" and p == "/api/opds/SECRETKEY":
+            return httpx.Response(200, text=ROOT_XML)
+        if host == "pub.example" and p == "/opds":
+            return httpx.Response(200, text=pub_root)
+        if "/search" in p:  # both libraries' search endpoints return results
+            return httpx.Response(200, text=ACQ_XML)
+        return httpx.Response(404)
+
+    with _client_for_cfg(cfg, handler) as client:
+        r = client.get("/search?q=time&feed=*")
+        assert r.status_code == 200
+        assert "across all libraries" in r.text
+        # Grouped by library — both library headers appear.
+        assert "Library" in r.text and "Public Domain" in r.text
+        # A result from EACH library group (The Time Machine is in the fixture).
+        assert r.text.count("The Time Machine") >= 2
+        assert "SECRETKEY" not in r.text and "/api/opds/" not in r.text
+
+
+def test_fan_out_one_feed_down_still_shows_others():
+    cfg = load_config({
+        "KAVITA_OPDS_URL": "http://kavita:5000/api/opds/SECRETKEY",
+        "OPDS_FEEDS": "Broken|http://down.example/opds",
+        "BRIDGE_ID_SECRET": "s",
+    })
+
+    def handler(request):
+        host = request.url.host
+        p = request.url.path
+        if host == "kavita" and p == "/api/opds/SECRETKEY":
+            return httpx.Response(200, text=ROOT_XML)
+        if host == "down.example":
+            return httpx.Response(503, text="down")
+        if "/search" in p:
+            return httpx.Response(200, text=ACQ_XML)
+        return httpx.Response(404)
+
+    with _client_for_cfg(cfg, handler) as client:
+        r = client.get("/search?q=time&feed=*")
+        assert r.status_code == 200
+        assert "The Time Machine" in r.text          # working library still shown
+        assert "library unavailable" in r.text       # broken library flagged, not fatal
+
+
 def test_help_page():
     with make_client(make_handler()) as client:
         r = client.get("/help")
