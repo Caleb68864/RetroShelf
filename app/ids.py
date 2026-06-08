@@ -64,9 +64,15 @@ class IdCodec:
         mac = hmac.new(self._key, body, hashlib.sha256).digest()[:_MAC_LEN]
         return f"{_b64e(body)}.{_b64e(mac)}"
 
+    # A legitimate token encodes a URL of a few hundred chars; anything far
+    # larger is junk/abuse and is rejected before doing crypto work.
+    MAX_TOKEN_LEN = 8192
+
     def decode(self, token: str) -> str:
         if not token or "." not in token:
             raise BadIdError("Malformed id")
+        if len(token) > self.MAX_TOKEN_LEN:
+            raise BadIdError("Id too large")
         try:
             body_s, mac_s = token.split(".", 1)
             body = _b64d(body_s)

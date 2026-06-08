@@ -67,6 +67,23 @@ class FeedCache:
         self._data[key] = (time.monotonic(), feed)
 
 
+class _SecretMaskingFilter(logging.Filter):
+    """Safety net: mask the apiKey/access key in EVERY log record, including
+    those emitted by third-party libraries (e.g. httpx logging the full URL). [H7]"""
+
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self._cfg = cfg
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.msg = self._cfg.mask(record.getMessage())
+            record.args = ()
+        except Exception:  # never let logging crash the request
+            pass
+        return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg: Config = app.state.config
@@ -76,6 +93,9 @@ async def lifespan(app: FastAPI):
     app.state.ids = IdCodec(cfg.bridge_id_secret or cfg.bridge_access_key)
     app.state.cache = FeedCache(cfg.cache_feeds_seconds)
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
+    mask_filter = _SecretMaskingFilter(cfg)
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(mask_filter)
     log.info("RetroShelf started; proxying %s", cfg.mask(cfg.kavita_origin))
     try:
         yield
@@ -110,6 +130,15 @@ def create_app(config: Config | None = None) -> FastAPI:
         msg = cfg.mask(str(exc)) if cfg.debug else _friendly_message(exc)
         log.warning("%s on %s: %s", type(exc).__name__, request.url.path, cfg.mask(str(exc)))
         return _error_response(request, heading, msg, status)
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected(request: Request, exc: Exception):
+        # Fail LOUD in the logs (full type + masked detail + traceback) but never
+        # leak internals to the user. [H9]
+        log.exception("Unexpected %s on %s: %s", type(exc).__name__,
+                      request.url.path, cfg.mask(str(exc)))
+        return _error_response(request, "Something went wrong",
+                               "An unexpected error occurred. Check the server logs.", 500)
 
     _register_routes(app, cfg)
     return app
@@ -253,15 +282,21 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     async def search(request: Request, q: str = ""):
         q = (q or "").strip()
         entries = []
+        search_error = False
         if q:
             search_url = f"{cfg.kavita_opds_url}/search?query={quote(q)}"
             try:
                 body = await kc(request).fetch_feed(search_url)
                 parsed = opds.parse(body)
                 entries = _to_view_model(parsed, codec(request), kc(request))
-            except RetroShelfError:
-                entries = []
-        return templates.TemplateResponse(request, "search.html", {"query": q, "entries": entries})
+            except RetroShelfError as exc:
+                # Search endpoint missing/unreachable — tell the user it's
+                # unavailable rather than silently showing "no results". [H6]
+                search_error = True
+                log.info("search failed for %r: %s", q, cfg.mask(str(exc)))
+        return templates.TemplateResponse(
+            request, "search.html", {"query": q, "entries": entries, "search_error": search_error}
+        )
 
     @app.get("/help", response_class=HTMLResponse)
     async def help_page(request: Request):
@@ -303,12 +338,18 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     @app.api_route("/cover/{cid}", methods=["GET", "HEAD"])
     async def cover(request: Request, cid: str):
-        url = kc(request).resolve_url(codec(request).decode(cid))
-        if request.method == "HEAD":
-            return Response(status_code=200, media_type="image/jpeg",
-                            headers={"Cache-Control": "private, max-age=86400"})
-        range_header = request.headers.get("range")
-        return await stream_cover(kc(request), url, range_header=range_header)
+        # A cover failure must NOT render a full HTML error page into an <img>;
+        # return a tiny empty 404 so the browser just shows a broken image. [H5]
+        try:
+            url = kc(request).resolve_url(codec(request).decode(cid))
+            if request.method == "HEAD":
+                return Response(status_code=200, media_type="image/jpeg",
+                                headers={"Cache-Control": "private, max-age=86400"})
+            range_header = request.headers.get("range")
+            return await stream_cover(kc(request), url, range_header=range_header)
+        except RetroShelfError as exc:
+            log.info("cover unavailable on %s: %s", request.url.path, cfg.mask(str(exc)))
+            return Response(status_code=404, media_type="image/gif")
 
 
 def _basename(url: str) -> str:

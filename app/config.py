@@ -110,18 +110,27 @@ class Config:
     pdf_disposition: str = "inline"
     epub_disposition: str = "attachment"
     tz: str = "America/Chicago"
+    # Additional upstream origins the SSRF guard will allow, for generic
+    # (non-Kavita) OPDS servers that host downloads/covers on other hosts/CDNs.
+    extra_origins: tuple[str, ...] = ()
+
+    @property
+    def allowed_origins(self) -> tuple[str, ...]:
+        """All origins the bridge may fetch from (Kavita + any extras)."""
+        return (self.kavita_origin, *self.extra_origins)
 
     # -- secret masking ------------------------------------------------------
     def mask(self, text: str) -> str:
         """Redact the Kavita apiKey (and bridge access key) anywhere they
         appear in *text*. Applied to BOTH logs and any user-visible surface —
         masking on response bodies is unconditional, debug only loosens logs.
-        [C-4]"""
-        if text is None:
+        [C-4] Short (<8 char) values are NOT masked, so a generic OPDS path
+        segment like ``opds`` doesn't mangle every URL."""
+        if not text:
             return text
         out = text
         for secret in (self.api_key, self.bridge_access_key):
-            if secret:
+            if secret and len(secret) >= 8:
                 out = out.replace(secret, REDACTED)
         return out
 
@@ -171,7 +180,14 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         s.strip() for s in (e.get("ALLOWED_IPS") or "").split(",") if s.strip()
     )
 
+    extra_origins = tuple(
+        _normalize_origin(s.strip())
+        for s in (e.get("EXTRA_UPSTREAM_ORIGINS") or "").split(",")
+        if s.strip()
+    )
+
     return Config(
+        extra_origins=extra_origins,
         kavita_base_url=base_url,
         kavita_opds_url=opds_url,
         kavita_origin=kavita_origin,

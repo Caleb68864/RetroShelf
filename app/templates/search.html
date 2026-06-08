@@ -9,7 +9,9 @@
 </form>
 
 {% if query %}
-  {% if entries %}
+  {% if search_error %}
+    <p class="muted">Search is unavailable right now. Try browsing the library instead.</p>
+  {% elif entries %}
     <ul class="list">
     {% for e in entries %}
       <li class="item">

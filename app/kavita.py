@@ -23,9 +23,12 @@ from .errors import KavitaError, SsrfError
 def build_client(timeout_connect: float = 10.0) -> httpx.AsyncClient:
     """Create the shared AsyncClient. ``read=None`` disables the per-chunk read
     timeout so slow/large streams from Kavita are not aborted; connect/pool keep
-    a sane bound. ``follow_redirects`` stays False to avoid redirect-based SSRF."""
+    a sane bound. ``follow_redirects`` stays False to avoid redirect-based SSRF.
+    Connection limits cap concurrent upstream sockets so a burst of iPad requests
+    cannot exhaust the host; waiters past the pool timeout fail with a clear error."""
     timeout = httpx.Timeout(connect=timeout_connect, read=None, write=None, pool=timeout_connect)
-    return httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=False, limits=limits)
 
 
 class KavitaClient:
@@ -60,9 +63,11 @@ class KavitaClient:
 
         parts = urlsplit(raw)
         if parts.scheme or parts.netloc:
-            # Absolute URL: must match Kavita origin exactly (normalized ports).
+            # Absolute URL: must match one of the allowed origins (Kavita plus any
+            # configured extras), with default ports normalized.
             try:
-                if origin_tuple(raw) != origin_tuple(self._cfg.kavita_origin):
+                allowed = {origin_tuple(o) for o in self._cfg.allowed_origins}
+                if origin_tuple(raw) not in allowed:
                     raise SsrfError(self._cfg.mask(f"Refusing foreign-origin href: {raw!r}"))
             except ValueError as exc:
                 raise SsrfError(self._cfg.mask(f"Unparseable href: {raw!r}")) from exc

@@ -181,6 +181,20 @@ def test_access_key_enforced_when_configured():
         assert client.get("/health").status_code == 200
 
 
+def test_search_unavailable_shows_message_not_silent_empty():
+    # Handler 404s the search endpoint (e.g. Kavita search disabled).
+    def handler(request):
+        if "/search" in request.url.path:
+            return httpx.Response(404, text="no search")
+        if request.url.path == "/api/opds/SECRETKEY":
+            return httpx.Response(200, text=ROOT_XML)
+        return httpx.Response(200, text=ACQ_XML)
+    with make_client(handler) as client:
+        r = client.get("/search?q=anything")
+        assert r.status_code == 200
+        assert "unavailable" in r.text.lower()
+
+
 def test_help_page():
     with make_client(make_handler()) as client:
         r = client.get("/help")
