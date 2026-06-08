@@ -113,6 +113,8 @@ class Config:
     # Additional upstream origins the SSRF guard will allow, for generic
     # (non-Kavita) OPDS servers that host downloads/covers on other hosts/CDNs.
     extra_origins: tuple[str, ...] = ()
+    # Override the upstream User-Agent (None → a browser-like default).
+    upstream_user_agent: str | None = None
 
     @property
     def allowed_origins(self) -> tuple[str, ...]:
@@ -188,6 +190,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
     return Config(
         extra_origins=extra_origins,
+        upstream_user_agent=(e.get("UPSTREAM_USER_AGENT") or "").strip() or None,
         kavita_base_url=base_url,
         kavita_opds_url=opds_url,
         kavita_origin=kavita_origin,

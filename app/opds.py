@@ -23,6 +23,9 @@ ATOM = "{http://www.w3.org/2005/Atom}"
 ACQUISITION_REL_PREFIX = "http://opds-spec.org/acquisition"
 IMAGE_REL = "http://opds-spec.org/image"
 THUMB_REL = "http://opds-spec.org/image/thumbnail"
+# Some catalogs (e.g. ManyBooks) use the shorter cover/thumbnail rels.
+COVER_RELS = ("http://opds-spec.org/image", "http://opds-spec.org/cover")
+THUMB_RELS = ("http://opds-spec.org/image/thumbnail", "http://opds-spec.org/thumbnail")
 
 
 class OpdsParseError(Exception):
@@ -158,9 +161,10 @@ def _parse_entry(entry_el) -> Entry:
             continue
         if rel.startswith(ACQUISITION_REL_PREFIX):
             entry.acquisitions.append(Acquisition(media_type=mtype, href=href, rel=rel))
-        elif rel == THUMB_REL or (rel == IMAGE_REL and entry.thumbnail_url is None and "thumb" in rel):
+        elif rel in THUMB_RELS:
             entry.thumbnail_url = href
-        elif rel == IMAGE_REL or rel.endswith("/cover") or rel == "http://opds-spec.org/cover":
+            entry.cover_url = entry.cover_url or href
+        elif rel in COVER_RELS or rel.endswith("/cover"):
             entry.cover_url = href
         elif "image" in rel and mtype.startswith("image/"):
             # Generic image link fallback.

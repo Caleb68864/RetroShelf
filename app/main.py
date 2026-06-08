@@ -87,7 +87,7 @@ class _SecretMaskingFilter(logging.Filter):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg: Config = app.state.config
-    client = build_client()
+    client = build_client(user_agent=cfg.upstream_user_agent)
     app.state.http = client
     app.state.kavita = KavitaClient(cfg, client)
     app.state.ids = IdCodec(cfg.bridge_id_secret or cfg.bridge_access_key)
@@ -189,7 +189,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                     url = kavita.resolve_url(e.nav_href)
                 except SsrfError:
                     continue
-                entries.append({"is_nav": True, "title": e.title or "Untitled",
+                entries.append({"is_nav": True, "title": (e.title or "").strip() or "Untitled",
                                 "href": f"/feed/{ids.encode(url)}"})
                 continue
             acq = e.primary_acquisition
@@ -213,7 +213,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             }, separators=(",", ":"))
             entries.append({
                 "is_nav": False,
-                "title": e.title or "Untitled",
+                "title": (e.title or "").strip() or "Untitled",
                 "author": e.author,
                 "badge": badge,
                 "detail_url": f"/book/{ids.encode(record)}",

@@ -20,15 +20,26 @@ from .config import Config, origin_tuple
 from .errors import KavitaError, SsrfError
 
 
-def build_client(timeout_connect: float = 10.0) -> httpx.AsyncClient:
+# A modern desktop-Safari User-Agent. Some public OPDS servers (e.g. ones behind
+# Cloudflare) reject requests without a browser-like UA; Kavita doesn't care.
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/16.0 Safari/605.1.15"
+)
+
+
+def build_client(timeout_connect: float = 10.0, user_agent: str | None = None) -> httpx.AsyncClient:
     """Create the shared AsyncClient. ``read=None`` disables the per-chunk read
     timeout so slow/large streams from Kavita are not aborted; connect/pool keep
     a sane bound. ``follow_redirects`` stays False to avoid redirect-based SSRF.
     Connection limits cap concurrent upstream sockets so a burst of iPad requests
-    cannot exhaust the host; waiters past the pool timeout fail with a clear error."""
+    cannot exhaust the host; waiters past the pool timeout fail with a clear error.
+    A browser-like ``User-Agent`` is sent so public/Cloudflare-fronted OPDS
+    servers don't reject the bridge."""
     timeout = httpx.Timeout(connect=timeout_connect, read=None, write=None, pool=timeout_connect)
     limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
-    return httpx.AsyncClient(timeout=timeout, follow_redirects=False, limits=limits)
+    headers = {"User-Agent": user_agent or DEFAULT_USER_AGENT}
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=False, limits=limits, headers=headers)
 
 
 class KavitaClient:
