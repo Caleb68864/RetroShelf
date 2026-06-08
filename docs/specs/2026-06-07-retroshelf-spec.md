@@ -34,7 +34,7 @@ Grounded in adversarially-verified research in `vault/` (see `vault/Build Constr
 
 ## Infrastructure
 - Python 3.12 in container (`python:3.12-slim`); local dev venv is Python 3.14 at `.venv/`.
-- Deps: fastapi, uvicorn[standard], httpx, jinja2, defusedxml, python-multipart; pytest, pytest-asyncio (dev).
+- Deps: fastapi, uvicorn[standard], httpx, jinja2, defusedxml; pytest, pytest-asyncio (dev). (NO python-multipart — GET-forms only, per [M-3].)
 - **No Docker daemon in the dev environment** — verify natively (venv import + pytest + uvicorn smoke); Dockerfile/compose validated statically (parse + content checks).
 - Tests live in `tests/`; run with `.venv/bin/python -m pytest -q`.
 - Storage volumes: `/config`, `/cache`; host root `/srv/docker_data/kavita-ibooks-bridge`. Listen `0.0.0.0:8099`.
@@ -46,10 +46,32 @@ Grounded in adversarially-verified research in `vault/` (see `vault/Build Constr
 4. Stream PDF with `Content-Type: application/pdf`, `Content-Disposition: inline; filename="<safe>.pdf"` (configurable).
 5. Always set `Content-Disposition` with a sanitized ASCII filename + correct extension; `X-Content-Type-Options: nosniff`; relay `Content-Length`/`Accept-Ranges`/Range/206 when upstream provides.
 6. apiKey held server-side, never rendered in HTML; downloads proxied through the bridge; opaque internal ids.
-7. Config via env: `KAVITA_BASE_URL`, `KAVITA_OPDS_URL` (required), plus `APP_PORT`, `BRIDGE_PUBLIC_URL`, `BRIDGE_ACCESS_KEY`, `ALLOWED_IPS`, `CACHE_FEEDS_SECONDS`, `CACHE_BOOKS`, `LOG_LEVEL`, `PDF_DISPOSITION`, `EPUB_DISPOSITION`, `TZ`, `PUID`, `PGID`.
+7. Config via env: `KAVITA_BASE_URL`, `KAVITA_OPDS_URL` (required), plus `APP_PORT`, `BRIDGE_PUBLIC_URL`, `BRIDGE_ACCESS_KEY`, `BRIDGE_ID_SECRET` (stable HMAC seed, per [M-2]), `ALLOWED_IPS`, `SHOW_COVERS` (default true), `CACHE_FEEDS_SECONDS`, `CACHE_BOOKS`, `LOG_LEVEL`, `PDF_DISPOSITION`, `EPUB_DISPOSITION`, `TZ`, `PUID`, `PGID`.
 8. Optional access key (`/?key=` / header) and optional IP allowlist; both off by default. No cookies, no JS login, no Basic Auth.
 9. SSRF guard: only fetch URLs whose origin == configured Kavita origin. Path-traversal-safe filenames.
 10. Docker image (`python:3.12-slim`, non-root, HEALTHCHECK→/health) + Portainer-compatible `docker-compose.yml` + README.
+
+## Red-Team Amendments (AUTHORITATIVE — overrides sub-spec text on any conflict)
+Verified against the live `.venv` (Python 3.14; fastapi 0.136.3, **starlette 1.2.1**, httpx 0.28.1, pydantic 2.13.4, defusedxml 0.7.1). Apply ALL of these.
+
+- **[C-1 / SS-07] `/health` must be plain text.** FastAPI returning `"ok"` yields JSON `"ok"` with `application/json`. Use `from starlette.responses import PlainTextResponse` → `PlainTextResponse("ok")`. Test asserts `r.text == "ok"` AND `r.headers["content-type"].startswith("text/plain")`. The Dockerfile HEALTHCHECK must match.
+- **[C-2 / SS-03] SSRF origin check, pinned.** Resolve with `kavita_origin.join(href)` then accept ONLY if `(scheme, host, port-with-default-80/443)` equals the Kavita origin after normalizing implicit ports (`httpx.URL.port` is `None` for default ports). Explicitly REJECT: protocol-relative hrefs (`//host`), absolute-scheme hrefs (`http://…`, `https://…` to a different origin), backslash forms, and anything that isn't a single leading-`/` absolute path. Negative ACs required: `resolve_url("//evil.com/x")`, `resolve_url("https://evil.com/x")`, `resolve_url("\\\\evil.com")` each raise `SsrfError`.
+- **[C-3 / SS-05+SS-07] Re-validate decoded ids.** Signing proves "we issued it," not "it is safe." EVERY `decode_id()` result MUST be re-passed through `kavita.resolve_url()` (origin check) BEFORE any fetch/stream.
+- **[C-4 / SS-03+SS-07] apiKey masking is unconditional on user-visible surfaces.** The apiKey is embedded in every OPDS path segment (`/api/opds/{apiKey}/…`). Error pages, `KavitaError.__str__`, and any HTTP response body MUST mask the apiKey path segment even when `LOG_LEVEL=debug` (debug only relaxes *log* verbosity, never response bodies).
+- **[C-5 / SS-07] Add an `[INTEGRATION]` AC:** mocked acquisition feed → parse → encode every nav/acquisition/cover href to a bridge id → render → the rendered `/download/{id}…` link decodes back to the original Kavita URL and streams mocked bytes with correct headers.
+- **[C-6 / SS-05+SS-06+SS-07] Cover-image proxy route is REQUIRED.** Covers live at a different path with the key as a QUERY param: `{kavita_origin}/api/image/...-cover?...&apiKey={apiKey}`. Add `GET /cover/{id}` that decodes a bridge id → that URL → streams via the SSRF-guarded client with `Content-Type` from upstream. Templates use the bridge `/cover/{id}` id, NEVER the upstream URL. AC: the apiKey appears in NO `<img src>` (grep-asserted). Covers are config-toggle-able and degrade gracefully if absent.
+- **[C-7 / SS-01] `pytest.ini` must neutralize the Starlette TestClient deprecation.** Starlette 1.2.1 raises `StarletteDeprecationWarning` on `TestClient` import. `pytest.ini` sets `filterwarnings` to NOT error on it (e.g. `ignore::DeprecationWarning` scoped, or no `error` default). Starlette 1.x is intentional.
+- **[H-1 / SS-05+SS-06] Extension-bearing download URL is REQUIRED (not optional)** for the primary link: route shape `GET /download/{id}/{filename}` where `{filename}` ends in `.epub`/`.pdf` (old Safari names the saved file from the URL path). Keep `/download/{id}` and `/open/{id}` as aliases; CD `filename` stays as the secondary signal.
+- **[H-2 / SS-07] Name the rewrite seam:** `app/main.py::_to_view_model(feed)` calls `ids.encode_id` on every navigation, acquisition, AND cover href, producing template-ready bridge ids. AC asserts it is invoked for all three link kinds.
+- **[H-3 / SS-02] Pin an explicit `Acquisition` type** (`@dataclass Acquisition(media_type: str, href: str, rel: str)`). `Entry.acquisitions: list[Acquisition]`. SS-04/SS-06 reference this exact type.
+- **[H-4 / SS-05] Stream-cleanup AC:** simulate a client disconnect / mid-stream break; assert the upstream response `aclose` runs (spy/mock) so the pooled `AsyncClient` doesn't leak connections.
+- **[H-5 / SS-07] Feed cache contract:** cache key = the bridge `id` (NOT the apiKey-bearing URL); bounded (simple TTL dict with a max-entries cap); cached bodies are never logged.
+- **[H-6 / SS-04+SS-09] `ALLOWED_IPS` is direct-LAN only** (uses `request.client.host`; not proxy/XFF-aware). Document this clearly in README + a code comment; do not pretend it works behind a reverse proxy.
+- **[M-2 / SS-04] id secret stability:** seed the HMAC key from a stable `BRIDGE_ID_SECRET` env (fallback to a per-process random with a logged warning) so bookmarked `/download/{id}` links survive container restarts.
+- **[M-3 / SS-01] Drop `python-multipart`** — GET-forms-only, no uploads; remove from requirements.
+- **[M-4 / SS-08] `will-create: tests/validate_docker.py`** explicitly (a runnable script, not a `test_`-prefixed pytest module).
+- **[M-7 / SS-07] `/health` and `/static/*` bypass the access-key + IP-allowlist middleware** (else the container HEALTHCHECK gets 403 when a key is configured).
+- **[L-2 / SS-05] Use `Cache-Control: no-store` on the streamed download/cover responses** (avoid old Safari serving a stale partial after a broken stream).
 
 ## Sub-Specs
 <!-- All implementation sub-specs are pipeline phase `run`; dependency DAG via depends_on. -->
@@ -65,7 +87,7 @@ dispatch: factory
 - **Files likely touched:** `will-create: app/__init__.py`, `will-create: app/config.py`, `will-create: requirements.txt`, `will-create: requirements-dev.txt`, `will-create: pytest.ini`, `will-create: tests/__init__.py`, `will-create: tests/test_config.py`
 - **Acceptance criteria:**
 1. `[MECHANICAL]` `.venv/bin/python -m pytest tests/test_config.py -q` passes.
-2. `[STRUCTURAL]` `requirements.txt` lists fastapi, uvicorn[standard], httpx, jinja2, defusedxml, python-multipart; `requirements-dev.txt` adds pytest, pytest-asyncio.
+2. `[STRUCTURAL]` `requirements.txt` lists fastapi, uvicorn[standard], httpx, jinja2, defusedxml (NO python-multipart); `requirements-dev.txt` adds pytest, pytest-asyncio. `pytest.ini` sets `filterwarnings` so the Starlette 1.x `TestClient` DeprecationWarning does NOT error the suite (per [C-7]).
 3. `[BEHAVIORAL]` `app/config.py` `load_config()` reads env, requires `KAVITA_OPDS_URL`/`KAVITA_BASE_URL`, derives Kavita origin (scheme+host+port), exposes `PDF_DISPOSITION`(default inline)/`EPUB_DISPOSITION`(default attachment), `CACHE_FEEDS_SECONDS`(300), `CACHE_BOOKS`(false), access key + allowlist (optional), and a `mask_secret()` helper that never returns the full apiKey unless `LOG_LEVEL=debug`.
 4. `[STRUCTURAL]` Missing required env raises a typed `ConfigError` with a clear message (no traceback leak).
 - **Depends on:** none
@@ -153,7 +175,7 @@ depends_on: [SS-03, SS-04]
 dispatch: factory
 ---
 ### 5. Download proxy endpoint + iOS headers
-- **Scope:** `app/download.py` — build the `StreamingResponse` for `/download/{id}` (+ `/open/{id}`, optional `/download/{id}/epub|pdf`). Decode id→Kavita acquisition URL, stream via SS-03, set headers per format: EPUB → `application/epub+zip` + `attachment`; PDF → `application/pdf` + disposition from config (default inline). Always `Content-Disposition` with sanitized `filename` + correct extension; `X-Content-Type-Options: nosniff`; relay `Content-Length`/`Accept-Ranges`/`Content-Range` + 206 when upstream supplies; `Cache-Control: private, max-age=3600`. Close upstream via `BackgroundTask`.
+- **Scope:** `app/download.py` — build the `StreamingResponse` for the REQUIRED extension-bearing primary route `/download/{id}/{filename}` (filename ends `.epub`/`.pdf`, per [H-1]) plus aliases `/download/{id}` and `/open/{id}`, AND the REQUIRED cover proxy `GET /cover/{id}` (per [C-6]). Decode id → Kavita URL, RE-VALIDATE via `kavita.resolve_url()` before fetch (per [C-3]), stream via SS-03, set headers per format: EPUB → `application/epub+zip` + `attachment`; PDF → `application/pdf` + disposition from config (default inline); cover → upstream `Content-Type`. Always `Content-Disposition` with sanitized `filename` + correct extension; `X-Content-Type-Options: nosniff`; relay `Content-Length`/`Accept-Ranges`/`Content-Range` + 206 when upstream supplies; `Cache-Control: no-store` (per [L-2]). Close upstream via `BackgroundTask` (cleanup verified on disconnect, per [H-4]).
 - **Files likely touched:** `will-create: app/download.py`, `will-create: tests/test_download_headers.py`
 - **Acceptance criteria:**
 1. `[MECHANICAL]` `.venv/bin/python -m pytest tests/test_download_headers.py -q` passes.
@@ -181,7 +203,7 @@ dispatch: factory
 - **Acceptance criteria:**
 1. `[MECHANICAL]` `.venv/bin/python -m pytest tests/test_render.py -q` passes.
 2. `[STRUCTURAL]` No template or CSS contains `<script`, `display:grid`, `grid-template`, `fetch(`, `XMLHttpRequest`, or any `http(s)://` external asset/CDN/font reference (grep-asserted in the test).
-3. `[BEHAVIORAL]` `feed.html` renders navigation entries as `<a href>` links and book entries with format badges + a download/open `<a href>`; `book.html` renders the primary action `<a>` to `/download/{id}` (or `/open/{id}`). Download links use bridge ids, never the apiKey.
+3. `[BEHAVIORAL]` `feed.html` renders navigation entries as `<a href>` links and book entries with format badges + a download/open `<a href>` to `/download/{id}/{safe-filename}.epub|pdf`; covers (when `SHOW_COVERS`) use `<img src="/cover/{id}">` (bridge id, never the apiKey). `book.html` renders the primary action `<a>` to the extension-bearing download URL. All links/img use bridge ids; the apiKey appears in no `href`/`src` (grep-asserted).
 4. `[STRUCTURAL]` `base.html` includes `<meta name="viewport" content="width=device-width, initial-scale=1">` and the single `/static/app.css` link.
 - **Depends on:** SS-02, SS-04
 - **Constraints:** No JS, no external assets. Render the apiKey nowhere.
@@ -199,11 +221,11 @@ depends_on: [SS-05, SS-06]
 dispatch: factory
 ---
 ### 7. FastAPI app wiring & routes
-- **Scope:** `app/main.py` — FastAPI app with lifespan (create/close AsyncClient), optional access-key + IP-allowlist middleware, feed cache (TTL `CACHE_FEEDS_SECONDS`), and routes: `GET /` (home + Kavita status + search form + help link), `GET /feed/{id}`, `GET /book/{id}`, `GET /search?q=`, `GET /download/{id}` + `/open/{id}` (+ optional `/epub`,`/pdf`), `GET /help`, `GET /health` (plain `ok`), `GET /static/app.css`. Friendly `error.html` for KavitaError/OpdsParseError/BadIdError/SsrfError; 404 for unknown ids. Wire opds→render with bridge-id rewriting of all upstream hrefs.
+- **Scope:** `app/main.py` — FastAPI app with lifespan (create/close AsyncClient), optional access-key + IP-allowlist middleware, feed cache (TTL `CACHE_FEEDS_SECONDS`), and routes: `GET /` (home + Kavita status + search form + help link), `GET /feed/{id}`, `GET /book/{id}`, `GET /search?q=`, `GET /download/{id}/{filename}` (primary, extension-bearing) + `/download/{id}` + `/open/{id}` aliases, `GET /cover/{id}` (cover proxy), `GET /help`, `GET /health` (PlainTextResponse `ok`, middleware-exempt), `GET /static/app.css`. The `_to_view_model(feed)` seam encodes every nav/acquisition/cover href via `ids.encode_id` (per [H-2]). Friendly `error.html` for KavitaError/OpdsParseError/BadIdError/SsrfError; 404 for unknown ids. Wire opds→render with bridge-id rewriting of all upstream hrefs.
 - **Files likely touched:** `will-create: app/main.py`, `will-create: app/errors.py`, `will-create: tests/test_app.py`
 - **Acceptance criteria:**
 1. `[MECHANICAL]` `.venv/bin/python -m pytest tests/test_app.py -q` passes (FastAPI `TestClient`, Kavita mocked).
-2. `[BEHAVIORAL]` `GET /health` → 200 text `ok`. `GET /` renders home with a link to the root feed and a GET search form. Unknown id → 404 error page. Kavita-down → friendly error page (not 500 traceback).
+2. `[BEHAVIORAL]` `GET /health` → 200 via `PlainTextResponse("ok")` (assert `r.text=="ok"` and content-type `text/plain`, per [C-1]); `/health` + `/static/*` bypass access-key/allowlist middleware (per [M-7]). `GET /` renders home with a link to the root feed and a GET search form. Unknown id → 404 error page. Kavita-down → friendly error page (not 500 traceback).
 3. `[BEHAVIORAL]` `GET /feed/{id}` fetches+parses+renders a mocked OPDS feed; all rendered book/feed links are bridge ids; apiKey appears nowhere in any response body (grep-asserted).
 4. `[STRUCTURAL]` AsyncClient created in lifespan; feed cache honored; access-key/allowlist middleware present and no-op when unconfigured.
 - **Depends on:** SS-05, SS-06
