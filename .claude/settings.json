@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"/home/caleb/Work-Logic/logic-tool-plugins/logic-dev-kit/hooks/graph_first_pretooluse.py\""
+          }
+        ]
+      }
+    ]
+  }
+}
