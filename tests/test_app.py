@@ -181,6 +181,31 @@ def test_access_key_enforced_when_configured():
         assert client.get("/health").status_code == 200
 
 
+def test_search_uses_opensearch_template_q_param():
+    # Root advertises ?q={searchTerms}; the search endpoint only answers ?q=.
+    root_q = ROOT_XML.replace(
+        'href="/api/opds/KEY/search?query={searchTerms}"',
+        'href="/api/opds/KEY/search?q={searchTerms}"',
+    )
+
+    def handler(request):
+        p = request.url.path
+        q = str(request.url.query or "")
+        if p == "/api/opds/SECRETKEY":
+            return httpx.Response(200, text=root_q)
+        if "/search" in p:
+            # Only the correct ?q= form returns results.
+            return httpx.Response(200, text=ACQ_XML) if "q=verne" in q else httpx.Response(404)
+        return httpx.Response(200, text=ACQ_XML)
+
+    with make_client(handler) as client:
+        r = client.get("/search?q=verne")
+        assert r.status_code == 200
+        # Results rendered means the ?q= template was used (not Kavita's ?query=).
+        assert "The Time Machine" in r.text
+        assert "unavailable" not in r.text.lower()
+
+
 def test_search_unavailable_shows_message_not_silent_empty():
     # Handler 404s the search endpoint (e.g. Kavita search disabled).
     def handler(request):

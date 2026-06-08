@@ -457,6 +457,35 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         cache.put(cache_key, feed)
         return feed
 
+    async def _resolve_search_url(request: Request, q: str) -> str:
+        """Build the upstream OPDS search URL for query *q*.
+
+        Prefers the catalogue's advertised OpenSearch template (the root feed's
+        ``rel="search"`` link containing a ``{searchTerms}`` placeholder, e.g.
+        ManyBooks' ``/opds/search?q={searchTerms}``). Falls back to Kavita's
+        ``/search?query=`` endpoint when no usable template is advertised.
+
+        :param request: The incoming request (for the shared Kavita client).
+        :param q: The user's search text (will be percent-encoded).
+        :returns: An absolute or root-relative upstream search URL.
+        :rtype: str
+        """
+        encoded = quote(q)
+        template = None
+        try:
+            root = opds.parse(await kc(request).fetch_feed(cfg.kavita_opds_url))
+            template = root.search_url
+        except RetroShelfError:
+            template = None
+        if template and "{searchTerms}" in template:
+            url = template.replace("{searchTerms}", encoded)
+            # Drop any remaining OpenSearch optional tokens (e.g. {startIndex?}).
+            while "{" in url and "}" in url:
+                start = url.index("{")
+                url = url[:start] + url[url.index("}", start) + 1:]
+            return url.rstrip("?&")
+        return f"{cfg.kavita_opds_url}/search?query={encoded}"
+
     # -- pages ---------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
     async def home(request: Request):
@@ -568,8 +597,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         entries = []
         search_error = False
         if q:
-            search_url = f"{cfg.kavita_opds_url}/search?query={quote(q)}"
             try:
+                search_url = await _resolve_search_url(request, q)
                 body = await kc(request).fetch_feed(search_url)
                 parsed = opds.parse(body)
                 entries = _to_view_model(parsed, codec(request), kc(request))

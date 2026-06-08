@@ -59,6 +59,24 @@ def test_primary_acquisition_prefers_epub_over_pdf():
     assert e.primary_acquisition.is_epub
 
 
+def test_parse_xhtml_typed_title():
+    # ManyBooks wraps titles in typed XHTML; the real text is in a nested <div>.
+    xml = (
+        '<?xml version="1.0"?>'
+        '<feed xmlns="http://www.w3.org/2005/Atom">'
+        '<title type="text/xhtml"><div xmlns="http://www.w3.org/1999/xhtml">My Catalogue</div></title>'
+        '<entry>'
+        '<title type="text/xhtml"><div xmlns="http://www.w3.org/1999/xhtml">The Real Title</div></title>'
+        '<author><name>A. Writer</name></author>'
+        '<link type="application/atom+xml" href="/sub"/>'
+        '</entry></feed>'
+    )
+    feed = parse(xml)
+    assert feed.title == "My Catalogue"
+    assert feed.entries[0].title == "The Real Title"
+    assert feed.entries[0].author == "A. Writer"
+
+
 def test_malformed_xml_raises_opdsparseerror():
     with pytest.raises(OpdsParseError):
         parse("<feed><entry></feed>")  # mismatched tags

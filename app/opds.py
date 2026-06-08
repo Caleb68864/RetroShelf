@@ -212,31 +212,47 @@ class Feed:
     self_url: str | None = None
 
 
-def _text(el, tag: str) -> str:
-    """Extract the stripped text of a direct Atom child element.
+def _all_text(el) -> str:
+    """Return all descendant text of *el*, whitespace-collapsed.
 
-    Looks for a child element named ``{http://www.w3.org/2005/Atom}<tag>``
-    directly under *el* and returns its text content with leading/trailing
-    whitespace removed.  Returns an empty string when the child is absent or
-    has no text.
+    Handles Atom ``type="xhtml"`` / ``type="html"`` elements where the
+    element's own ``.text`` is empty and the real content lives in child
+    nodes.  ManyBooks, for example, emits
+    ``<title type="text/xhtml"><div ...>Real Title</div></title>`` --
+    reading only ``title.text`` would yield whitespace ("Untitled").
+
+    :param el: An XML element, or ``None``.
+    :type el: xml.etree.ElementTree.Element or None
+    :returns: The collapsed text content, or ``""`` when *el* is ``None``.
+    :rtype: str
+    """
+    if el is None:
+        return ""
+    return " ".join("".join(el.itertext()).split())
+
+
+def _text(el, tag: str) -> str:
+    """Return the full collapsed text of the first ``{ATOM}{tag}`` child.
+
+    Uses :func:`_all_text` so typed-XHTML/HTML titles and summaries are read
+    correctly, not just the element's direct ``.text``.
 
     :param el: Parent XML element to search within.
     :type el: xml.etree.ElementTree.Element
     :param tag: Local name of the Atom child element (without namespace prefix),
         e.g. ``"title"``, ``"summary"``, ``"updated"``.
     :type tag: str
-    :returns: Stripped text content of the child element, or ``""`` if absent.
+    :returns: Collapsed text content of the child element, or ``""`` if absent.
     :rtype: str
     """
-    child = el.find(f"{ATOM}{tag}")
-    return (child.text or "").strip() if child is not None and child.text else ""
+    return _all_text(el.find(f"{ATOM}{tag}"))
 
 
 def _author(entry) -> str:
     """Extract the author name from an Atom ``entry`` element.
 
-    Navigates ``atom:author`` -> ``atom:name`` and returns the stripped text.
-    Returns an empty string when either element is absent or has no text.
+    Navigates ``atom:author`` -> ``atom:name`` and returns the collapsed text.
+    Returns an empty string when either element is absent.
 
     :param entry: An ``atom:entry`` XML element.
     :type entry: xml.etree.ElementTree.Element
@@ -245,9 +261,7 @@ def _author(entry) -> str:
     """
     author = entry.find(f"{ATOM}author")
     if author is not None:
-        name = author.find(f"{ATOM}name")
-        if name is not None and name.text:
-            return name.text.strip()
+        return _all_text(author.find(f"{ATOM}name"))
     return ""
 
 

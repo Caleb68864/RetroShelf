@@ -1,7 +1,9 @@
-/* RetroShelf stylesheet — old Mobile Safari (iOS 5.1.1–12) safe.
-   Single-column BLOCK layout only. No CSS Grid (unsupported < iOS 10.3).
-   No modern flexbox for layout (unreliable < iOS 9). System fonts only,
-   no web-font files, no external assets. Large tap targets for 1024x768 iPads. */
+/* RetroShelf stylesheet -- "Library of Alexandria" / Victorian reading room.
+   Old Mobile Safari (iOS 5.1.1-12) SAFE: no CSS Grid, no modern flexbox layout,
+   no CSS custom properties (var() is unsupported < iOS 9.3), no web-font files,
+   no external assets, no JavaScript. System book-serifs only (Hoefler Text,
+   Baskerville, Palatino). Texture comes from layered CSS gradients + shadows,
+   with -webkit- fallbacks for iOS 5-6. Large tap targets for 1024x768 iPads. */
 
 * { -webkit-box-sizing: border-box; box-sizing: border-box; }
 
@@ -13,152 +15,349 @@ html {
 body {
   margin: 0;
   padding: 0;
-  background: #f3f1ea;
-  color: #1c1c1c;
-  font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: #2c1d0f;
+  font-family: "Hoefler Text", "Baskerville", "Palatino Linotype", Palatino,
+               "Book Antiqua", Georgia, "Times New Roman", serif;
   font-size: 20px;
-  line-height: 1.4;
+  line-height: 1.5;
+  /* Dark walnut desk with a warm gas-lamp glow toward the centre. */
+  background-color: #20140b;
+  background-image: -webkit-radial-gradient(50% 22%, #4a331d 0%, #20140b 72%);
+  background-image: radial-gradient(circle at 50% 22%, #4a331d 0%, #20140b 72%);
+  background-attachment: fixed;
 }
 
+/* Outer wood field; the page sits on it like a manuscript on a desk. */
+.page {
+  padding: 22px 12px 40px;
+}
+
+/* The parchment leaf, set in a carved walnut frame with a gilt inner rule. */
 .wrap {
-  max-width: 760px;
+  max-width: 800px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 30px 30px 26px;
+  color: #2c1d0f;
+  border: 12px solid #3a2414;
+  -webkit-border-radius: 4px;
+  border-radius: 4px;
+  background-color: #f0e6cd;
+  background-image: -webkit-linear-gradient(top, #f6eed8, #e7d8b4);
+  background-image: linear-gradient(to bottom, #f6eed8, #e7d8b4);
+  -webkit-box-shadow: inset 0 0 0 2px #b08d3e, inset 0 0 26px rgba(120, 84, 30, 0.35),
+                      0 14px 34px rgba(0, 0, 0, 0.55);
+  box-shadow: inset 0 0 0 2px #b08d3e, inset 0 0 26px rgba(120, 84, 30, 0.35),
+              0 14px 34px rgba(0, 0, 0, 0.55);
 }
 
+/* ---- Nameplate / masthead ------------------------------------------------ */
 .topbar {
-  border-bottom: 2px solid #d8d2c2;
-  padding-bottom: 10px;
-  margin-bottom: 16px;
+  text-align: center;
+  padding-bottom: 14px;
+  border-bottom: 3px double #9c7a36;
+  margin-bottom: 6px;
+}
+/* Pixel-art book shelf in monospace -- techno-retro meets the old library.
+   Pure ASCII so it renders identically on iOS 5 Courier. */
+.ascii {
+  display: block;
+  margin: 0 auto 10px;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 13px;
+  line-height: 1.04;
+  letter-spacing: 0;
+  color: #9c7a36;
+  text-align: center;
+  white-space: pre;
+  overflow: hidden;
+  text-shadow: 0 1px 0 #fbf3dd;
 }
 .brand {
-  font-size: 26px;
+  display: block;
+  font-size: 40px;
   font-weight: bold;
-  color: #7a3b12;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #6e3b18;
   text-decoration: none;
+  text-shadow: 0 1px 0 #fbf3dd, 0 2px 1px rgba(110, 59, 24, 0.35);
+}
+.crest {
+  margin-top: 4px;
+  font-size: 15px;
+  letter-spacing: 2px;
+  font-variant: small-caps;
+  font-style: italic;
+  color: #8a6a2e;
 }
 .toplink {
-  float: right;
-  font-size: 18px;
-  color: #555;
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 15px;
+  font-variant: small-caps;
+  letter-spacing: 1px;
+  color: #6e3b18;
   text-decoration: none;
-  padding-top: 6px;
+  border-bottom: 1px dotted #9c7a36;
 }
 
-h1 { font-size: 28px; margin: 8px 0 12px; }
-h2 { font-size: 22px; margin: 22px 0 8px; }
+/* ---- Ornamental dividers ------------------------------------------------- */
+.ornament {
+  text-align: center;
+  margin: 14px 0 20px;
+  color: #a8842c;
+  font-size: 13px;
+  letter-spacing: 10px;
+  text-indent: 10px;
+}
+.ornament span { margin: 0; }
 
-.lead { color: #444; }
-.muted { color: #888; }
+/* ---- Headings ------------------------------------------------------------ */
+h1 {
+  font-size: 30px;
+  font-weight: bold;
+  color: #5c3210;
+  margin: 6px 0 10px;
+  letter-spacing: 1px;
+}
+h2 {
+  font-size: 22px;
+  color: #6e3b18;
+  font-variant: small-caps;
+  letter-spacing: 1px;
+  border-bottom: 1px solid #d8c79a;
+  padding-bottom: 3px;
+  margin: 26px 0 10px;
+}
 
-/* Status banner */
-.status { padding: 12px 14px; border-radius: 6px; margin: 12px 0; }
-.status.ok { background: #e3efe1; border: 1px solid #9ec79a; }
-.status.bad { background: #f7e3e0; border: 1px solid #d59b93; }
+.lead {
+  font-size: 21px;
+  font-style: italic;
+  color: #533a1e;
+}
+/* Illuminated drop-capital on the opening line. */
+.lead:first-letter {
+  font-size: 58px;
+  line-height: 44px;
+  float: left;
+  margin: 6px 8px 0 0;
+  color: #8a2b1f;
+  font-weight: bold;
+  text-shadow: 0 1px 0 #fbf3dd;
+}
+.muted { color: #8c7752; font-style: italic; }
 
-/* Buttons — big tap targets */
+/* ---- Connection status banner (wax-seal palette) ------------------------- */
+.status {
+  padding: 12px 16px;
+  margin: 16px 0;
+  font-variant: small-caps;
+  letter-spacing: 1px;
+  -webkit-border-radius: 3px;
+  border-radius: 3px;
+  border: 1px solid #b79b52;
+}
+.status.ok {
+  background-image: -webkit-linear-gradient(top, #e7ecd2, #d6dfb6);
+  background-image: linear-gradient(to bottom, #e7ecd2, #d6dfb6);
+  border-color: #8a9a52;
+  color: #3c4a1c;
+}
+.status.bad {
+  background-image: -webkit-linear-gradient(top, #f0ddd0, #e6c6b4);
+  background-image: linear-gradient(to bottom, #f0ddd0, #e6c6b4);
+  border-color: #a8623f;
+  color: #6e2a18;
+}
+
+/* ---- Brass-plate buttons ------------------------------------------------- */
 .button {
   display: block;
   text-align: center;
-  background: #7a3b12;
-  color: #fff;
   text-decoration: none;
-  padding: 16px 18px;
-  margin: 12px 0;
-  border-radius: 6px;
+  color: #3a2410;
+  font-variant: small-caps;
+  letter-spacing: 2px;
   font-size: 21px;
-  font-weight: bold;
+  padding: 16px 18px;
+  margin: 16px 0;
+  border: 1px solid #7a5a22;
+  -webkit-border-radius: 4px;
+  border-radius: 4px;
+  background-color: #cba45a;
+  background-image: -webkit-linear-gradient(top, #e9cf86, #b88c34);
+  background-image: linear-gradient(to bottom, #e9cf86, #b88c34);
+  text-shadow: 0 1px 0 #f7e7bb;
+  -webkit-box-shadow: inset 0 1px 0 #f7e7bb, 0 2px 4px rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 1px 0 #f7e7bb, 0 2px 4px rgba(0, 0, 0, 0.3);
 }
-.button.small { display: inline-block; padding: 10px 14px; font-size: 17px; }
-.button.big { font-size: 24px; padding: 20px; }
+.button:active {
+  background-image: -webkit-linear-gradient(top, #b88c34, #e9cf86);
+  background-image: linear-gradient(to bottom, #b88c34, #e9cf86);
+}
+.button.small { display: inline-block; padding: 9px 16px; font-size: 16px; margin: 6px 4px; }
+.button.big { font-size: 25px; padding: 20px; }
 
-/* Search form */
-.search { margin: 14px 0; }
+/* ---- Card-catalogue search ----------------------------------------------- */
+.search { margin: 18px 0; text-align: center; }
 .search input[type=text] {
-  width: 70%;
-  padding: 12px;
+  width: 66%;
+  padding: 12px 14px;
   font-size: 19px;
-  border: 1px solid #bbb;
-  border-radius: 5px;
+  font-family: inherit;
+  color: #3a2410;
   vertical-align: middle;
+  border: 1px solid #9c7a36;
+  -webkit-border-radius: 3px;
+  border-radius: 3px;
+  background-color: #fbf4e0;
+  -webkit-box-shadow: inset 0 2px 5px rgba(120, 84, 30, 0.35);
+  box-shadow: inset 0 2px 5px rgba(120, 84, 30, 0.35);
 }
 .search input[type=submit] {
-  padding: 12px 16px;
-  font-size: 19px;
-  background: #7a3b12;
-  color: #fff;
-  border: none;
-  border-radius: 5px;
+  padding: 12px 18px;
+  font-size: 17px;
+  font-family: inherit;
+  font-variant: small-caps;
+  letter-spacing: 1px;
   vertical-align: middle;
+  color: #3a2410;
+  border: 1px solid #7a5a22;
+  -webkit-border-radius: 3px;
+  border-radius: 3px;
+  background-image: -webkit-linear-gradient(top, #e9cf86, #b88c34);
+  background-image: linear-gradient(to bottom, #e9cf86, #b88c34);
+  -webkit-box-shadow: inset 0 1px 0 #f7e7bb;
+  box-shadow: inset 0 1px 0 #f7e7bb;
 }
 
-/* Listings */
-.list { list-style: none; margin: 10px 0; padding: 0; }
+/* ---- Listings ------------------------------------------------------------ */
+.list { list-style: none; margin: 14px 0; padding: 0; }
 .item {
-  border-bottom: 1px solid #ddd6c6;
-  padding: 6px 0;
+  margin: 0;
+  border-bottom: 1px solid #d8c79a;
 }
+
+/* Category links rendered like a card-catalogue / table of contents row. */
 .navlink {
   display: block;
-  padding: 16px 6px;
+  padding: 16px 8px 16px 26px;
   font-size: 21px;
-  color: #7a3b12;
+  font-variant: small-caps;
+  letter-spacing: 1px;
+  color: #5c3210;
   text-decoration: none;
-  font-weight: bold;
+  position: relative;
 }
+.navlink:active { background-color: #ece0c0; }
+
+/* Each book is a leather-bound spine with a gilt-stamped title. */
 .book {
   display: block;
-  padding: 12px 6px;
+  padding: 14px 12px 14px 22px;
   text-decoration: none;
-  color: #1c1c1c;
-  min-height: 64px;
+  color: #2c1d0f;
+  min-height: 60px;
+  border-left: 12px solid #6b2230;
+  -webkit-box-shadow: inset 14px 0 0 -11px #d8b25a;
+  box-shadow: inset 14px 0 0 -11px #d8b25a;
 }
+.book:active { background-color: #ece0c0; }
+/* Varied cloth/leather bindings down the shelf. */
+.item:nth-child(5n+1) .book { border-left-color: #6b2230; }   /* oxblood   */
+.item:nth-child(5n+2) .book { border-left-color: #2f4a36; }   /* forest    */
+.item:nth-child(5n+3) .book { border-left-color: #283a52; }   /* navy      */
+.item:nth-child(5n+4) .book { border-left-color: #5a3a1e; }   /* walnut    */
+.item:nth-child(5n+5) .book { border-left-color: #7a5a1f; }   /* mustard   */
+
 .cover {
   float: left;
-  width: 56px;
+  width: 54px;
   height: auto;
-  margin-right: 12px;
-  border: 1px solid #ccc;
+  margin-right: 14px;
+  border: 1px solid #7a5a22;
+  -webkit-box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
 }
-.cover.big { float: none; width: 180px; margin: 0 0 12px; }
+.cover.big { float: none; width: 190px; margin: 0 0 14px; }
 .bookmeta { display: block; overflow: hidden; }
-.booktitle { display: block; font-size: 20px; font-weight: bold; }
-.author { display: block; color: #666; font-size: 17px; }
+.booktitle {
+  display: block;
+  font-size: 21px;
+  font-weight: bold;
+  color: #5c3210;
+}
+.author { display: block; color: #7a5a30; font-style: italic; font-size: 17px; }
 .author.big { font-size: 20px; }
 
-/* Format badges */
+/* ---- Gilt format seals --------------------------------------------------- */
 .badge {
   display: inline-block;
-  font-size: 13px;
+  font-size: 12px;
+  font-variant: small-caps;
+  letter-spacing: 1px;
   font-weight: bold;
-  color: #fff;
-  padding: 2px 8px;
-  border-radius: 3px;
-  margin-top: 4px;
+  color: #f6eed8;
+  padding: 2px 9px;
+  margin-top: 5px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  -webkit-border-radius: 2px;
+  border-radius: 2px;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
 }
-.badge-epub { background: #2f6f3e; }
-.badge-pdf { background: #9a4a1f; }
+.badge-epub {
+  background-image: -webkit-linear-gradient(top, #3c6b46, #244a30);
+  background-image: linear-gradient(to bottom, #3c6b46, #244a30);
+}
+.badge-pdf {
+  background-image: -webkit-linear-gradient(top, #9a4a1f, #6e2f12);
+  background-image: linear-gradient(to bottom, #9a4a1f, #6e2f12);
+}
 
-.pager { margin: 18px 0; }
+.pager { margin: 22px 0 6px; text-align: center; }
 
-.hint {
-  background: #f0ece0;
-  border: 1px solid #d8d2c2;
-  border-radius: 6px;
-  padding: 12px 14px;
+/* ---- Book detail + reader's notes ---------------------------------------- */
+.format { color: #6e4a22; font-variant: small-caps; letter-spacing: 1px; }
+.summary {
+  color: #3a2a16;
+  font-size: 19px;
+  border-left: 3px solid #d8b25a;
+  padding-left: 14px;
   margin: 14px 0;
+}
+.hint {
+  background-color: #f3ead0;
+  border: 1px solid #cBA45a;
+  border-left: 6px solid #a8842c;
+  -webkit-border-radius: 3px;
+  border-radius: 3px;
+  padding: 14px 16px;
+  margin: 16px 0;
   font-size: 18px;
+  color: #4a3venture;
+  color: #4a361d;
 }
-.summary { color: #333; }
-.error { color: #8a2a1e; }
-.format { color: #444; }
+.error { color: #8a2b1f; font-style: italic; }
+.back {
+  color: #6e3b18;
+  font-variant: small-caps;
+  letter-spacing: 1px;
+  text-decoration: none;
+  border-bottom: 1px dotted #9c7a36;
+}
 
+/* ---- Footer / colophon --------------------------------------------------- */
 .footer {
-  margin-top: 28px;
-  padding-top: 12px;
-  border-top: 2px solid #d8d2c2;
-  color: #888;
-  font-size: 16px;
+  margin-top: 32px;
+  padding-top: 14px;
+  border-top: 3px double #9c7a36;
+  text-align: center;
+  color: #8c7752;
+  font-size: 15px;
+  font-variant: small-caps;
+  letter-spacing: 1px;
 }
-.footer a { color: #777; }
-.back { color: #7a3b12; }
+.footer a { color: #6e3b18; text-decoration: none; border-bottom: 1px dotted #b79b52; }
+.footer .sep { color: #a8842c; margin: 0 6px; }
+.asterism { color: #a8842c; letter-spacing: 8px; margin-bottom: 8px; font-size: 12px; }
+.colophon { margin-top: 8px; font-style: italic; font-variant: normal; color: #9a8459; }

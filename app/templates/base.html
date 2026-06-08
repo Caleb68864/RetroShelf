@@ -7,15 +7,25 @@
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
+<div class="page">
 <div class="wrap">
   <div class="topbar">
+<pre class="ascii">+--+--+--+--+--+--+--+--+
+|##|::|..|##|::|..|##|::|
+|##|::|..|##|::|..|##|::|
++==+==+==+==+==+==+==+==+</pre>
     <a class="brand" href="/">RetroShelf</a>
-    <a class="toplink" href="/help">Help</a>
+    <div class="crest">&#9670;&nbsp; Bibliotheca &amp; Reading Room &nbsp;&#9670;</div>
+    <a class="toplink" href="/help">Reader&rsquo;s Guide</a>
   </div>
+  <div class="ornament"><span>&#9670;</span><span>&#9670;</span><span>&#9670;</span></div>
   {% block content %}{% endblock %}
   <div class="footer">
-    <a href="/">Home</a> &middot; <a href="/help">Help</a>
+    <div class="asterism">&#9670; &#9670; &#9670;</div>
+    <a href="/">Library</a> <span class="sep">&#9670;</span> <a href="/help">Reader&rsquo;s Guide</a>
+    <div class="colophon">Bound &amp; shelved for the patient machine.</div>
   </div>
+</div>
 </div>
 </body>
 </html>
