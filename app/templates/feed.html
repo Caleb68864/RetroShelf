@@ -11,6 +11,17 @@
 </form>
 {% endif %}
 
+{% if has_books %}
+<div class="sortbar">
+  <span class="sortlabel">Sort:</span>
+  <a class="sortopt{% if not sort %} on{% endif %}" href="{{ feed_path }}">[ Default ]</a>
+  <a class="sortopt{% if sort == 'title' %} on{% endif %}" href="{{ feed_path }}?sort=title">[ Title ]</a>
+  <a class="sortopt{% if sort == 'author' %} on{% endif %}" href="{{ feed_path }}?sort=author">[ Author ]</a>
+  <a class="sortopt{% if sort == 'format' %} on{% endif %}" href="{{ feed_path }}?sort=format">[ Format ]</a>
+  {% if sort %}<span class="sortnote">sorted: this page</span>{% endif %}
+</div>
+{% endif %}
+
 {% if not entries %}
   <p class="muted">[ this shelf is empty ]</p>
 {% endif %}

@@ -123,6 +123,68 @@ def test_feed_browse_and_book_links_are_bridge_ids():
         assert "/feed/" in r.text  # nav entries
 
 
+def test_sorted_page_helper_orders_books_keeps_nav_first():
+    from app.main import _sorted_page
+    entries = [
+        {"is_nav": True, "title": "Browse"},
+        {"is_nav": False, "title": "Zebra", "author": "Young, A", "badge": "PDF"},
+        {"is_nav": False, "title": "alpha", "author": "", "badge": "EPUB"},
+        {"is_nav": False, "title": "Mango", "author": "Brown, B", "badge": "EPUB"},
+    ]
+    # default / unknown → unchanged (upstream order)
+    assert _sorted_page(entries, "") == entries
+    assert _sorted_page(entries, "bogus") == entries
+    # title: nav first, then case-insensitive title order
+    titles = [e["title"] for e in _sorted_page(entries, "title")]
+    assert titles == ["Browse", "alpha", "Mango", "Zebra"]
+    # author: empty author sorts last, nav still first
+    authors = [e.get("title") for e in _sorted_page(entries, "author")]
+    assert authors == ["Browse", "Mango", "Zebra", "alpha"]
+    # format: EPUB before PDF, nav first
+    fmts = [e["title"] for e in _sorted_page(entries, "format")]
+    assert fmts[0] == "Browse" and fmts[-1] == "Zebra"  # PDF last
+    # never drops/dupes rows
+    assert len(_sorted_page(entries, "title")) == len(entries)
+
+
+def test_feed_current_page_sort_and_control():
+    import re
+    with make_client(make_handler()) as client:
+        home = client.get("/").text
+        fid = re.search(r'/feed/([A-Za-z0-9_\-.]+)', home).group(1)
+        root_feed = client.get(f"/feed/{fid}").text
+        # Find the acquisition page (the one with both books).
+        books_fid = None
+        for fid2 in re.findall(r'/feed/([A-Za-z0-9_\-.]+)"', root_feed):
+            page = client.get(f"/feed/{fid2}").text
+            if "The Time Machine" in page and "Annual Report 2025" in page:
+                books_fid = fid2
+                break
+        assert books_fid, "expected an acquisition page with both books"
+
+        def order(html):
+            return (html.index("Annual Report 2025"), html.index("The Time Machine"))
+
+        # Default: upstream order — Time Machine before Annual Report.
+        default = client.get(f"/feed/{books_fid}").text
+        ar, tm = order(default)
+        assert tm < ar
+        # The sort control renders with links preserving the feed path.
+        assert 'class="sortbar"' in default
+        assert f"/feed/{books_fid}?sort=title" in default
+        assert f"/feed/{books_fid}?sort=author" in default
+        # sort=author: Acme Corp before H. G. Wells → Annual Report first.
+        by_author = client.get(f"/feed/{books_fid}?sort=author").text
+        ar, tm = order(by_author)
+        assert ar < tm
+        assert "sorted: this page" in by_author
+        assert 'class="sortopt on"' in by_author   # active option marked
+        # bogus sort falls back to upstream order.
+        bogus = client.get(f"/feed/{books_fid}?sort=bogus").text
+        ar, tm = order(bogus)
+        assert tm < ar
+
+
 def test_full_chain_feed_to_download():
     with make_client(make_handler()) as client:
         home = client.get("/").text

@@ -43,6 +43,39 @@ log = logging.getLogger("retroshelf")
 # (the container HEALTHCHECK + the stylesheet). [M-7]
 _OPEN_PREFIXES = ("/health", "/static")
 
+# Current-page sort keys for /feed (SS-03). Sorting only reorders the books on
+# the page already fetched — pagination is upstream-driven, so we never hold the
+# whole library. Navigation entries keep their order and stay grouped first.
+_SORT_KEYS = ("title", "author", "format")
+_FORMAT_ORDER = {"EPUB": 0, "PDF": 1}
+
+
+def _sorted_page(entries: list[dict], sort: str) -> list[dict]:
+    """Return *entries* with book entries stably reordered by *sort*.
+
+    Navigation entries (``is_nav``) keep their original order and stay grouped
+    ahead of book entries. An empty/unknown *sort* returns *entries* unchanged
+    (upstream order). The sort is stable, so it never drops or duplicates rows.
+
+    :param entries: View-model dicts from ``_to_view_model``.
+    :param sort: One of :data:`_SORT_KEYS`, or ``""`` for upstream order.
+    :returns: A new list; the input is not mutated.
+    """
+    if sort not in _SORT_KEYS:
+        return entries
+    navs = [e for e in entries if e["is_nav"]]
+    books = [e for e in entries if not e["is_nav"]]
+    if sort == "title":
+        books = sorted(books, key=lambda e: (e.get("title") or "").casefold())
+    elif sort == "author":
+        # Empty authors sort last; otherwise case-insensitive by author.
+        books = sorted(books, key=lambda e: ((e.get("author") or "") == "",
+                                             (e.get("author") or "").casefold()))
+    else:  # "format" — group EPUB before PDF, then by title
+        books = sorted(books, key=lambda e: (_FORMAT_ORDER.get(e.get("badge"), 2),
+                                             (e.get("title") or "").casefold()))
+    return navs + books
+
 
 class FeedCache:
     """Tiny bounded TTL cache keyed by the bridge feed id (NOT the apiKey URL).
@@ -659,17 +692,24 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         })
 
     @app.get("/feed/{fid}", response_class=HTMLResponse)
-    async def feed(request: Request, fid: str):
+    async def feed(request: Request, fid: str, sort: str = ""):
         """GET ``/feed/{fid}`` — render a paginated OPDS feed page.
 
         Decodes the bridge feed id *fid*, re-validates the resolved URL through
         the SSRF guard, fetches (or returns a cached) feed, converts entries to
         view-model dicts, and renders ``feed.html``.
 
+        The optional ``sort`` query parameter (``title``/``author``/``format``)
+        reorders the **books on this page only** — pagination is upstream-driven,
+        so the whole library is never in hand. Any other value falls back to the
+        upstream order. [SS-03]
+
         :param request: The incoming HTTP request.
         :type request: Request
         :param fid: Opaque bridge id that encodes the upstream OPDS feed URL.
         :type fid: str
+        :param sort: Current-page sort key (``title``/``author``/``format``).
+        :type sort: str
         :returns: Rendered ``feed.html`` with feed title, entries, and
             pagination URLs.
         :rtype: HTMLResponse
@@ -681,15 +721,20 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         parsed = await _load_feed(request, url, fid)
         entries = _to_view_model(parsed, codec(request), kc(request), base_url=url,
                                  downloaded=store(request).downloaded_keys())
-        next_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.next_url, base=url))}" if parsed.next_url else None
-        prev_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.prev_url, base=url))}" if parsed.prev_url else None
+        sort = sort if sort in _SORT_KEYS else ""   # normalize unknown → upstream order
+        entries = _sorted_page(entries, sort)
+        suffix = f"?sort={sort}" if sort else ""    # carry the sort across pages
+        next_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.next_url, base=url))}{suffix}" if parsed.next_url else None
+        prev_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.prev_url, base=url))}{suffix}" if parsed.prev_url else None
         # Scope the on-page search box to the library this feed belongs to.
         owner = _feed_for_url(url)
         search_feed = codec(request).encode(kc(request).resolve_url(owner.url))
+        has_books = any(not e["is_nav"] for e in entries)
         return templates.TemplateResponse(request, "feed.html", {
             "feed_title": parsed.title or "Library",
             "entries": entries, "next_url": next_url, "prev_url": prev_url,
             "search_url": "/search", "search_feed": search_feed,
+            "sort": sort, "feed_path": f"/feed/{fid}", "has_books": has_books,
         })
 
     @app.get("/book/{bid}", response_class=HTMLResponse)

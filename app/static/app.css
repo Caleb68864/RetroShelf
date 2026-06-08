@@ -43,10 +43,18 @@ a:active { color: #ffe24a; }
 /* ---- Touch ergonomics (old iPad: capacitive, no hover, fat fingers) -------
    Every interactive target is at least ~44px tall (Apple HIG), with a themed
    amber tap-highlight so a press is obviously registered. */
-a, .button, .navlink, .book, .menubar a, .back, .toplink,
+a, .button, .navlink, .book, .menubar a, .back, .toplink, .sortopt,
 input[type=submit], input[type=text] {
   -webkit-tap-highlight-color: rgba(255, 176, 0, 0.32);
 }
+
+/* ---- Current-page sort bar (SS-03) --------------------------------------- */
+.sortbar { display: block; margin: 8px 0 14px; line-height: 2; }
+.sortlabel { color: #8c8c8c; margin-right: 4px; }
+.sortopt { display: inline-block; padding: 9px 6px; min-height: 18px; }
+.sortopt.on { color: #ffb000; font-weight: bold; }
+.sortopt:active { background-color: #ffb000; color: #0a0a0a; }
+.sortnote { display: block; color: #8c8c8c; font-size: 13px; margin-top: 2px; }
 
 /* ---- Masthead ------------------------------------------------------------ */
 .topbar { text-align: center; padding-bottom: 10px; border-bottom: 1px dashed #6e5410; margin-bottom: 14px; }
