@@ -47,8 +47,16 @@ More than an OPDS-to-HTML proxy — a personal cross-library reading manager:
 - **Library status dashboard** (`/status`) — live reachability of each
   configured library (online/offline, response time, shelf count).
 - **Surprise Me** (`/random`) — jump to a random book from a random library.
-- **Accessibility.** One-tap Large-Print mode, hide-covers (for speed), and an
-  amber / green / white **CRT phosphor** theme switch — all via the footer, no JS.
+- **Add to Home Screen.** Web-app meta + an apple-touch-icon, so RetroShelf
+  installs to the iPad home screen and launches fullscreen, like a native app.
+- **Sort this page.** Reorder the current shelf page by title, author, or format
+  (server-side; pagination is upstream-driven, so it's honestly labelled "this page").
+- **Old-Safari-safe covers.** Covers are transcoded to baseline JPEG and
+  downscaled server-side — old Safari can't render WebP and big images choke old
+  iPads — then disk-cached (`/cache`) so repeat browsing is fast.
+- **Accessibility.** One-tap Large-Print mode (with enlarged tap targets),
+  hide-covers (for speed), and an amber / green / white **CRT phosphor** theme
+  switch — all via the footer, no JS.
 
 Everything is server-rendered, no-JavaScript, and works on iOS 5.1.1–12 Safari.
 
@@ -154,6 +162,21 @@ files from an *unrelated* domain (some Project Gutenberg mirrors do), add it to
 
 ---
 
+## Run without Docker (bare metal)
+
+For a quick LAN setup without containers, use the launcher — it creates a venv,
+installs deps, and serves on `0.0.0.0:8099`:
+
+```bash
+./run.sh                                         # defaults to the public ManyBooks feed
+./run.sh "http://kavita:5000/api/opds/YOUR_KEY"  # or point at your Kavita OPDS URL
+```
+
+Then open `http://<this-computer-ip>:8099` from the iPad. If other devices can't
+connect, open the firewall port — see **Troubleshooting → "The iPad can't connect"**.
+
+---
+
 ## Opening it from the iPad
 
 1. On the iPad, open **Safari**.
@@ -182,7 +205,26 @@ in Books** while the PDF is on screen.
 
 **The iPad can't connect.**
 Confirm the iPad is on the same Wi-Fi/LAN as the server, that you used `http://` and the right
-IP and port `:8099`, and that the container is running (`/health` returns `ok`).
+IP and port `:8099`, and that the server is running (`/health` returns `ok`). Use the machine's
+**LAN** IP (e.g. `192.168.x.x`), not a Tailscale (`100.x`) or Docker (`172.17.x`) address.
+
+If `curl http://<server-ip>:8099/health` works **on the server itself** but no other device can
+connect, the host **firewall** is blocking the port — this is the most common bare-metal gotcha.
+RetroShelf binds to `0.0.0.0`, so the bind isn't the problem; you just need to open `8099/tcp`:
+
+```bash
+# firewalld (Fedora, Arch, RHEL, openSUSE, …) — open 8099 on the zone your LAN NIC is in
+firewall-cmd --get-active-zones                       # find the zone (often "public")
+sudo firewall-cmd --zone=public --permanent --add-port=8099/tcp
+sudo firewall-cmd --reload
+
+# ufw (Debian/Ubuntu)
+sudo ufw allow 8099/tcp
+```
+
+The Docker deployment publishes the port itself, so this only applies to running it bare-metal
+(e.g. via `./run.sh`). If the port is open and it *still* fails, check for Wi-Fi **AP/client
+isolation** on your router (it blocks device-to-device traffic even on one subnet).
 
 **"Open in iBooks" doesn't appear.**
 Press and hold the button, then choose **Open** / **Open in New Tab**. Very old iOS (5–6) can
