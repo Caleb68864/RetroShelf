@@ -1,24 +1,24 @@
 {% extends "base.html" %}
 {% block title %}{{ feed_title }} - RetroShelf{% endblock %}
 {% block content %}
-<h1>{{ feed_title }}</h1>
+<div class="sectionhead">&gt;&gt; {{ feed_title }}</div>
 
 {% if search_url %}
 <form class="search" action="/search" method="get">
-  <input type="text" name="q" placeholder="Search" value="">
-  <input type="submit" value="Search">
+  <input type="text" name="q" placeholder="search the stacks" value="">
+  <input type="submit" value="Find">
 </form>
 {% endif %}
 
 {% if not entries %}
-  <p class="muted">Nothing here.</p>
+  <p class="muted">[ this shelf is empty ]</p>
 {% endif %}
 
 <ul class="list">
 {% for e in entries %}
   <li class="item">
     {% if e.is_nav %}
-      <a class="navlink" href="{{ e.href }}">{{ e.title }} &raquo;</a>
+      <a class="navlink" href="{{ e.href }}"><span class="prompt">&gt;&gt;</span>{{ e.title }}</a>
     {% else %}
       <a class="book" href="{{ e.detail_url }}">
         {% if e.cover_url %}<img class="cover" src="{{ e.cover_url }}" alt="">{% endif %}
@@ -34,7 +34,7 @@
 </ul>
 
 <div class="pager">
-  {% if prev_url %}<a class="button small" href="{{ prev_url }}">&laquo; Previous</a>{% endif %}
+  {% if prev_url %}<a class="button small" href="{{ prev_url }}">&laquo; Prev</a>{% endif %}
   {% if next_url %}<a class="button small" href="{{ next_url }}">Next &raquo;</a>{% endif %}
 </div>
 {% endblock %}

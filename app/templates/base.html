@@ -10,20 +10,23 @@
 <div class="page">
 <div class="wrap">
   <div class="topbar">
-<pre class="ascii">+--+--+--+--+--+--+--+--+
-|##|::|..|##|::|..|##|::|
-|##|::|..|##|::|..|##|::|
-+==+==+==+==+==+==+==+==+</pre>
+<pre class="ascii">+------------------------------+
+|..............................|
+|..+...+...+...+...+...+...+....|
+|..+...+...+...+...+...+...+..@.|
+|..+...+...+...+...+...+...+....|
+|.........[====]...............|
++------------------------------+</pre>
     <a class="brand" href="/">RetroShelf</a>
-    <div class="crest">&#9670;&nbsp; Bibliotheca &amp; Reading Room &nbsp;&#9670;</div>
-    <a class="toplink" href="/help">Reader&rsquo;s Guide</a>
+    <div class="crest">DOS LIBRARY TERMINAL &mdash; v1.0</div>
+    <div class="menubar">
+      <a href="/">[ Library ]</a><a href="/search?q=">[ Search ]</a><a href="/help">[ Guide ]</a>
+    </div>
   </div>
-  <div class="ornament"><span>&#9670;</span><span>&#9670;</span><span>&#9670;</span></div>
   {% block content %}{% endblock %}
   <div class="footer">
-    <div class="asterism">&#9670; &#9670; &#9670;</div>
-    <a href="/">Library</a> <span class="sep">&#9670;</span> <a href="/help">Reader&rsquo;s Guide</a>
-    <div class="colophon">Bound &amp; shelved for the patient machine.</div>
+    <div class="statusline">RetroShelf the Patient Machine&nbsp;&nbsp;St:OK&nbsp;&nbsp;Lib:online&nbsp;&nbsp;T:1</div>
+    <div class="colophon">// press a link to turn the page</div>
   </div>
 </div>
 </div>

@@ -171,6 +171,7 @@ async def lifespan(app: FastAPI):
     app.state.kavita = KavitaClient(cfg, client)
     app.state.ids = IdCodec(cfg.bridge_id_secret or cfg.bridge_access_key)
     app.state.cache = FeedCache(cfg.cache_feeds_seconds)
+    app.state.search_template = None  # discovered + cached on first search
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
     mask_filter = _SecretMaskingFilter(cfg)
     for handler in logging.getLogger().handlers:
@@ -465,18 +466,26 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         ManyBooks' ``/opds/search?q={searchTerms}``). Falls back to Kavita's
         ``/search?query=`` endpoint when no usable template is advertised.
 
+        The discovered template is cached on ``app.state`` so we don't re-fetch
+        the root feed on every search (which can trip upstream rate limits and
+        fall back to the wrong query parameter).
+
         :param request: The incoming request (for the shared Kavita client).
         :param q: The user's search text (will be percent-encoded).
         :returns: An absolute or root-relative upstream search URL.
         :rtype: str
         """
         encoded = quote(q)
-        template = None
-        try:
-            root = opds.parse(await kc(request).fetch_feed(cfg.kavita_opds_url))
-            template = root.search_url
-        except RetroShelfError:
-            template = None
+        # Use the cached template if we've already discovered it (``""`` means
+        # "discovered, none advertised" so we don't keep re-fetching the root).
+        template = getattr(request.app.state, "search_template", None)
+        if template is None:
+            try:
+                root = opds.parse(await kc(request).fetch_feed(cfg.kavita_opds_url))
+                template = root.search_url or ""
+            except RetroShelfError:
+                template = ""
+            request.app.state.search_template = template
         if template and "{searchTerms}" in template:
             url = template.replace("{searchTerms}", encoded)
             # Drop any remaining OpenSearch optional tokens (e.g. {startIndex?}).

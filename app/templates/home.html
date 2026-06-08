@@ -1,23 +1,23 @@
 {% extends "base.html" %}
 {% block title %}RetroShelf{% endblock %}
 {% block content %}
-<h1>RetroShelf</h1>
-<p class="lead">Browse your Kavita library and send books straight to iBooks / Books.</p>
+<h1>Main Menu</h1>
+<p class="lead">Browse your Kavita library and beam books straight into iBooks / Books.</p>
 
 <div class="status {{ 'ok' if kavita_ok else 'bad' }}">
   {% if kavita_ok %}
-    Connected to your Kavita library.
+    Connected to the library server.
   {% else %}
-    Cannot reach Kavita right now. {{ status_detail }}
+    Cannot reach the library server. {{ status_detail }}
   {% endif %}
 </div>
 
-<p><a class="button" href="{{ root_feed_url }}">Browse the Library</a></p>
+<p><a class="button" href="{{ root_feed_url }}">Enter the Library</a></p>
 
 <form class="search" action="/search" method="get">
-  <input type="text" name="q" placeholder="Search books" value="">
-  <input type="submit" value="Search">
+  <input type="text" name="q" placeholder="search the stacks" value="">
+  <input type="submit" value="Find">
 </form>
 
-<p><a href="/help">How to import books on an old iPad &raquo;</a></p>
+<p><a class="back" href="/help">read the guide: importing on an old iPad</a></p>
 {% endblock %}
