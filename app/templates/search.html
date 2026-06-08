@@ -2,9 +2,11 @@
 {% block title %}Search - RetroShelf{% endblock %}
 {% block content %}
 <h1>Search</h1>
+{% if multi and feed_name %}<p class="format">in library: {{ feed_name }}</p>{% endif %}
 
 <form class="search" action="/search" method="get">
-  <input type="text" name="q" placeholder="Title or author" value="{{ query }}">
+  {% if search_feed %}<input type="hidden" name="feed" value="{{ search_feed }}">{% endif %}
+  <input type="text" name="q" placeholder="title or author" value="{{ query }}">
   <input type="submit" value="Search">
 </form>
 

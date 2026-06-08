@@ -18,7 +18,7 @@ Design (verified — see vault/MOC - FastAPI Streaming and Range):
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -84,8 +84,8 @@ class KavitaClient:
         self._client = client
 
     # -- SSRF guard ----------------------------------------------------------
-    def resolve_url(self, href: str) -> str:
-        """Resolve *href* against the Kavita origin and return an absolute URL.
+    def resolve_url(self, href: str, base: str | None = None) -> str:
+        """Resolve *href* (optionally against *base*) and return an absolute URL.
 
         This is the SSRF choke point.  Every upstream URL must pass through
         this method before any network fetch is issued.
@@ -123,22 +123,34 @@ class KavitaClient:
         if raw.startswith("//"):
             raise SsrfError(self._cfg.mask(f"Refusing protocol-relative href: {raw!r}"))
 
+        allowed = {origin_tuple(o) for o in self._cfg.allowed_origins}
         parts = urlsplit(raw)
         if parts.scheme or parts.netloc:
-            # Absolute URL: must match one of the allowed origins (Kavita plus any
-            # configured extras), with default ports normalized.
+            # Absolute URL: must match one of the allowed origins (every feed
+            # plus any configured extras), with default ports normalized.
             try:
-                allowed = {origin_tuple(o) for o in self._cfg.allowed_origins}
                 if origin_tuple(raw) not in allowed:
                     raise SsrfError(self._cfg.mask(f"Refusing foreign-origin href: {raw!r}"))
             except ValueError as exc:
                 raise SsrfError(self._cfg.mask(f"Unparseable href: {raw!r}")) from exc
             return raw
 
-        # Relative: only a root-relative absolute path is allowed.
-        if not raw.startswith("/"):
+        # Relative href. With *base* (the parent feed URL) we resolve it against
+        # that document so hrefs from a non-primary feed point at the right
+        # origin; without a base, only a root-relative path against the primary
+        # origin is allowed. Either way the result must be an allowed origin.
+        if base:
+            absolute = urljoin(base, raw)
+        elif raw.startswith("/"):
+            absolute = f"{self._cfg.kavita_origin}{raw}"
+        else:
             raise SsrfError(self._cfg.mask(f"Refusing non-absolute path href: {raw!r}"))
-        return f"{self._cfg.kavita_origin}{raw}"
+        try:
+            if origin_tuple(absolute) not in allowed:
+                raise SsrfError(self._cfg.mask(f"Refusing foreign-origin href: {raw!r}"))
+        except ValueError as exc:
+            raise SsrfError(self._cfg.mask(f"Unparseable href: {raw!r}")) from exc
+        return absolute
 
     # -- feed fetch ----------------------------------------------------------
     async def fetch_feed(self, url: str) -> str:

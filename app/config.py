@@ -172,6 +172,72 @@ def _as_int(value: str | None, default: int, name: str) -> int:
 
 
 @dataclass(frozen=True)
+class FeedSource:
+    """One configured OPDS feed (a "library" on the portal home menu).
+
+    :ivar name: Human-friendly display name shown in the feed menu.
+    :ivar url: The OPDS root URL (may embed an apiKey path segment).
+    :ivar origin: Normalised ``scheme://host[:port]`` origin of *url*.
+    :ivar api_key: API key extracted from *url* (used for masking).
+    """
+
+    name: str
+    url: str
+    origin: str
+    api_key: str
+
+
+def _feed_name_from_url(url: str) -> str:
+    """Derive a friendly feed name from a URL's host (e.g. ``Manybooks``)."""
+    host = (urlsplit(url).hostname or "feed").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    label = host.split(".")[0] or "feed"
+    return label.replace("-", " ").title()
+
+
+def _parse_feeds(e: dict[str, str]) -> list[FeedSource]:
+    """Build the ordered list of feeds from ``KAVITA_OPDS_URL`` and ``OPDS_FEEDS``.
+
+    ``OPDS_FEEDS`` is a comma/newline-separated list whose entries are either
+    ``Name|URL`` or just ``URL`` (the name is then derived from the host).
+    ``KAVITA_OPDS_URL`` (if set) is prepended as the primary feed, named by
+    ``KAVITA_FEED_NAME`` (default "Library"). Duplicate URLs are dropped.
+
+    :raises ConfigError: if an entry's URL is missing a scheme or host.
+    """
+    entries: list[tuple[str | None, str]] = []
+    kavita = (e.get("KAVITA_OPDS_URL") or "").strip()
+    if kavita:
+        entries.append(((e.get("KAVITA_FEED_NAME") or "Library").strip(), kavita))
+    raw = (e.get("OPDS_FEEDS") or "").replace("\n", ",")
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "|" in chunk:
+            name, _, url = chunk.partition("|")
+            entries.append((name.strip() or None, url.strip()))
+        else:
+            entries.append((None, chunk))
+
+    feeds: list[FeedSource] = []
+    seen: set[str] = set()
+    for name, url in entries:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        origin = _normalize_origin(url)  # raises ConfigError on a bad URL
+        feeds.append(FeedSource(
+            name=name or _feed_name_from_url(url),
+            url=url,
+            origin=origin,
+            api_key=_extract_api_key(url),
+        ))
+    return feeds
+
+
+@dataclass(frozen=True)
 class Config:
     """Immutable, validated snapshot of all bridge configuration.
 
@@ -259,20 +325,22 @@ class Config:
     extra_origins: tuple[str, ...] = ()
     # Override the upstream User-Agent (None → a browser-like default).
     upstream_user_agent: str | None = None
+    # All configured OPDS feeds (the portal menu). The first is the primary.
+    feeds: tuple[FeedSource, ...] = ()
 
     @property
     def allowed_origins(self) -> tuple[str, ...]:
-        """All origins the bridge may fetch from (Kavita + any extras).
+        """All origins the bridge may fetch from (every feed + any extras).
 
-        Combines :attr:`kavita_origin` with every entry in
-        :attr:`extra_origins` into a single ordered tuple consumed by
-        the SSRF guard.
+        Combines each configured feed's origin (falling back to
+        :attr:`kavita_origin` when no feeds are set) with
+        :attr:`extra_origins`, de-duplicated, for the SSRF guard.
 
-        :returns: Tuple of normalised ``scheme://host[:port]`` origin
-            strings that upstream fetches are permitted to target.
+        :returns: Tuple of normalised ``scheme://host[:port]`` origins.
         :rtype: tuple[str, ...]
         """
-        return (self.kavita_origin, *self.extra_origins)
+        base = tuple(f.origin for f in self.feeds) or (self.kavita_origin,)
+        return tuple(dict.fromkeys(base + tuple(self.extra_origins)))
 
     # -- secret masking ------------------------------------------------------
     def mask(self, text: str) -> str:
@@ -296,7 +364,9 @@ class Config:
         if not text:
             return text
         out = text
-        for secret in (self.api_key, self.bridge_access_key):
+        secrets = [f.api_key for f in self.feeds]
+        secrets += [self.api_key, self.bridge_access_key]
+        for secret in secrets:
             if secret and len(secret) >= 8:
                 out = out.replace(secret, REDACTED)
         return out
@@ -361,27 +431,27 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     """
     e = dict(os.environ if env is None else env)
 
-    opds_url = (e.get("KAVITA_OPDS_URL") or "").strip()
-    base_url = (e.get("KAVITA_BASE_URL") or "").strip()
-
-    if not opds_url:
+    # One or more feeds (the portal). KAVITA_OPDS_URL is the primary; OPDS_FEEDS
+    # adds more. At least one feed is required.
+    feeds = _parse_feeds(e)
+    if not feeds:
         raise ConfigError(
-            "KAVITA_OPDS_URL is required (the full user-specific Kavita OPDS URL, "
-            "e.g. http://kavita:5000/api/opds/YOUR_AUTH_KEY)."
+            "Configure at least one OPDS feed: set KAVITA_OPDS_URL (e.g. "
+            "http://kavita:5000/api/opds/YOUR_AUTH_KEY) and/or OPDS_FEEDS "
+            "(comma-separated 'Name|URL' entries)."
         )
-    # If base URL is omitted, derive it from the OPDS origin.
-    if not base_url:
-        base_url = _normalize_origin(opds_url)
+    primary = feeds[0]
+    opds_url = primary.url
+    kavita_origin = primary.origin
+    api_key = primary.api_key
 
-    kavita_origin = _normalize_origin(opds_url)
-    # Sanity: base and opds should share an origin.
+    # KAVITA_BASE_URL (if given) must share the primary feed's origin.
+    base_url = (e.get("KAVITA_BASE_URL") or "").strip() or kavita_origin
     if _normalize_origin(base_url) != kavita_origin:
         raise ConfigError(
-            "KAVITA_BASE_URL and KAVITA_OPDS_URL must share the same origin "
+            "KAVITA_BASE_URL must share the primary feed's origin "
             f"(got {_normalize_origin(base_url)} vs {kavita_origin})."
         )
-
-    api_key = _extract_api_key(opds_url)
 
     pdf_disp = (e.get("PDF_DISPOSITION") or "inline").strip().lower()
     if pdf_disp not in {"inline", "attachment"}:
@@ -401,6 +471,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     )
 
     return Config(
+        feeds=tuple(feeds),
         extra_origins=extra_origins,
         upstream_user_agent=(e.get("UPSTREAM_USER_AGENT") or "").strip() or None,
         kavita_base_url=base_url,

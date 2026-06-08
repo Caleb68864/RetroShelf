@@ -220,6 +220,60 @@ def test_search_unavailable_shows_message_not_silent_empty():
         assert "unavailable" in r.text.lower()
 
 
+def _client_for_cfg(cfg, handler):
+    from contextlib import asynccontextmanager
+    from app.main import FeedCache
+    app = create_app(cfg)
+    transport = httpx.MockTransport(handler)
+
+    @asynccontextmanager
+    async def ls(a):
+        http = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(connect=5, read=None, write=None, pool=5))
+        a.state.http = http
+        a.state.kavita = KavitaClient(cfg, http)
+        a.state.ids = IdCodec(cfg.bridge_id_secret)
+        a.state.cache = FeedCache(0)
+        a.state.search_templates = {}
+        yield
+        await http.aclose()
+    app.router.lifespan_context = ls
+    return TestClient(app)
+
+
+def test_portal_multi_feed_menu_and_browse():
+    cfg = load_config({
+        "KAVITA_OPDS_URL": "http://kavita:5000/api/opds/SECRETKEY",
+        "OPDS_FEEDS": "Public Domain|http://pub.example:8080/opds",
+        "BRIDGE_ID_SECRET": "s",
+    })
+    pub_root = ROOT_XML.replace("RetroShelf Library", "Public Domain Books")
+
+    def handler(request):
+        host = request.url.host
+        p = request.url.path
+        if host == "kavita" and p == "/api/opds/SECRETKEY":
+            return httpx.Response(200, text=ROOT_XML)
+        if host == "pub.example" and p == "/opds":
+            return httpx.Response(200, text=pub_root)
+        if "recently-added" in p or "libraries" in p:
+            return httpx.Response(200, text=ACQ_XML)
+        return httpx.Response(404)
+
+    with _client_for_cfg(cfg, handler) as client:
+        home = client.get("/")
+        assert home.status_code == 200
+        # Portal menu lists BOTH libraries by name.
+        assert "Library" in home.text and "Public Domain" in home.text
+        import re
+        fids = re.findall(r'/feed/([\w\-.]+)"', home.text)
+        assert len(fids) >= 2, "expected a feed link per library"
+        # Browsing the SECONDARY feed (different origin) works and leaks nothing.
+        sec = client.get(f"/feed/{fids[1]}")
+        assert sec.status_code == 200
+        assert "Public Domain Books" in sec.text
+        assert "SECRETKEY" not in sec.text and "/api/opds/" not in sec.text
+
+
 def test_help_page():
     with make_client(make_handler()) as client:
         r = client.get("/help")

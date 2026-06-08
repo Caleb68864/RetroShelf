@@ -84,7 +84,9 @@ networks:
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `KAVITA_OPDS_URL` | ✅ | — | Full OPDS URL incl. your API key |
+| `KAVITA_OPDS_URL` | ✅* | — | Full OPDS URL incl. your API key (the primary library) |
+| `OPDS_FEEDS` | – | — | Extra libraries for the portal menu (see below) |
+| `KAVITA_FEED_NAME` | – | `Library` | Menu name for the primary feed |
 | `KAVITA_BASE_URL` | – | derived | Kavita base (derived from OPDS origin if unset) |
 | `APP_PORT` | – | `8099` | Listen port |
 | `PDF_DISPOSITION` | – | `inline` | `inline` (render in Safari) or `attachment` |
@@ -96,6 +98,26 @@ networks:
 | `ALLOWED_IPS` | – | off | Direct-LAN IP/CIDR allowlist (not proxy-aware) |
 | `LOG_LEVEL` | – | `info` | `debug` for verbose (masked) logs |
 | `TZ` | – | `America/Chicago` | Container timezone |
+
+\* At least one feed is required — via `KAVITA_OPDS_URL`, `OPDS_FEEDS`, or both.
+
+### Multiple libraries (portal mode)
+
+RetroShelf can front **several OPDS libraries** at once. Set `OPDS_FEEDS` to a
+comma- or newline-separated list of `Name|URL` entries; the home screen becomes a
+menu where you pick a library, then browse and search it normally.
+
+```yaml
+environment:
+  - KAVITA_OPDS_URL=http://kavita:5000/api/opds/YOUR_AUTH_KEY   # primary
+  - KAVITA_FEED_NAME=My Kavita
+  - OPDS_FEEDS=Project Gutenberg|https://www.gutenberg.org/ebooks.opds/, ManyBooks|https://manybooks.net/opds
+```
+
+Each library's downloads/covers are fetched from its own origin (the SSRF guard
+allows every configured feed's origin automatically), each library's apiKey is
+masked, and search is scoped to the library you're in. Public feeds behind
+Cloudflare work because the bridge sends a browser `User-Agent`.
 
 ---
 

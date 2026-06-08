@@ -2,7 +2,7 @@
 {% block title %}RetroShelf{% endblock %}
 {% block content %}
 <h1>Main Menu</h1>
-<p class="lead">Browse your Kavita library and beam books straight into iBooks / Books.</p>
+<p class="lead">Browse your libraries and beam books straight into iBooks / Books.</p>
 
 <div class="status {{ 'ok' if kavita_ok else 'bad' }}">
   {% if kavita_ok %}
@@ -12,9 +12,19 @@
   {% endif %}
 </div>
 
+{% if multi %}
+<div class="sectionhead">&gt;&gt; Choose a Library</div>
+<ul class="list">
+{% for f in feeds %}
+  <li class="item"><a class="navlink" href="{{ f.url }}"><span class="prompt">&gt;&gt;</span>{{ f.name }}</a></li>
+{% endfor %}
+</ul>
+{% else %}
 <p><a class="button" href="{{ root_feed_url }}">Enter the Library</a></p>
+{% endif %}
 
 <form class="search" action="/search" method="get">
+  <input type="hidden" name="feed" value="{{ search_feed }}">
   <input type="text" name="q" placeholder="search the stacks" value="">
   <input type="submit" value="Find">
 </form>

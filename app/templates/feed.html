@@ -5,7 +5,8 @@
 
 {% if search_url %}
 <form class="search" action="/search" method="get">
-  <input type="text" name="q" placeholder="search the stacks" value="">
+  {% if search_feed %}<input type="hidden" name="feed" value="{{ search_feed }}">{% endif %}
+  <input type="text" name="q" placeholder="search this library" value="">
   <input type="submit" value="Find">
 </form>
 {% endif %}

@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import opds
-from .config import Config, ConfigError, load_config
+from .config import Config, ConfigError, load_config, origin_tuple
 from .download import (
     EPUB_MIME, PDF_MIME, build_headers as build_download_headers,
     format_of, stream_cover, stream_download,
@@ -171,7 +171,7 @@ async def lifespan(app: FastAPI):
     app.state.kavita = KavitaClient(cfg, client)
     app.state.ids = IdCodec(cfg.bridge_id_secret or cfg.bridge_access_key)
     app.state.cache = FeedCache(cfg.cache_feeds_seconds)
-    app.state.search_template = None  # discovered + cached on first search
+    app.state.search_templates = {}  # per-feed-origin OpenSearch templates, cached
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
     mask_filter = _SecretMaskingFilter(cfg)
     for handler in logging.getLogger().handlers:
@@ -377,7 +377,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return request.app.state.ids
 
     # -- view-model seam: encode every upstream href as a bridge id [H-2] ----
-    def _to_view_model(feed: opds.Feed, ids: IdCodec, kavita: KavitaClient) -> list[dict]:
+    def _to_view_model(feed: opds.Feed, ids: IdCodec, kavita: KavitaClient,
+                       base_url: str | None = None) -> list[dict]:
         """Convert a parsed OPDS *feed* into a list of template-ready dicts.
 
         Every upstream URL (navigation href, acquisition href, cover URL) is
@@ -400,30 +401,31 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         for e in feed.entries:
             if e.is_navigation and e.nav_href:
                 try:
-                    url = kavita.resolve_url(e.nav_href)
+                    nav_url = kavita.resolve_url(e.nav_href, base=base_url)
                 except SsrfError:
                     continue
                 entries.append({"is_nav": True, "title": (e.title or "").strip() or "Untitled",
-                                "href": f"/feed/{ids.encode(url)}"})
+                                "href": f"/feed/{ids.encode(nav_url)}"})
                 continue
             acq = e.primary_acquisition
             if acq is None:
                 continue
             try:
-                acq_url = kavita.resolve_url(acq.href)
+                acq_url = kavita.resolve_url(acq.href, base=base_url)
             except SsrfError:
                 continue
             fmt = format_of(acq.media_type) or "epub"
             badge = "EPUB" if fmt == "epub" else "PDF"
-            cover_bridge = None
+            cover_abs = None
             if cfg.show_covers and e.cover_url:
                 try:
-                    cover_bridge = f"/cover/{ids.encode(kavita.resolve_url(e.cover_url))}"
+                    cover_abs = kavita.resolve_url(e.cover_url, base=base_url)
                 except SsrfError:
-                    cover_bridge = None
+                    cover_abs = None
+            cover_bridge = f"/cover/{ids.encode(cover_abs)}" if cover_abs else None
             record = json.dumps({
                 "u": acq_url, "m": acq.media_type, "t": e.title, "a": e.author,
-                "s": e.summary, "c": (kavita.resolve_url(e.cover_url) if (cfg.show_covers and e.cover_url) else None),
+                "s": e.summary, "c": cover_abs,
             }, separators=(",", ":"))
             entries.append({
                 "is_nav": False,
@@ -458,34 +460,62 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         cache.put(cache_key, feed)
         return feed
 
-    async def _resolve_search_url(request: Request, q: str) -> str:
-        """Build the upstream OPDS search URL for query *q*.
+    def _feed_for_url(url: str):
+        """Return the configured :class:`FeedSource` whose origin owns *url*.
 
-        Prefers the catalogue's advertised OpenSearch template (the root feed's
-        ``rel="search"`` link containing a ``{searchTerms}`` placeholder, e.g.
-        ManyBooks' ``/opds/search?q={searchTerms}``). Falls back to Kavita's
-        ``/search?query=`` endpoint when no usable template is advertised.
+        Used to scope search to the right library and to label feed pages.
+        Falls back to the primary feed when no origin matches.
 
-        The discovered template is cached on ``app.state`` so we don't re-fetch
-        the root feed on every search (which can trip upstream rate limits and
-        fall back to the wrong query parameter).
+        :param url: An upstream OPDS URL.
+        :rtype: app.config.FeedSource
+        """
+        try:
+            want = origin_tuple(url)
+        except Exception:  # noqa: BLE001
+            return cfg.feeds[0]
+        for f in cfg.feeds:
+            try:
+                if origin_tuple(f.origin) == want:
+                    return f
+            except Exception:  # noqa: BLE001
+                continue
+        return cfg.feeds[0]
+
+    async def _resolve_search_url(request: Request, q: str, feed_url: str) -> str:
+        """Build the upstream OPDS search URL for query *q* within one feed.
+
+        Prefers that feed's advertised OpenSearch template (its root feed's
+        ``rel="search"`` link with a ``{searchTerms}`` placeholder, e.g.
+        ManyBooks' ``/opds/search?q={searchTerms}``). Falls back to the Kavita
+        ``/search?query=`` convention when no template is advertised.
+
+        Templates are cached per feed origin on ``app.state.search_templates`` so
+        we don't re-fetch a root feed on every search (which can trip upstream
+        rate limits and fall back to the wrong query parameter).
 
         :param request: The incoming request (for the shared Kavita client).
         :param q: The user's search text (will be percent-encoded).
+        :param feed_url: The root URL of the feed being searched.
         :returns: An absolute or root-relative upstream search URL.
         :rtype: str
         """
         encoded = quote(q)
-        # Use the cached template if we've already discovered it (``""`` means
-        # "discovered, none advertised" so we don't keep re-fetching the root).
-        template = getattr(request.app.state, "search_template", None)
+        cache = getattr(request.app.state, "search_templates", None)
+        if cache is None:
+            cache = {}
+            request.app.state.search_templates = cache
+        try:
+            key = origin_tuple(feed_url)
+        except Exception:  # noqa: BLE001
+            key = feed_url
+        template = cache.get(key)
         if template is None:
             try:
-                root = opds.parse(await kc(request).fetch_feed(cfg.kavita_opds_url))
+                root = opds.parse(await kc(request).fetch_feed(feed_url))
                 template = root.search_url or ""
             except RetroShelfError:
                 template = ""
-            request.app.state.search_template = template
+            cache[key] = template
         if template and "{searchTerms}" in template:
             url = template.replace("{searchTerms}", encoded)
             # Drop any remaining OpenSearch optional tokens (e.g. {startIndex?}).
@@ -493,7 +523,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 start = url.index("{")
                 url = url[:start] + url[url.index("}", start) + 1:]
             return url.rstrip("?&")
-        return f"{cfg.kavita_opds_url}/search?query={encoded}"
+        return f"{feed_url.rstrip('/')}/search?query={encoded}"
 
     # -- pages ---------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
@@ -509,16 +539,24 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             and ``root_feed_url`` template variables.
         :rtype: HTMLResponse
         """
-        root_url = cfg.kavita_opds_url
+        # Connectivity status reflects the primary (first) feed.
+        primary = cfg.feeds[0]
         kavita_ok, detail = True, ""
         try:
-            await kc(request).fetch_feed(root_url)
+            await kc(request).fetch_feed(primary.url)
         except RetroShelfError as exc:
             kavita_ok, detail = False, _friendly_message(exc)
-        root_id = codec(request).encode(kc(request).resolve_url(root_url))
+        # Build the portal menu: one entry per configured feed.
+        menu = []
+        for f in cfg.feeds:
+            fid = codec(request).encode(kc(request).resolve_url(f.url))
+            menu.append({"name": f.name, "url": f"/feed/{fid}"})
+        primary_id = codec(request).encode(kc(request).resolve_url(primary.url))
         return templates.TemplateResponse(request, "home.html", {
             "kavita_ok": kavita_ok, "status_detail": detail,
-            "root_feed_url": f"/feed/{root_id}",
+            "feeds": menu, "multi": len(cfg.feeds) > 1,
+            "root_feed_url": menu[0]["url"],   # back-compat for single-feed
+            "search_feed": primary_id,
         })
 
     @app.get("/feed/{fid}", response_class=HTMLResponse)
@@ -542,13 +580,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """
         url = kc(request).resolve_url(codec(request).decode(fid))  # decode + re-validate SSRF
         parsed = await _load_feed(request, url, fid)
-        entries = _to_view_model(parsed, codec(request), kc(request))
-        next_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.next_url))}" if parsed.next_url else None
-        prev_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.prev_url))}" if parsed.prev_url else None
+        entries = _to_view_model(parsed, codec(request), kc(request), base_url=url)
+        next_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.next_url, base=url))}" if parsed.next_url else None
+        prev_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.prev_url, base=url))}" if parsed.prev_url else None
+        # Scope the on-page search box to the library this feed belongs to.
+        owner = _feed_for_url(url)
+        search_feed = codec(request).encode(kc(request).resolve_url(owner.url))
         return templates.TemplateResponse(request, "feed.html", {
             "feed_title": parsed.title or "Library",
             "entries": entries, "next_url": next_url, "prev_url": prev_url,
-            "search_url": "/search",
+            "search_url": "/search", "search_feed": search_feed,
         })
 
     @app.get("/book/{bid}", response_class=HTMLResponse)
@@ -587,39 +628,51 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         })
 
     @app.get("/search", response_class=HTMLResponse)
-    async def search(request: Request, q: str = ""):
-        """GET ``/search?q=QUERY`` — render the search results page.
+    async def search(request: Request, q: str = "", feed: str = ""):
+        """GET ``/search?q=QUERY[&feed=FID]`` — render the search results page.
 
-        When *q* is non-empty, queries the Kavita OPDS search endpoint and
-        converts results to view-model dicts.  If the search endpoint is
-        unavailable the page renders with ``search_error=True`` rather than
-        silently showing zero results. [H6]
+        Searches within one library (the *feed* bridge id, or the primary feed
+        when omitted), using that feed's OpenSearch template. If the endpoint is
+        unavailable the page renders ``search_error=True`` rather than silently
+        showing zero results. [H6]
 
         :param request: The incoming HTTP request.
-        :type request: Request
         :param q: The search query string (defaults to empty string).
-        :type q: str
-        :returns: Rendered ``search.html`` with ``query``, ``entries``, and
-            ``search_error`` template variables.
+        :param feed: Optional bridge id selecting which library to search.
+        :returns: Rendered ``search.html``.
         :rtype: HTMLResponse
         """
         q = (q or "").strip()
+        # Resolve which library to search (default: primary feed).
+        feed_url = None
+        if feed:
+            try:
+                feed_url = kc(request).resolve_url(codec(request).decode(feed))
+            except RetroShelfError:
+                feed_url = None
+        if feed_url is None:
+            feed_url = cfg.feeds[0].url
+            feed = codec(request).encode(kc(request).resolve_url(feed_url))
+        owner = _feed_for_url(feed_url)
+
         entries = []
         search_error = False
         if q:
             try:
-                search_url = await _resolve_search_url(request, q)
+                search_url = await _resolve_search_url(request, q, feed_url)
                 body = await kc(request).fetch_feed(search_url)
                 parsed = opds.parse(body)
-                entries = _to_view_model(parsed, codec(request), kc(request))
+                # Resolve result hrefs against the (absolute) feed origin.
+                entries = _to_view_model(parsed, codec(request), kc(request), base_url=feed_url)
             except RetroShelfError as exc:
                 # Search endpoint missing/unreachable — tell the user it's
                 # unavailable rather than silently showing "no results". [H6]
                 search_error = True
                 log.info("search failed for %r: %s", q, cfg.mask(str(exc)))
-        return templates.TemplateResponse(
-            request, "search.html", {"query": q, "entries": entries, "search_error": search_error}
-        )
+        return templates.TemplateResponse(request, "search.html", {
+            "query": q, "entries": entries, "search_error": search_error,
+            "search_feed": feed, "feed_name": owner.name, "multi": len(cfg.feeds) > 1,
+        })
 
     @app.get("/help", response_class=HTMLResponse)
     async def help_page(request: Request):
