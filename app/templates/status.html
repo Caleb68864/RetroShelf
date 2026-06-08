@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Library Status - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; Library Status</div>
+<p class="muted">Live reachability of every configured library.</p>
+
+<ul class="list">
+{% for r in rows %}
+  <li class="item">
+    <div class="statusrow">
+      <span class="booktitle">{{ r.name }}</span>
+      {% if r.online %}
+        <span class="done">ONLINE</span>
+        <span class="from">{{ r.ms }} ms{% if r.shelves is not none %} &middot; {{ r.shelves }} shelves{% endif %}</span>
+      {% else %}
+        <span class="badge badge-pdf">OFFLINE</span>
+        <span class="from">{{ r.detail }}</span>
+      {% endif %}
+    </div>
+  </li>
+{% endfor %}
+</ul>
+
+<p><a class="back" href="/">Main Menu</a></p>
+{% endblock %}

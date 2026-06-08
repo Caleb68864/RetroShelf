@@ -417,6 +417,40 @@ def test_prefs_phosphor_color_theme():
         assert "color-white" in white
 
 
+def test_more_by_author_link_on_book_detail():
+    import re
+    with make_client(make_handler()) as client:
+        bid = _first_book_id(client)
+        detail = client.get(f"/book/{bid}").text
+        assert "more by this author" in detail
+        m = re.search(r'href="(/search\?q=[^"]+)"', detail)
+        assert m, "expected an author-search link"
+        assert "feed=" in m.group(1)
+
+
+def test_status_dashboard():
+    with make_client(make_handler()) as client:
+        r = client.get("/status")
+        assert r.status_code == 200
+        assert "Library Status" in r.text
+        assert "ONLINE" in r.text          # the mocked feed responds
+        assert "Library" in r.text          # default feed name
+
+
+def test_status_shows_offline_feed():
+    with make_client(make_handler(fail=True)) as client:
+        r = client.get("/status")
+        assert r.status_code == 200
+        assert "OFFLINE" in r.text
+
+
+def test_surprise_me_redirects_to_a_book():
+    with make_client(make_handler()) as client:
+        r = client.get("/random", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"].startswith("/book/")
+
+
 def test_help_page():
     with make_client(make_handler()) as client:
         r = client.get("/help")

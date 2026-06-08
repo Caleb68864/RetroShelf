@@ -393,3 +393,10 @@ body.color-white .statusline { background-color: #ededed; color: #111111; }
 body.color-white .booktitle:before, body.color-white .navlink .prompt { color: #9aa3ad; }
 body.color-white .search input[type=text] { color: #ededed; border-color: #6f7782; }
 body.color-white .brand:active { color: #ffffff; }
+
+/* ---- Author discovery + status + chart helpers --------------------------- */
+.from-link { color: #46d0d0; }
+.from-link:active { color: #ffe24a; }
+.statusrow { display: block; padding: 14px 4px; }
+.statusrow .booktitle { display: inline; }
+.statusrow .booktitle:before { content: ""; }

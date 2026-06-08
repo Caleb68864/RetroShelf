@@ -551,6 +551,67 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         # root-relative template on a secondary feed targets the right server.
         return kc(request).resolve_url(url, base=feed_url)
 
+    # -- diagnostics + insight pages -----------------------------------------
+    @app.get("/status", response_class=HTMLResponse)
+    async def status_page(request: Request):
+        """GET ``/status`` — live health of every configured library."""
+        async def check(source) -> dict:
+            t0 = time.monotonic()
+            try:
+                body = await kc(request).fetch_feed(source.url)
+                ms = int((time.monotonic() - t0) * 1000)
+                try:
+                    shelves = len(opds.parse(body).entries)
+                except OpdsParseError:
+                    shelves = None
+                return {"name": source.name, "origin": source.origin,
+                        "online": True, "ms": ms, "shelves": shelves}
+            except RetroShelfError as exc:
+                ms = int((time.monotonic() - t0) * 1000)
+                return {"name": source.name, "origin": source.origin, "online": False,
+                        "ms": ms, "detail": _friendly_message(exc)}
+        rows = list(await asyncio.gather(*[check(f) for f in cfg.feeds]))
+        return templates.TemplateResponse(request, "status.html", {"rows": rows})
+
+    @app.get("/random")
+    async def surprise_me(request: Request):
+        """GET ``/random`` — "Surprise Me": a budgeted random walk into the
+        libraries that jumps to a random book. Tolerant of dead-ends/404s — it
+        skips a failed branch and tries others rather than giving up."""
+        import random
+        sources = list(cfg.feeds)
+        random.shuffle(sources)
+        visited: set[str] = set()
+        for source in sources[:2]:               # try up to 2 libraries
+            try:
+                frontier = [kc(request).resolve_url(source.url)]
+            except RetroShelfError:
+                continue
+            budget = 10                          # max upstream fetches per library
+            while frontier and budget > 0:
+                budget -= 1
+                url = frontier.pop(random.randrange(len(frontier)))
+                if url in visited:
+                    continue
+                visited.add(url)
+                try:
+                    parsed = opds.parse(await kc(request).fetch_feed(url))
+                except RetroShelfError:
+                    continue                     # bad branch — try another
+                vm = _to_view_model(parsed, codec(request), kc(request), base_url=url)
+                books = [e for e in vm if not e["is_nav"]]
+                if books:
+                    return RedirectResponse(random.choice(books)["detail_url"], status_code=303)
+                for nav in vm:
+                    if nav["is_nav"]:
+                        try:
+                            frontier.append(kc(request).resolve_url(
+                                codec(request).decode(nav["href"].split("/feed/", 1)[1])))
+                        except RetroShelfError:
+                            continue
+        return _error_response(request, "No luck",
+                               "Could not pick a random book just now. Try browsing a library.", 502)
+
     # -- pages ---------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
     async def home(request: Request):
@@ -677,9 +738,20 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 "label": "Open in iBooks" if ext == "epub" else "Open PDF",
             })
         downloaded = any(book_key(fm["u"]) in dlkeys for fm in fmts)
+        author = rec.get("a") or ""
+        # Cross-library author discovery: search every library (fan-out) for more.
+        author_search = None
+        if author:
+            if len(cfg.feeds) > 1:
+                scope = "*"
+            else:
+                owner = _feed_for_url(rec.get("u", ""))
+                scope = codec(request).encode(kc(request).resolve_url(owner.url))
+            author_search = f"/search?q={quote(author)}&feed={scope}"
         return templates.TemplateResponse(request, "book.html", {
-            "title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
+            "title": rec.get("t") or "Untitled", "author": author,
             "summary": rec.get("s") or "", "badge": badge, "cover_url": cover_url,
+            "author_search": author_search,
             "downloads": downloads,
             "downloaded": downloaded,
             "is_fav": is_fav,

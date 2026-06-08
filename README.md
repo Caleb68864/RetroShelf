@@ -42,6 +42,11 @@ More than an OPDS-to-HTML proxy — a personal cross-library reading manager:
   button for each, with file sizes.
 - **Re-publishes as OPDS.** Your Reading List is itself a valid OPDS feed at
   `/opds/reading-list` — subscribe to your curated shelf from any OPDS reader.
+- **More by this author.** A book's author links to a fan-out search for their
+  other titles across every library.
+- **Library status dashboard** (`/status`) — live reachability of each
+  configured library (online/offline, response time, shelf count).
+- **Surprise Me** (`/random`) — jump to a random book from a random library.
 - **Accessibility.** One-tap Large-Print mode, hide-covers (for speed), and an
   amber / green / white **CRT phosphor** theme switch — all via the footer, no JS.
 
