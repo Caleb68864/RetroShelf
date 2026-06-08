@@ -74,39 +74,36 @@ sudo mkdir -p /srv/docker_data/kavita-ibooks-bridge/{config,cache}
 sudo chown -R 1000:1000 /srv/docker_data/kavita-ibooks-bridge
 ```
 
-**2. Deploy the stack** (Portainer → Stacks → Add stack, paste `docker-compose.yml`):
+**2. Deploy the stack.** There are two ways to do this in Portainer — pick one:
 
-```yaml
-services:
-  kavita-ibooks-bridge:
-    image: retroshelf:latest
-    container_name: retroshelf
-    build: .
-    restart: unless-stopped
-    ports:
-      - "8099:8099"
-    environment:
-      - TZ=America/Chicago
-      - KAVITA_BASE_URL=http://kavita:5000
-      - KAVITA_OPDS_URL=http://kavita:5000/api/opds/YOUR_AUTH_KEY
-      - PDF_DISPOSITION=inline
-      - EPUB_DISPOSITION=attachment
-    volumes:
-      - /srv/docker_data/kavita-ibooks-bridge/config:/config
-      - /srv/docker_data/kavita-ibooks-bridge/cache:/cache
-    networks:
-      - kavita_net
+#### Option A — Pull the pre-built image (easiest, Web editor)
 
-networks:
-  kavita_net:
-    external: true
-    name: kavita_default   # <-- the network your Kavita container is on
-```
+In Portainer go to **Stacks → Add stack → Web editor** and paste
+[`portainer-stack.yml`](portainer-stack.yml). It pulls a published multi-arch
+image (`ghcr.io/caleb68864/retroshelf:latest`, amd64 + arm64) so there's no
+build step. Set your values in Portainer's **Environment variables** section —
+at minimum `KAVITA_OPDS_URL`, and `KAVITA_NETWORK` (the network your Kavita
+stack is on).
 
-> **Networking note:** For `http://kavita:5000` to resolve, RetroShelf must be on the
-> **same Docker network as Kavita**, and Kavita's *service name* (or a network alias)
-> must be `kavita`. Find Kavita's network with `docker network ls` and set `name:`
-> accordingly. Use Kavita's **internal** port (5000), not a host-published port.
+> The image is published by the included GitHub Action on every push to `main`.
+> After the first run, make the GHCR package **public** (GitHub → Packages →
+> retroshelf → Package settings → Change visibility) so Portainer can pull it
+> without credentials — otherwise add the registry login under Portainer →
+> Registries.
+
+#### Option B — Build from this repo (Repository method)
+
+In Portainer go to **Stacks → Add stack → Repository**, point it at this GitHub
+repo, and set the compose path to `docker-compose.yml`. Portainer clones the
+repo and builds the image itself (`build: .`). Use this if you'd rather not rely
+on GHCR. Edit the env values in `docker-compose.yml` first (or fork and commit).
+
+> **Networking note (both options):** For `http://kavita:5000` to resolve,
+> RetroShelf must be on the **same Docker network as Kavita**, and Kavita's
+> *service name* (or a network alias) must be `kavita`. Find Kavita's network
+> with `docker network ls` and set it as `KAVITA_NETWORK` (Option A) or the
+> network `name:` (Option B). Use Kavita's **internal** port (5000), not a
+> host-published port.
 
 ### Configuration (environment variables)
 

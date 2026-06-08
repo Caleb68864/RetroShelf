@@ -4,6 +4,7 @@ docs/
 tests/
 .git/
 .gitignore
+.github/
 graphify-out/
 __pycache__/
 *.pyc
