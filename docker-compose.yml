@@ -1,0 +1,51 @@
+# RetroShelf — Portainer-compatible stack.
+#
+# RetroShelf must reach Kavita over the Docker network. For `http://kavita:5000`
+# to resolve, this service must join the SAME Docker network Kavita is on, and
+# Kavita's *compose service name* (or container alias) must be `kavita`. We join
+# Kavita's network as an EXTERNAL network below — set its name to match your host.
+# Use Kavita's INTERNAL port (5000), not any host-published port. [H-6 / SS-08]
+#
+# Host folder setup (run once):
+#   sudo mkdir -p /srv/docker_data/kavita-ibooks-bridge/{config,cache}
+#   sudo chown -R 1000:1000 /srv/docker_data/kavita-ibooks-bridge
+
+services:
+  kavita-ibooks-bridge:
+    image: retroshelf:latest
+    container_name: retroshelf
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    environment:
+      - TZ=America/Chicago
+      - PUID=1000
+      - PGID=1000
+      - APP_PORT=8099
+      # Use Kavita's INTERNAL container port and service name:
+      - KAVITA_BASE_URL=http://kavita:5000
+      - KAVITA_OPDS_URL=http://kavita:5000/api/opds/YOUR_AUTH_KEY
+      # Optional hardening (leave unset to disable):
+      # - BRIDGE_ACCESS_KEY=changeme
+      # - BRIDGE_ID_SECRET=set-a-stable-random-string
+      # - ALLOWED_IPS=192.168.1.0/24
+      - SHOW_COVERS=true
+      - CACHE_FEEDS_SECONDS=300
+      - CACHE_BOOKS=false
+      - PDF_DISPOSITION=inline
+      - EPUB_DISPOSITION=attachment
+      - LOG_LEVEL=info
+    volumes:
+      - /srv/docker_data/kavita-ibooks-bridge/config:/config
+      - /srv/docker_data/kavita-ibooks-bridge/cache:/cache
+    networks:
+      - kavita_net
+
+networks:
+  # Join Kavita's existing network. Set `name:` to the actual network on your
+  # host (find it with `docker network ls`). `external: true` means compose will
+  # NOT create it — it must already exist (created by your Kavita stack).
+  kavita_net:
+    external: true
+    name: kavita_default
