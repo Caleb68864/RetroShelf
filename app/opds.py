@@ -170,6 +170,26 @@ class Entry:
                 return a
         return self.acquisitions[0]
 
+    @property
+    def supported_acquisition(self) -> Acquisition | None:
+        """Return an EPUB or PDF acquisition (the only formats iBooks imports).
+
+        EPUB is preferred over PDF. Returns ``None`` when the entry offers
+        neither — e.g. a Gutenberg book exposing only Kindle/mobi, or a comic
+        feed offering only CBZ — so the bridge never mislabels or proxies a
+        format old iPads cannot import.
+
+        :returns: A supported :class:`Acquisition`, or ``None``.
+        :rtype: Acquisition | None
+        """
+        for a in self.acquisitions:
+            if a.is_epub:
+                return a
+        for a in self.acquisitions:
+            if a.is_pdf:
+                return a
+        return None
+
 
 @dataclass
 class Feed:

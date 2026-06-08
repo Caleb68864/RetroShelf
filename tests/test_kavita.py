@@ -99,6 +99,37 @@ async def test_stream_yields_bytes_and_forwards_range():
 
 
 @pytest.mark.asyncio
+async def test_open_stream_follows_same_origin_redirect():
+    # Gutenberg-style: download URL 302s to a same-origin cache URL.
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        if req.url.path.endswith("/dl"):
+            return httpx.Response(302, headers={"Location": "http://kavita:5000/cache/x.epub"})
+        if req.url.path == "/cache/x.epub":
+            return httpx.Response(200, content=b"PK\x03\x04EPUB")
+        return httpx.Response(404)
+
+    kc = make_client(handler)
+    resp = await kc.open_stream("/api/opds/SECRETKEY/dl")
+    assert resp.status_code == 200
+    body = await resp.aread()
+    await resp.aclose()
+    assert body == b"PK\x03\x04EPUB"
+    assert "/cache/x.epub" in calls
+
+
+@pytest.mark.asyncio
+async def test_open_stream_rejects_cross_origin_redirect():
+    def handler(req):
+        return httpx.Response(302, headers={"Location": "http://evil.com/x.epub"})
+    kc = make_client(handler)
+    with pytest.raises(SsrfError):
+        await kc.open_stream("/api/opds/SECRETKEY/dl")
+
+
+@pytest.mark.asyncio
 async def test_stream_http_error_raises():
     kc = make_client(lambda r: httpx.Response(404, content=b"nope"))
     with pytest.raises(KavitaError):

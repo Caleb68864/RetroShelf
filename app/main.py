@@ -408,15 +408,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 entries.append({"is_nav": True, "title": (e.title or "").strip() or "Untitled",
                                 "href": f"/feed/{ids.encode(nav_url)}"})
                 continue
-            acq = e.primary_acquisition
+            # Only surface EPUB/PDF — the formats old iPads import into iBooks.
+            # Entries offering only mobi/Kindle/CBZ are skipped, not mislabeled.
+            acq = e.supported_acquisition
             if acq is None:
                 continue
             try:
                 acq_url = kavita.resolve_url(acq.href, base=base_url)
             except SsrfError:
                 continue
-            fmt = format_of(acq.media_type) or "epub"
-            badge = "EPUB" if fmt == "epub" else "PDF"
+            badge = "EPUB" if acq.is_epub else "PDF"
             cover_abs = None
             if cfg.show_covers and e.cover_url:
                 try:
@@ -715,7 +716,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return PlainTextResponse("ok")
 
     # -- downloads / covers --------------------------------------------------
-    async def _do_download(request: Request, did: str):
+    async def _do_download(request: Request, did: str, name_hint: str | None = None):
         """Shared GET/HEAD download logic reused by all download route handlers.
 
         Decodes the bridge download id *did*, re-validates the resolved URL
@@ -728,6 +729,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :type request: Request
         :param did: Opaque bridge id that encodes the upstream download URL.
         :type did: str
+        :param name_hint: Preferred filename (the URL ``{filename}`` segment, a
+            clean title); falls back to the upstream URL basename. Some upstream
+            URLs (e.g. Gutenberg's ``103.epub.noimages``) make ugly names.
+        :type name_hint: str | None
         :returns: A headers-only :class:`~fastapi.responses.Response` for HEAD
             requests, or a streaming response for GET requests.
         :rtype: Response
@@ -736,10 +741,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :raises KavitaError: If the upstream download request fails.
         """
         url = kc(request).resolve_url(codec(request).decode(did))  # decode + re-validate
-        # Media type is derived from the acquisition URL suffix (Kavita download
-        # URLs end in the real filename, .epub/.pdf), defaulting to EPUB.
+        # Media type is derived from the acquisition URL suffix (download URLs
+        # end in the real file extension), defaulting to EPUB.
         media_type, disposition, ext = _media_for_url(url, cfg)
-        filename = sanitize_filename(_basename(url), ext)
+        filename = sanitize_filename(name_hint or _basename(url), ext)
         if request.method == "HEAD":
             # Answer header probes (e.g. `curl -I`, Safari) without fetching the
             # body. Same headers a GET would produce.
@@ -755,20 +760,19 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     async def download_named(request: Request, did: str, filename: str):
         """GET/HEAD ``/download/{did}/{filename}`` — download a book with an explicit filename.
 
-        The *filename* path segment is accepted for URL aesthetics (e.g. Safari
-        uses it as the saved filename) but is otherwise ignored; the actual
-        filename is derived from the upstream URL.
+        The *filename* path segment is the clean, title-based name old Safari
+        uses for the saved file; it is also used for the Content-Disposition.
 
         :param request: The incoming HTTP request.
         :type request: Request
         :param did: Opaque bridge id that encodes the upstream download URL.
         :type did: str
-        :param filename: Decorative filename segment; not used for routing logic.
+        :param filename: The clean filename segment, used for the saved name.
         :type filename: str
         :returns: Streaming book download or headers-only response for HEAD.
         :rtype: Response
         """
-        return await _do_download(request, did)
+        return await _do_download(request, did, name_hint=filename)
 
     @app.api_route("/download/{did}", methods=["GET", "HEAD"])
     async def download(request: Request, did: str):

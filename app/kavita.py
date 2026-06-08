@@ -173,19 +173,27 @@ class KavitaClient:
             code >= 400.
         """
         safe = self.resolve_url(url)
-        try:
-            resp = await self._client.get(safe, headers={"Accept": "application/atom+xml, */*"})
-        except httpx.HTTPError as exc:
-            raise KavitaError(
-                self._cfg.mask(f"Could not reach Kavita: {exc}"), url=self._cfg.mask(safe)
-            ) from exc
-        if resp.status_code >= 400:
-            raise KavitaError(
-                self._cfg.mask(f"Kavita returned HTTP {resp.status_code} for {safe}"),
-                url=self._cfg.mask(safe),
-                status=resp.status_code,
-            )
-        return resp.text
+        for _ in range(6):
+            try:
+                resp = await self._client.get(safe, headers={"Accept": "application/atom+xml, */*"})
+            except httpx.HTTPError as exc:
+                raise KavitaError(
+                    self._cfg.mask(f"Could not reach upstream: {exc}"), url=self._cfg.mask(safe)
+                ) from exc
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location")
+                if not location:
+                    break
+                safe = self.resolve_url(location, base=safe)  # SSRF re-check each hop
+                continue
+            if resp.status_code >= 400:
+                raise KavitaError(
+                    self._cfg.mask(f"Upstream returned HTTP {resp.status_code} for {safe}"),
+                    url=self._cfg.mask(safe),
+                    status=resp.status_code,
+                )
+            return resp.text
+        raise KavitaError(self._cfg.mask(f"Too many redirects fetching {url!r}"))
 
     # -- streaming proxy -----------------------------------------------------
     async def open_stream(self, url: str, *, range_header: str | None = None) -> httpx.Response:
@@ -217,22 +225,40 @@ class KavitaClient:
         headers: dict[str, str] = {}
         if range_header:
             headers["Range"] = range_header
-        req = self._client.build_request("GET", safe, headers=headers)
-        try:
-            resp = await self._client.send(req, stream=True)
-        except httpx.HTTPError as exc:
-            raise KavitaError(
-                self._cfg.mask(f"Could not stream from Kavita: {exc}"), url=self._cfg.mask(safe)
-            ) from exc
-        if resp.status_code >= 400:
-            await resp.aread()
-            await resp.aclose()
-            raise KavitaError(
-                self._cfg.mask(f"Kavita returned HTTP {resp.status_code} for {safe}"),
-                url=self._cfg.mask(safe),
-                status=resp.status_code,
-            )
-        return resp
+        # Follow redirects manually, re-validating EACH hop through the SSRF
+        # guard. Many public feeds (e.g. Project Gutenberg) 302 a download to a
+        # cache/CDN URL; a same-origin hop just works, while a cross-origin hop
+        # is refused unless its origin is in EXTRA_UPSTREAM_ORIGINS.
+        for _ in range(6):
+            req = self._client.build_request("GET", safe, headers=headers)
+            try:
+                resp = await self._client.send(req, stream=True)
+            except httpx.HTTPError as exc:
+                raise KavitaError(
+                    self._cfg.mask(f"Could not stream from upstream: {exc}"),
+                    url=self._cfg.mask(safe),
+                ) from exc
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location")
+                await resp.aread()
+                await resp.aclose()
+                if not location:
+                    raise KavitaError(
+                        self._cfg.mask(f"Redirect without Location from {safe}"),
+                        url=self._cfg.mask(safe), status=resp.status_code,
+                    )
+                safe = self.resolve_url(location, base=safe)  # SSRF re-check
+                continue
+            if resp.status_code >= 400:
+                await resp.aread()
+                await resp.aclose()
+                raise KavitaError(
+                    self._cfg.mask(f"Upstream returned HTTP {resp.status_code} for {safe}"),
+                    url=self._cfg.mask(safe),
+                    status=resp.status_code,
+                )
+            return resp
+        raise KavitaError(self._cfg.mask(f"Too many redirects from {url!r}"))
 
     @asynccontextmanager
     async def stream(self, url: str, *, range_header: str | None = None):

@@ -77,6 +77,26 @@ def test_parse_xhtml_typed_title():
     assert feed.entries[0].author == "A. Writer"
 
 
+def test_supported_acquisition_prefers_epub_skips_unsupported():
+    from app.opds import Entry, Acquisition
+    ACQ = "http://opds-spec.org/acquisition"
+    # Gutenberg-style: epub + Kindle/mobi → pick EPUB.
+    mixed = Entry(acquisitions=[
+        Acquisition("application/x-mobipocket-ebook", "/103.kindle", ACQ),
+        Acquisition("application/epub+zip", "/103.epub", ACQ),
+    ])
+    assert mixed.supported_acquisition.is_epub
+    # PDF-only → pick PDF.
+    pdf = Entry(acquisitions=[Acquisition("application/pdf", "/x.pdf", ACQ)])
+    assert pdf.supported_acquisition.is_pdf
+    # Only unsupported formats (mobi / cbz) → None (entry is skipped, not mislabeled).
+    unsupported = Entry(acquisitions=[
+        Acquisition("application/x-mobipocket-ebook", "/x.mobi", ACQ),
+        Acquisition("application/x-cbz", "/x.cbz", ACQ),
+    ])
+    assert unsupported.supported_acquisition is None
+
+
 def test_malformed_xml_raises_opdsparseerror():
     with pytest.raises(OpdsParseError):
         parse("<feed><entry></feed>")  # mismatched tags
