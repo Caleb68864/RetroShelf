@@ -1,0 +1,164 @@
+/* RetroShelf stylesheet — old Mobile Safari (iOS 5.1.1–12) safe.
+   Single-column BLOCK layout only. No CSS Grid (unsupported < iOS 10.3).
+   No modern flexbox for layout (unreliable < iOS 9). System fonts only,
+   no web-font files, no external assets. Large tap targets for 1024x768 iPads. */
+
+* { -webkit-box-sizing: border-box; box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: #f3f1ea;
+  color: #1c1c1c;
+  font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 20px;
+  line-height: 1.4;
+}
+
+.wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.topbar {
+  border-bottom: 2px solid #d8d2c2;
+  padding-bottom: 10px;
+  margin-bottom: 16px;
+}
+.brand {
+  font-size: 26px;
+  font-weight: bold;
+  color: #7a3b12;
+  text-decoration: none;
+}
+.toplink {
+  float: right;
+  font-size: 18px;
+  color: #555;
+  text-decoration: none;
+  padding-top: 6px;
+}
+
+h1 { font-size: 28px; margin: 8px 0 12px; }
+h2 { font-size: 22px; margin: 22px 0 8px; }
+
+.lead { color: #444; }
+.muted { color: #888; }
+
+/* Status banner */
+.status { padding: 12px 14px; border-radius: 6px; margin: 12px 0; }
+.status.ok { background: #e3efe1; border: 1px solid #9ec79a; }
+.status.bad { background: #f7e3e0; border: 1px solid #d59b93; }
+
+/* Buttons — big tap targets */
+.button {
+  display: block;
+  text-align: center;
+  background: #7a3b12;
+  color: #fff;
+  text-decoration: none;
+  padding: 16px 18px;
+  margin: 12px 0;
+  border-radius: 6px;
+  font-size: 21px;
+  font-weight: bold;
+}
+.button.small { display: inline-block; padding: 10px 14px; font-size: 17px; }
+.button.big { font-size: 24px; padding: 20px; }
+
+/* Search form */
+.search { margin: 14px 0; }
+.search input[type=text] {
+  width: 70%;
+  padding: 12px;
+  font-size: 19px;
+  border: 1px solid #bbb;
+  border-radius: 5px;
+  vertical-align: middle;
+}
+.search input[type=submit] {
+  padding: 12px 16px;
+  font-size: 19px;
+  background: #7a3b12;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  vertical-align: middle;
+}
+
+/* Listings */
+.list { list-style: none; margin: 10px 0; padding: 0; }
+.item {
+  border-bottom: 1px solid #ddd6c6;
+  padding: 6px 0;
+}
+.navlink {
+  display: block;
+  padding: 16px 6px;
+  font-size: 21px;
+  color: #7a3b12;
+  text-decoration: none;
+  font-weight: bold;
+}
+.book {
+  display: block;
+  padding: 12px 6px;
+  text-decoration: none;
+  color: #1c1c1c;
+  min-height: 64px;
+}
+.cover {
+  float: left;
+  width: 56px;
+  height: auto;
+  margin-right: 12px;
+  border: 1px solid #ccc;
+}
+.cover.big { float: none; width: 180px; margin: 0 0 12px; }
+.bookmeta { display: block; overflow: hidden; }
+.booktitle { display: block; font-size: 20px; font-weight: bold; }
+.author { display: block; color: #666; font-size: 17px; }
+.author.big { font-size: 20px; }
+
+/* Format badges */
+.badge {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: bold;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-top: 4px;
+}
+.badge-epub { background: #2f6f3e; }
+.badge-pdf { background: #9a4a1f; }
+
+.pager { margin: 18px 0; }
+
+.hint {
+  background: #f0ece0;
+  border: 1px solid #d8d2c2;
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin: 14px 0;
+  font-size: 18px;
+}
+.summary { color: #333; }
+.error { color: #8a2a1e; }
+.format { color: #444; }
+
+.footer {
+  margin-top: 28px;
+  padding-top: 12px;
+  border-top: 2px solid #d8d2c2;
+  color: #888;
+  font-size: 16px;
+}
+.footer a { color: #777; }
+.back { color: #7a3b12; }

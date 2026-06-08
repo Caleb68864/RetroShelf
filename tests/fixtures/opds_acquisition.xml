@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
+  <id>urn:retroshelf:recently-added</id>
+  <title>Recently Added</title>
+  <updated>2026-06-07T12:00:00Z</updated>
+  <link rel="self" href="/api/opds/KEY/recently-added?pageNumber=1" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="next" href="/api/opds/KEY/recently-added?pageNumber=2" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="previous" href="/api/opds/KEY/recently-added?pageNumber=0" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <entry>
+    <title>The Time Machine</title>
+    <id>urn:retroshelf:book:1</id>
+    <updated>2026-06-01T12:00:00Z</updated>
+    <author><name>H. G. Wells</name></author>
+    <summary>A Victorian scientist travels to the year 802,701.</summary>
+    <link rel="http://opds-spec.org/image" href="/api/image/series-cover?seriesId=1&amp;apiKey=KEY" type="image/jpeg"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="/api/image/series-cover?seriesId=1&amp;apiKey=KEY" type="image/jpeg"/>
+    <link rel="http://opds-spec.org/acquisition/open-access"
+          href="/api/opds/KEY/series/1/volume/1/chapter/1/download/the-time-machine.epub"
+          type="application/epub+zip"/>
+  </entry>
+  <entry>
+    <title>Annual Report 2025</title>
+    <id>urn:retroshelf:book:2</id>
+    <updated>2026-05-20T12:00:00Z</updated>
+    <author><name>Acme Corp</name></author>
+    <summary>The yearly financial report.</summary>
+    <link rel="http://opds-spec.org/acquisition"
+          href="/api/opds/KEY/series/2/volume/2/chapter/2/download/annual-report-2025.pdf"
+          type="application/pdf"/>
+  </entry>
+</feed>

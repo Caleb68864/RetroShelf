@@ -1,0 +1,86 @@
+"""Tests for app.opds — Atom parsing, nav vs acquisition, pagination, covers."""
+import pathlib
+
+import pytest
+
+from app.opds import parse, OpdsParseError, Acquisition
+
+FIX = pathlib.Path(__file__).parent / "fixtures"
+
+
+def _load(name: str) -> str:
+    return (FIX / name).read_text(encoding="utf-8")
+
+
+def test_parse_navigation_feed():
+    feed = parse(_load("opds_root.xml"))
+    assert feed.title == "RetroShelf Library"
+    assert feed.search_url and "search" in feed.search_url
+    assert len(feed.entries) == 2
+    nav = feed.entries[0]
+    assert nav.is_navigation is True
+    assert nav.nav_href == "/api/opds/KEY/libraries"
+    assert nav.acquisitions == []
+
+
+def test_parse_acquisition_feed_epub_and_pdf():
+    feed = parse(_load("opds_acquisition.xml"))
+    assert feed.title == "Recently Added"
+    assert len(feed.entries) == 2
+
+    epub_entry = feed.entries[0]
+    assert epub_entry.title == "The Time Machine"
+    assert epub_entry.author == "H. G. Wells"
+    assert epub_entry.is_navigation is False
+    acq = epub_entry.primary_acquisition
+    assert isinstance(acq, Acquisition)
+    assert acq.media_type == "application/epub+zip"
+    assert acq.is_epub is True
+    assert acq.href.endswith("the-time-machine.epub")
+    assert epub_entry.cover_url == "/api/image/series-cover?seriesId=1&apiKey=KEY"
+
+    pdf_entry = feed.entries[1]
+    assert pdf_entry.primary_acquisition.media_type == "application/pdf"
+    assert pdf_entry.primary_acquisition.is_pdf is True
+
+
+def test_pagination_links():
+    feed = parse(_load("opds_acquisition.xml"))
+    assert feed.next_url.endswith("pageNumber=2")
+    assert feed.prev_url.endswith("pageNumber=0")
+
+
+def test_primary_acquisition_prefers_epub_over_pdf():
+    from app.opds import Entry, Acquisition
+    e = Entry(acquisitions=[
+        Acquisition("application/pdf", "/x.pdf", "http://opds-spec.org/acquisition"),
+        Acquisition("application/epub+zip", "/x.epub", "http://opds-spec.org/acquisition"),
+    ])
+    assert e.primary_acquisition.is_epub
+
+
+def test_malformed_xml_raises_opdsparseerror():
+    with pytest.raises(OpdsParseError):
+        parse("<feed><entry></feed>")  # mismatched tags
+
+
+def test_empty_raises():
+    with pytest.raises(OpdsParseError):
+        parse("")
+
+
+def test_non_feed_root_raises():
+    with pytest.raises(OpdsParseError):
+        parse('<?xml version="1.0"?><notafeed/>')
+
+
+def test_defused_blocks_external_entity():
+    # A billion-laughs / external-entity payload must not expand; defusedxml
+    # raises (caught and re-raised as OpdsParseError).
+    bomb = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE feed [<!ENTITY a "AAAA"><!ENTITY b "&a;&a;&a;">]>'
+        '<feed xmlns="http://www.w3.org/2005/Atom"><title>&b;</title></feed>'
+    )
+    with pytest.raises(OpdsParseError):
+        parse(bomb)

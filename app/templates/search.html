@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Search - RetroShelf{% endblock %}
+{% block content %}
+<h1>Search</h1>
+
+<form class="search" action="/search" method="get">
+  <input type="text" name="q" placeholder="Title or author" value="{{ query }}">
+  <input type="submit" value="Search">
+</form>
+
+{% if query %}
+  {% if entries %}
+    <ul class="list">
+    {% for e in entries %}
+      <li class="item">
+        <a class="book" href="{{ e.detail_url }}">
+          {% if e.cover_url %}<img class="cover" src="{{ e.cover_url }}" alt="">{% endif %}
+          <span class="bookmeta">
+            <span class="booktitle">{{ e.title }}</span>
+            {% if e.author %}<span class="author">{{ e.author }}</span>{% endif %}
+            {% if e.badge %}<span class="badge badge-{{ e.badge|lower }}">{{ e.badge }}</span>{% endif %}
+          </span>
+        </a>
+      </li>
+    {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">No results for &ldquo;{{ query }}&rdquo;.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}RetroShelf{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <a class="brand" href="/">RetroShelf</a>
+    <a class="toplink" href="/help">Help</a>
+  </div>
+  {% block content %}{% endblock %}
+  <div class="footer">
+    <a href="/">Home</a> &middot; <a href="/help">Help</a>
+  </div>
+</div>
+</body>
+</html>

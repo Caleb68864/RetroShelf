@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} - RetroShelf{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+{% if author %}<p class="author big">{{ author }}</p>{% endif %}
+
+{% if cover_url %}<p><img class="cover big" src="{{ cover_url }}" alt=""></p>{% endif %}
+
+<p class="format">Format: <span class="badge badge-{{ badge|lower }}">{{ badge }}</span></p>
+
+{% if summary %}<p class="summary">{{ summary }}</p>{% endif %}
+
+<p>
+  <a class="button big" href="{{ download_url }}" target="_blank">
+    {% if badge == 'EPUB' %}Open in iBooks{% else %}Open PDF{% endif %}
+  </a>
+</p>
+
+<div class="hint">
+{% if badge == 'EPUB' %}
+  Tap <strong>Open in iBooks</strong>. If iOS asks, choose <strong>iBooks</strong> or <strong>Books</strong>.
+{% else %}
+  Tap <strong>Open PDF</strong> and wait for it to appear. Then tap the
+  <strong>Share</strong> button and choose <strong>Copy to iBooks</strong> /
+  <strong>Open in Books</strong>.
+{% endif %}
+</div>
+
+<p><a class="back" href="{{ back_url }}">&laquo; Back</a></p>
+{% endblock %}

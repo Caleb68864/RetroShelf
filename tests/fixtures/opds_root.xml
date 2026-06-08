@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
+  <id>urn:retroshelf:root</id>
+  <title>RetroShelf Library</title>
+  <updated>2026-06-07T12:00:00Z</updated>
+  <link rel="self" href="/api/opds/KEY" type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="start" href="/api/opds/KEY" type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="search" href="/api/opds/KEY/search?query={searchTerms}" type="application/atom+xml"/>
+  <entry>
+    <title>All Libraries</title>
+    <id>urn:retroshelf:libraries</id>
+    <updated>2026-06-07T12:00:00Z</updated>
+    <content type="text">Browse your libraries</content>
+    <link rel="subsection" href="/api/opds/KEY/libraries" type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  </entry>
+  <entry>
+    <title>Recently Added</title>
+    <id>urn:retroshelf:recently-added</id>
+    <updated>2026-06-07T12:00:00Z</updated>
+    <link rel="http://opds-spec.org/sort/new" href="/api/opds/KEY/recently-added" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  </entry>
+</feed>
