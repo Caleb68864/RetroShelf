@@ -1,0 +1,23 @@
+# Research vault is versioned independently (its own git repo)
+vault/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# logic-dev-kit code graph
+graphify-out/
+
+# Forge factory run artifacts
+task-evidence/
+.factory-*.txt
+.factory-run-*/
+
+# Local cache/config volumes if created during testing
+/cache/
+/config/
+.DS_Store

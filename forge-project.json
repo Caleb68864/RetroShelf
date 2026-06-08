@@ -1,0 +1,40 @@
+{
+  "project_name": "RetroShelf",
+  "name": "RetroShelf",
+  "repo_root": ".",
+  "project_vault": "vault",
+  "build_command": ".venv/bin/python -m compileall -q app",
+  "test_command": ".venv/bin/python -m pytest -q",
+  "start_command": ".venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8099",
+  "spec_output_dir": "docs/specs",
+  "notes_dir": "docs/notes",
+  "graph_front_door": false,
+  "graph_refresh_on_wave": false,
+  "factory_aware_config": {
+    "python_runtime": "3.12 (container) / 3.14 (local dev venv)",
+    "frontend_test_runner": null,
+    "frontend_build_tool": null,
+    "notes": [
+      "No Docker available in dev environment; verify natively via venv import + pytest + uvicorn smoke. Dockerfile/compose validated statically.",
+      "Frontend is server-rendered Jinja2 HTML + one static CSS file. NO JavaScript. Target old Mobile Safari iOS 5.1.1-12.",
+      "Books are proxied/streamed from Kavita via httpx; never buffer whole files."
+    ]
+  },
+  "reference_sources": {
+    "research-vault": { "path": "vault", "label": "RetroShelf research vault" },
+    "build-constraints": { "path": "vault/Build Constraints.md", "label": "Build Constraints" }
+  },
+  "project_graph": {
+    "out_dirname": "graphify-out",
+    "auto_refresh": "off",
+    "languages": ["python"],
+    "storage": "sqlite",
+    "search_mode": "substring",
+    "vault": "",
+    "exclude_dirs": [".venv", "vault", "graphify-out", "docs"],
+    "include_dirs": ["app", "tests"],
+    "enabled": false,
+    "graph_first": false,
+    "text_fallback": true
+  }
+}
