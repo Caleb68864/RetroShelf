@@ -1,4 +1,19 @@
-"""Jinja2 template configuration for the server-rendered, no-JS UI."""
+"""Jinja2 template configuration for the server-rendered, no-JS UI.
+
+Exposes a single :data:`templates` instance pre-configured with the
+project's ``templates/`` directory, and the :data:`STATIC_DIR` path
+constant used by the router to mount static assets.
+
+Module-level constants
+-----------------------
+:data:`TEMPLATES_DIR`
+    Absolute :class:`pathlib.Path` to the ``app/templates/`` directory.
+:data:`STATIC_DIR`
+    Absolute :class:`pathlib.Path` to the ``app/static/`` directory.
+:data:`templates`
+    Configured :class:`fastapi.templating.Jinja2Templates` instance ready
+    to be used in route handlers via ``templates.TemplateResponse(...)``.
+"""
 from __future__ import annotations
 
 from pathlib import Path

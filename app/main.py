@@ -4,6 +4,10 @@ and the opds→ids→render→download wiring.
 Everything the iPad sees is a bridge id; the Kavita apiKey is held server-side
 and never appears in a response body. Every decoded id is re-validated through
 the SSRF guard before any upstream fetch. [C-3][C-6][H-2]
+
+:var log: Module-level logger named ``retroshelf``.
+:var _OPEN_PREFIXES: Path prefixes that bypass access-key / IP-allowlist
+    middleware (health check and static assets). [M-7]
 """
 from __future__ import annotations
 
@@ -38,14 +42,36 @@ _OPEN_PREFIXES = ("/health", "/static")
 
 
 class FeedCache:
-    """Tiny bounded TTL cache keyed by the bridge feed id (NOT the apiKey URL)."""
+    """Tiny bounded TTL cache keyed by the bridge feed id (NOT the apiKey URL).
+
+    Entries older than *ttl_seconds* are considered stale and evicted on the
+    next access. When the cache is at capacity the oldest entry is evicted
+    before a new one is inserted.
+    """
 
     def __init__(self, ttl_seconds: int, max_entries: int = 256):
+        """Initialise the cache.
+
+        :param ttl_seconds: Lifetime of each cached entry in seconds.
+            A value of ``0`` or negative disables caching entirely.
+        :type ttl_seconds: int
+        :param max_entries: Maximum number of entries to hold before evicting
+            the oldest one.
+        :type max_entries: int
+        """
         self._ttl = ttl_seconds
         self._max = max_entries
         self._data: dict[str, tuple[float, opds.Feed]] = {}
 
     def get(self, key: str) -> opds.Feed | None:
+        """Return a cached feed if it exists and has not expired.
+
+        :param key: The bridge feed id used as the cache key.
+        :type key: str
+        :returns: The cached :class:`~app.opds.Feed`, or ``None`` when the
+            entry is missing, stale, or caching is disabled.
+        :rtype: opds.Feed or None
+        """
         if self._ttl <= 0:
             return None
         hit = self._data.get(key)
@@ -58,6 +84,15 @@ class FeedCache:
         return feed
 
     def put(self, key: str, feed: opds.Feed) -> None:
+        """Store a feed in the cache, evicting the oldest entry if necessary.
+
+        Does nothing when caching is disabled (``ttl_seconds <= 0``).
+
+        :param key: The bridge feed id used as the cache key.
+        :type key: str
+        :param feed: The parsed OPDS feed to cache.
+        :type feed: opds.Feed
+        """
         if self._ttl <= 0:
             return
         if len(self._data) >= self._max:
@@ -69,13 +104,36 @@ class FeedCache:
 
 class _SecretMaskingFilter(logging.Filter):
     """Safety net: mask the apiKey/access key in EVERY log record, including
-    those emitted by third-party libraries (e.g. httpx logging the full URL). [H7]"""
+    those emitted by third-party libraries (e.g. httpx logging the full URL). [H7]
+
+    Attached to all root-logger handlers during :func:`lifespan` startup so
+    that secrets cannot appear in any sink regardless of their origin.
+    """
 
     def __init__(self, cfg: Config):
+        """Initialise the filter with the active configuration.
+
+        :param cfg: Application configuration object whose
+            :meth:`~app.config.Config.mask` method is called on every
+            formatted log message.
+        :type cfg: Config
+        """
         super().__init__()
         self._cfg = cfg
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Mask secrets in *record* before it is emitted.
+
+        Replaces ``record.msg`` with the masked, fully-formatted message and
+        clears ``record.args`` so the logging machinery does not re-format it.
+        Exceptions inside masking are silently swallowed to prevent the filter
+        from crashing a request. [H7]
+
+        :param record: The log record to sanitise in-place.
+        :type record: logging.LogRecord
+        :returns: Always ``True`` so the record is never suppressed.
+        :rtype: bool
+        """
         try:
             record.msg = self._cfg.mask(record.getMessage())
             record.args = ()
@@ -86,6 +144,27 @@ class _SecretMaskingFilter(logging.Filter):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """AsyncContextManager that wires shared state onto *app* at startup and
+    tears it down on shutdown.
+
+    On entry:
+
+    * Creates and attaches an :class:`~app.kavita.KavitaClient`,
+      :class:`~app.ids.IdCodec`, and :class:`FeedCache` to ``app.state``.
+    * Configures the root logger at the level specified by
+      :attr:`~app.config.Config.log_level`.
+    * Attaches a :class:`_SecretMaskingFilter` to every root-logger handler.
+
+    On exit:
+
+    * Closes the underlying ``httpx`` async client gracefully.
+
+    :param app: The FastAPI application instance whose ``state`` will be
+        populated.
+    :type app: FastAPI
+    :raises ConfigError: Propagates if the configuration is invalid (raised
+        earlier by :func:`create_app`, not here directly).
+    """
     cfg: Config = app.state.config
     client = build_client(user_agent=cfg.upstream_user_agent)
     app.state.http = client
@@ -104,6 +183,20 @@ async def lifespan(app: FastAPI):
 
 
 def create_app(config: Config | None = None) -> FastAPI:
+    """Build and return the configured :class:`~fastapi.FastAPI` application.
+
+    Mounts static files, registers the HTTP middleware (IP allowlist and
+    access-key gate), attaches domain-error and catch-all exception handlers,
+    and delegates route registration to :func:`_register_routes`.
+
+    :param config: Pre-built configuration object to use.  When ``None``,
+        :func:`~app.config.load_config` is called to read the environment.
+    :type config: Config or None
+    :returns: A fully configured FastAPI application ready to be served.
+    :rtype: FastAPI
+    :raises ConfigError: If *config* is ``None`` and the environment is
+        missing required variables (raised by :func:`~app.config.load_config`).
+    """
     cfg = config or load_config()
     app = FastAPI(title="RetroShelf", lifespan=lifespan)
     app.state.config = cfg
@@ -112,6 +205,20 @@ def create_app(config: Config | None = None) -> FastAPI:
     # -- middleware: optional access key + IP allowlist ----------------------
     @app.middleware("http")
     async def gate(request: Request, call_next):
+        """HTTP middleware: enforce IP allowlist and access-key checks.
+
+        Requests whose path begins with any prefix in :data:`_OPEN_PREFIXES`
+        (``/health``, ``/static``) are passed through unconditionally.  All
+        other requests must originate from an allowed IP and supply a valid
+        access key (via ``?key=`` query parameter or ``X-Access-Key`` header).
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :param call_next: ASGI callable for the next middleware or route handler.
+        :returns: A 403 :class:`~fastapi.responses.Response` on access denial,
+            otherwise the response produced by the downstream handler.
+        :rtype: Response
+        """
         path = request.url.path
         if not any(path.startswith(p) for p in _OPEN_PREFIXES):
             client_ip = request.client.host if request.client else None
@@ -125,6 +232,20 @@ def create_app(config: Config | None = None) -> FastAPI:
     # -- error handlers ------------------------------------------------------
     @app.exception_handler(RetroShelfError)
     async def handle_domain_error(request: Request, exc: RetroShelfError):
+        """Exception handler for all :class:`~app.errors.RetroShelfError` subclasses.
+
+        Maps the exception type to an HTTP status code and heading via
+        :func:`_status_for`, then renders ``error.html``.  In debug mode the
+        masked raw exception message is shown; otherwise a generic friendly
+        message is produced by :func:`_friendly_message`.
+
+        :param request: The request that triggered the exception.
+        :type request: Request
+        :param exc: The domain exception to handle.
+        :type exc: RetroShelfError
+        :returns: An HTML error response with the appropriate status code.
+        :rtype: Response
+        """
         status, heading = _status_for(exc)
         # The exception message is already masked by the raiser; mask again defensively.
         msg = cfg.mask(str(exc)) if cfg.debug else _friendly_message(exc)
@@ -133,6 +254,19 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def handle_unexpected(request: Request, exc: Exception):
+        """Catch-all exception handler for any unhandled :class:`Exception`.
+
+        Logs the full masked traceback at ``ERROR`` level but returns only a
+        generic message to the client so that internal details are never leaked.
+        [H9]
+
+        :param request: The request that triggered the exception.
+        :type request: Request
+        :param exc: The unexpected exception.
+        :type exc: Exception
+        :returns: A 500 HTML error response with a generic message.
+        :rtype: Response
+        """
         # Fail LOUD in the logs (full type + masked detail + traceback) but never
         # leak internals to the user. [H9]
         log.exception("Unexpected %s on %s: %s", type(exc).__name__,
@@ -145,6 +279,14 @@ def create_app(config: Config | None = None) -> FastAPI:
 
 
 def _status_for(exc: Exception) -> tuple[int, str]:
+    """Return the HTTP status code and a short human-readable heading for *exc*.
+
+    :param exc: The exception to classify.
+    :type exc: Exception
+    :returns: A 2-tuple of ``(status_code, heading)`` where *status_code* is
+        the integer HTTP status and *heading* is a brief title string.
+    :rtype: tuple[int, str]
+    """
     if isinstance(exc, BadIdError):
         return 404, "Not found"
     if isinstance(exc, SsrfError):
@@ -155,6 +297,16 @@ def _status_for(exc: Exception) -> tuple[int, str]:
 
 
 def _friendly_message(exc: Exception) -> str:
+    """Return a safe, user-facing error message for *exc*.
+
+    The message contains no internal details, stack traces, or secrets.
+    Used by :func:`create_app` exception handlers when debug mode is off.
+
+    :param exc: The exception to describe.
+    :type exc: Exception
+    :returns: A short string suitable for display in the browser error page.
+    :rtype: str
+    """
     if isinstance(exc, BadIdError):
         return "That link is not valid or has expired."
     if isinstance(exc, SsrfError):
@@ -167,21 +319,82 @@ def _friendly_message(exc: Exception) -> str:
 
 
 def _error_response(request: Request, heading: str, message: str, status: int) -> Response:
+    """Render ``error.html`` as an :class:`~fastapi.responses.HTMLResponse`.
+
+    :param request: The current HTTP request (required by the template engine).
+    :type request: Request
+    :param heading: Short error title shown as the page heading.
+    :type heading: str
+    :param message: Longer descriptive message shown in the error body.
+    :type message: str
+    :param status: HTTP status code for the response.
+    :type status: int
+    :returns: A rendered HTML response with *status* as the status code.
+    :rtype: Response
+    """
     return templates.TemplateResponse(
         request, "error.html", {"heading": heading, "message": message}, status_code=status
     )
 
 
 def _register_routes(app: FastAPI, cfg: Config) -> None:
+    """Register all URL routes on *app* using *cfg* for configuration.
+
+    Defines and registers:
+
+    * Two private helper closures (``kc``, ``codec``) for extracting shared
+      state from the request.
+    * ``_to_view_model`` — translates a parsed OPDS feed into template dicts.
+    * ``_load_feed`` — cache-aware feed fetcher.
+    * ``_do_download`` — shared download/HEAD logic reused by all download routes.
+    * All page, download, cover, health, and search route handlers.
+
+    :param app: The FastAPI application to register routes on.
+    :type app: FastAPI
+    :param cfg: Active application configuration used inside route closures.
+    :type cfg: Config
+    """
 
     def kc(request: Request) -> KavitaClient:
+        """Return the :class:`~app.kavita.KavitaClient` stored on *request.app.state*.
+
+        :param request: The current HTTP request.
+        :type request: Request
+        :returns: The shared Kavita client for this application instance.
+        :rtype: KavitaClient
+        """
         return request.app.state.kavita
 
     def codec(request: Request) -> IdCodec:
+        """Return the :class:`~app.ids.IdCodec` stored on *request.app.state*.
+
+        :param request: The current HTTP request.
+        :type request: Request
+        :returns: The shared id codec for this application instance.
+        :rtype: IdCodec
+        """
         return request.app.state.ids
 
     # -- view-model seam: encode every upstream href as a bridge id [H-2] ----
     def _to_view_model(feed: opds.Feed, ids: IdCodec, kavita: KavitaClient) -> list[dict]:
+        """Convert a parsed OPDS *feed* into a list of template-ready dicts.
+
+        Every upstream URL (navigation href, acquisition href, cover URL) is
+        SSRF-validated via :meth:`~app.kavita.KavitaClient.resolve_url` and
+        then encoded as a bridge id.  Entries whose primary URL fails
+        validation are silently dropped. [H-2]
+
+        :param feed: The parsed OPDS feed whose entries are to be converted.
+        :type feed: opds.Feed
+        :param ids: Id codec used to encode upstream URLs as opaque bridge ids.
+        :type ids: IdCodec
+        :param kavita: Kavita client used to validate and resolve upstream URLs.
+        :type kavita: KavitaClient
+        :returns: A list of dicts ready for Jinja2 template rendering.  Each
+            dict has an ``is_nav`` boolean key and further keys depending on
+            whether the entry is a navigation link or an acquisition entry.
+        :rtype: list[dict]
+        """
         entries = []
         for e in feed.entries:
             if e.is_navigation and e.nav_href:
@@ -222,6 +435,19 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return entries
 
     async def _load_feed(request: Request, url: str, cache_key: str) -> opds.Feed:
+        """Fetch and parse an OPDS feed, returning a cached copy when available.
+
+        :param request: The current HTTP request (used to access shared state).
+        :type request: Request
+        :param url: The fully-resolved upstream OPDS URL to fetch.
+        :type url: str
+        :param cache_key: The bridge feed id used as the :class:`FeedCache` key.
+        :type cache_key: str
+        :returns: The parsed :class:`~app.opds.Feed`.
+        :rtype: opds.Feed
+        :raises KavitaError: If the upstream request fails.
+        :raises OpdsParseError: If the response body cannot be parsed as OPDS.
+        """
         cache: FeedCache = request.app.state.cache
         cached = cache.get(cache_key)
         if cached is not None:
@@ -234,6 +460,17 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     # -- pages ---------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
     async def home(request: Request):
+        """GET ``/`` — render the home/status page.
+
+        Probes the Kavita OPDS root feed to report connectivity status and
+        provides a link to the root feed page.
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :returns: Rendered ``home.html`` with ``kavita_ok``, ``status_detail``,
+            and ``root_feed_url`` template variables.
+        :rtype: HTMLResponse
+        """
         root_url = cfg.kavita_opds_url
         kavita_ok, detail = True, ""
         try:
@@ -248,6 +485,23 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     @app.get("/feed/{fid}", response_class=HTMLResponse)
     async def feed(request: Request, fid: str):
+        """GET ``/feed/{fid}`` — render a paginated OPDS feed page.
+
+        Decodes the bridge feed id *fid*, re-validates the resolved URL through
+        the SSRF guard, fetches (or returns a cached) feed, converts entries to
+        view-model dicts, and renders ``feed.html``.
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :param fid: Opaque bridge id that encodes the upstream OPDS feed URL.
+        :type fid: str
+        :returns: Rendered ``feed.html`` with feed title, entries, and
+            pagination URLs.
+        :rtype: HTMLResponse
+        :raises BadIdError: If *fid* cannot be decoded or the resolved URL
+            fails SSRF validation.
+        :raises KavitaError: If the upstream OPDS request fails.
+        """
         url = kc(request).resolve_url(codec(request).decode(fid))  # decode + re-validate SSRF
         parsed = await _load_feed(request, url, fid)
         entries = _to_view_model(parsed, codec(request), kc(request))
@@ -261,6 +515,21 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     @app.get("/book/{bid}", response_class=HTMLResponse)
     async def book(request: Request, bid: str):
+        """GET ``/book/{bid}`` — render the book detail / download page.
+
+        Decodes the bridge book id *bid* (a JSON record encoded by
+        :func:`_to_view_model`) and renders ``book.html`` with title, author,
+        summary, format badge, cover URL, and a safe download URL.
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :param bid: Opaque bridge id that encodes a JSON book record.
+        :type bid: str
+        :returns: Rendered ``book.html`` with book metadata and download link.
+        :rtype: HTMLResponse
+        :raises BadIdError: If *bid* cannot be decoded or the JSON record is
+            malformed.
+        """
         try:
             rec = json.loads(codec(request).decode(bid))
         except (ValueError, TypeError) as exc:
@@ -280,6 +549,21 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     @app.get("/search", response_class=HTMLResponse)
     async def search(request: Request, q: str = ""):
+        """GET ``/search?q=QUERY`` — render the search results page.
+
+        When *q* is non-empty, queries the Kavita OPDS search endpoint and
+        converts results to view-model dicts.  If the search endpoint is
+        unavailable the page renders with ``search_error=True`` rather than
+        silently showing zero results. [H6]
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :param q: The search query string (defaults to empty string).
+        :type q: str
+        :returns: Rendered ``search.html`` with ``query``, ``entries``, and
+            ``search_error`` template variables.
+        :rtype: HTMLResponse
+        """
         q = (q or "").strip()
         entries = []
         search_error = False
@@ -300,14 +584,49 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     @app.get("/help", response_class=HTMLResponse)
     async def help_page(request: Request):
+        """GET ``/help`` — render the static help page.
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :returns: Rendered ``help.html`` with no additional template variables.
+        :rtype: HTMLResponse
+        """
         return templates.TemplateResponse(request, "help.html", {})
 
     @app.get("/health")
     async def health():
+        """GET ``/health`` — container health-check endpoint.
+
+        Returns the plain-text string ``ok`` with a 200 status.  This route
+        is excluded from access-key / IP-allowlist middleware so container
+        orchestrators can probe it without credentials. [M-7]
+
+        :returns: Plain-text ``"ok"`` with HTTP 200.
+        :rtype: PlainTextResponse
+        """
         return PlainTextResponse("ok")
 
     # -- downloads / covers --------------------------------------------------
     async def _do_download(request: Request, did: str):
+        """Shared GET/HEAD download logic reused by all download route handlers.
+
+        Decodes the bridge download id *did*, re-validates the resolved URL
+        through the SSRF guard, determines the media type and disposition from
+        the URL extension, and either returns headers only (HEAD) or streams
+        the file body (GET) with optional range support.
+
+        :param request: The incoming HTTP request.  ``request.method`` is
+            inspected to decide between HEAD and GET behaviour.
+        :type request: Request
+        :param did: Opaque bridge id that encodes the upstream download URL.
+        :type did: str
+        :returns: A headers-only :class:`~fastapi.responses.Response` for HEAD
+            requests, or a streaming response for GET requests.
+        :rtype: Response
+        :raises BadIdError: If *did* cannot be decoded or the resolved URL
+            fails SSRF validation.
+        :raises KavitaError: If the upstream download request fails.
+        """
         url = kc(request).resolve_url(codec(request).decode(did))  # decode + re-validate
         # Media type is derived from the acquisition URL suffix (Kavita download
         # URLs end in the real filename, .epub/.pdf), defaulting to EPUB.
@@ -326,18 +645,69 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     @app.api_route("/download/{did}/{filename}", methods=["GET", "HEAD"])
     async def download_named(request: Request, did: str, filename: str):
+        """GET/HEAD ``/download/{did}/{filename}`` — download a book with an explicit filename.
+
+        The *filename* path segment is accepted for URL aesthetics (e.g. Safari
+        uses it as the saved filename) but is otherwise ignored; the actual
+        filename is derived from the upstream URL.
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :param did: Opaque bridge id that encodes the upstream download URL.
+        :type did: str
+        :param filename: Decorative filename segment; not used for routing logic.
+        :type filename: str
+        :returns: Streaming book download or headers-only response for HEAD.
+        :rtype: Response
+        """
         return await _do_download(request, did)
 
     @app.api_route("/download/{did}", methods=["GET", "HEAD"])
     async def download(request: Request, did: str):
+        """GET/HEAD ``/download/{did}`` — download a book without an explicit filename.
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :param did: Opaque bridge id that encodes the upstream download URL.
+        :type did: str
+        :returns: Streaming book download or headers-only response for HEAD.
+        :rtype: Response
+        """
         return await _do_download(request, did)
 
     @app.api_route("/open/{did}", methods=["GET", "HEAD"])
     async def open_alias(request: Request, did: str):
+        """GET/HEAD ``/open/{did}`` — alias of the download route for ADE / reader apps.
+
+        Some e-reader applications (e.g. Adobe Digital Editions) POST or GET
+        to ``/open/`` paths.  This alias delegates entirely to
+        :func:`_do_download`.
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :param did: Opaque bridge id that encodes the upstream download URL.
+        :type did: str
+        :returns: Streaming book download or headers-only response for HEAD.
+        :rtype: Response
+        """
         return await _do_download(request, did)
 
     @app.api_route("/cover/{cid}", methods=["GET", "HEAD"])
     async def cover(request: Request, cid: str):
+        """GET/HEAD ``/cover/{cid}`` — proxy a book cover image from Kavita.
+
+        Cover failures return a tiny empty 404 GIF rather than a full HTML
+        error page so that a broken cover does not corrupt an ``<img>`` tag in
+        the browser. [H5]
+
+        :param request: The incoming HTTP request.
+        :type request: Request
+        :param cid: Opaque bridge id that encodes the upstream cover image URL.
+        :type cid: str
+        :returns: Streaming JPEG cover image, a 200 headers-only response for
+            HEAD requests, or a 404 empty GIF on any retrieval error.
+        :rtype: Response
+        """
         # A cover failure must NOT render a full HTML error page into an <img>;
         # return a tiny empty 404 so the browser just shows a broken image. [H5]
         try:
@@ -353,14 +723,40 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
 
 def _basename(url: str) -> str:
+    """Return the final path segment of *url* (i.e. the filename part).
+
+    :param url: An absolute URL whose path basename is required.
+    :type url: str
+    :returns: The last ``/``-delimited component of the URL's path, or the
+        full path if it contains no ``/``.
+    :rtype: str
+    """
     from urllib.parse import urlsplit
     path = urlsplit(url).path
     return path.rsplit("/", 1)[-1] if "/" in path else path
 
 
 def _media_for_url(url: str, cfg: Config) -> tuple[str, str, str]:
-    """Return (media_type, disposition, ext) inferred from the download URL's
-    extension. Kavita download URLs end in the real filename (.epub/.pdf)."""
+    """Return ``(media_type, disposition, ext)`` inferred from the download URL's
+    file extension.
+
+    Kavita download URLs end in the real filename (e.g. ``book.epub`` or
+    ``book.pdf``), so the extension is sufficient to determine the MIME type
+    and Content-Disposition mode.  Anything that does not contain ``.pdf`` is
+    treated as EPUB.
+
+    :param url: The upstream download URL to inspect.
+    :type url: str
+    :param cfg: Application configuration supplying
+        :attr:`~app.config.Config.epub_disposition` and
+        :attr:`~app.config.Config.pdf_disposition`.
+    :type cfg: Config
+    :returns: A 3-tuple of ``(media_type, disposition, extension)`` where
+        *media_type* is the MIME type string, *disposition* is either
+        ``"inline"`` or ``"attachment"``, and *extension* is ``"pdf"`` or
+        ``"epub"``.
+    :rtype: tuple[str, str, str]
+    """
     low = url.lower()
     if ".pdf" in low:
         return PDF_MIME, cfg.pdf_disposition, "pdf"

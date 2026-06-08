@@ -2,12 +2,18 @@
 memory-safe streaming proxy.
 
 Design (verified — see vault/MOC - FastAPI Streaming and Range):
+
 - ONE shared :class:`httpx.AsyncClient` is created in the app lifespan with
   ``Timeout(read=None)`` so large book transfers are not killed by httpx's
   default 5s per-phase timeout. It is injected, never created at import time.
 - Downloads are streamed (``client.stream``) and never read fully into memory.
-- ``resolve_url`` is the SSRF choke point: every upstream URL — including those
-  decoded from a signed bridge id — must pass through it before any fetch.
+- :func:`~KavitaClient.resolve_url` is the SSRF choke point: every upstream
+  URL — including those decoded from a signed bridge id — must pass through
+  it before any fetch.
+
+:var DEFAULT_USER_AGENT: A modern desktop-Safari User-Agent string used as
+    the default ``User-Agent`` header for all upstream requests.
+:vartype DEFAULT_USER_AGENT: str
 """
 from __future__ import annotations
 
@@ -29,13 +35,25 @@ DEFAULT_USER_AGENT = (
 
 
 def build_client(timeout_connect: float = 10.0, user_agent: str | None = None) -> httpx.AsyncClient:
-    """Create the shared AsyncClient. ``read=None`` disables the per-chunk read
-    timeout so slow/large streams from Kavita are not aborted; connect/pool keep
-    a sane bound. ``follow_redirects`` stays False to avoid redirect-based SSRF.
-    Connection limits cap concurrent upstream sockets so a burst of iPad requests
-    cannot exhaust the host; waiters past the pool timeout fail with a clear error.
-    A browser-like ``User-Agent`` is sent so public/Cloudflare-fronted OPDS
-    servers don't reject the bridge."""
+    """Create the shared :class:`httpx.AsyncClient` for the bridge.
+
+    ``read=None`` disables the per-chunk read timeout so slow or large streams
+    from Kavita are not aborted; connect and pool timeouts keep a sane bound.
+    ``follow_redirects`` is left ``False`` to prevent redirect-based SSRF.
+    Connection limits cap concurrent upstream sockets so a burst of iPad
+    requests cannot exhaust the host; waiters past the pool timeout fail with a
+    clear error. A browser-like ``User-Agent`` is set so public or
+    Cloudflare-fronted OPDS servers do not reject the bridge.
+
+    :param timeout_connect: Seconds before a connect or pool-wait times out.
+    :type timeout_connect: float
+    :param user_agent: Override the ``User-Agent`` header; falls back to
+        :data:`DEFAULT_USER_AGENT` when ``None``.
+    :type user_agent: str or None
+    :returns: A configured :class:`httpx.AsyncClient` ready for use as the
+        shared upstream transport.
+    :rtype: httpx.AsyncClient
+    """
     timeout = httpx.Timeout(connect=timeout_connect, read=None, write=None, pool=timeout_connect)
     limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
     headers = {"User-Agent": user_agent or DEFAULT_USER_AGENT}
@@ -43,22 +61,55 @@ def build_client(timeout_connect: float = 10.0, user_agent: str | None = None) -
 
 
 class KavitaClient:
-    """Thin wrapper around a shared AsyncClient bound to one :class:`Config`."""
+    """Thin wrapper around a shared :class:`httpx.AsyncClient` bound to one
+    :class:`~app.config.Config`.
 
-    def __init__(self, config: Config, client: httpx.AsyncClient):
+    All upstream HTTP calls are SSRF-guarded via :meth:`resolve_url` before
+    any network I/O takes place.  The client is injected rather than created
+    internally so the same connection pool is shared across the application
+    lifetime.
+    """
+
+    def __init__(self, config: Config, client: httpx.AsyncClient) -> None:
+        """Initialise the client wrapper.
+
+        :param config: Application configuration including the Kavita origin
+            and allowed-origins list used by the SSRF guard.
+        :type config: ~app.config.Config
+        :param client: Shared async HTTP client; should have ``read=None``
+            timeout and ``follow_redirects=False`` (see :func:`build_client`).
+        :type client: httpx.AsyncClient
+        """
         self._cfg = config
         self._client = client
 
     # -- SSRF guard ----------------------------------------------------------
     def resolve_url(self, href: str) -> str:
-        """Resolve *href* against the Kavita origin and return an absolute URL,
-        or raise :class:`SsrfError` if it points anywhere else.
+        """Resolve *href* against the Kavita origin and return an absolute URL.
 
-        Accepts only:
-          * already-absolute URLs whose origin == the Kavita origin, or
-          * root-relative absolute paths (a single leading ``/``).
-        Rejects protocol-relative (``//host``), backslash, foreign-origin, and
-        scheme-relative forms — the exact bypasses the red-team found. [C-2]
+        This is the SSRF choke point.  Every upstream URL must pass through
+        this method before any network fetch is issued.
+
+        Accepted forms:
+
+        * Already-absolute URLs whose origin matches the configured Kavita
+          origin (or an entry in ``Config.allowed_origins``).
+        * Root-relative absolute paths (a single leading ``/``), which are
+          prefixed with the Kavita origin.
+
+        Rejected forms (the exact bypasses identified in red-team finding
+        C-2): protocol-relative (``//host/…``), backslash-containing,
+        foreign-origin, and scheme-relative strings.
+
+        :param href: The raw href to validate and resolve.  May be an
+            absolute URL or a root-relative path.
+        :type href: str
+        :returns: An absolute URL whose origin is the configured Kavita
+            origin (or an explicitly allowed origin).
+        :rtype: str
+        :raises SsrfError: If *href* is ``None``, empty, contains a
+            backslash, is protocol-relative, points to a foreign origin, or
+            cannot be parsed.
         """
         if href is None:
             raise SsrfError("Refusing to resolve empty href")
@@ -91,8 +142,24 @@ class KavitaClient:
 
     # -- feed fetch ----------------------------------------------------------
     async def fetch_feed(self, url: str) -> str:
-        """GET an OPDS feed (resolving + SSRF-checking first) and return the body
-        text. Raises :class:`KavitaError` (secrets masked) on any failure."""
+        """Fetch an OPDS feed URL and return its full body as text.
+
+        The URL is passed through :meth:`resolve_url` before the request is
+        made, so SSRF protection is always applied.  Any secret values in
+        error messages are masked via :meth:`~app.config.Config.mask` before
+        they are included in the raised exception.
+
+        :param url: The OPDS feed URL to retrieve.  May be absolute or
+            root-relative; must resolve to the configured Kavita origin.
+        :type url: str
+        :returns: The response body decoded as text (UTF-8 by default).
+        :rtype: str
+        :raises SsrfError: If *url* fails the SSRF guard in
+            :meth:`resolve_url`.
+        :raises KavitaError: If the HTTP transport raises
+            :class:`httpx.HTTPError`, or if Kavita returns an HTTP status
+            code >= 400.
+        """
         safe = self.resolve_url(url)
         try:
             resp = await self._client.get(safe, headers={"Accept": "application/atom+xml, */*"})
@@ -110,11 +177,30 @@ class KavitaClient:
 
     # -- streaming proxy -----------------------------------------------------
     async def open_stream(self, url: str, *, range_header: str | None = None) -> httpx.Response:
-        """Open an upstream streaming GET and return the live ``httpx.Response``
-        WITHOUT reading the body. The caller MUST ``aclose()`` it (e.g. via a
-        Starlette ``BackgroundTask``) after streaming. Status/headers are
-        available immediately for header relay. Raises :class:`KavitaError`
-        (closing the connection) on transport error or HTTP >= 400."""
+        """Open an upstream streaming GET and return the live response object.
+
+        The response body is **not** read into memory; the caller must iterate
+        it (e.g. via ``aiter_raw()``) and **must** call ``aclose()`` when
+        finished — typically via a Starlette ``BackgroundTask``.  Status code
+        and headers are available immediately for relay to the downstream
+        client.  On error the upstream connection is closed before raising.
+
+        :param url: The upstream resource URL.  May be absolute or
+            root-relative; passed through :meth:`resolve_url` before use.
+        :type url: str
+        :param range_header: Value for an HTTP ``Range`` header, forwarded
+            verbatim to Kavita to support partial-content (206) responses.
+            Pass ``None`` to omit the header.
+        :type range_header: str or None
+        :returns: An :class:`httpx.Response` opened in streaming mode with
+            its body not yet consumed.
+        :rtype: httpx.Response
+        :raises SsrfError: If *url* fails the SSRF guard in
+            :meth:`resolve_url`.
+        :raises KavitaError: If the HTTP transport raises
+            :class:`httpx.HTTPError`, or if Kavita returns an HTTP status
+            code >= 400 (the upstream connection is closed before raising).
+        """
         safe = self.resolve_url(url)
         headers: dict[str, str] = {}
         if range_header:
@@ -138,10 +224,36 @@ class KavitaClient:
 
     @asynccontextmanager
     async def stream(self, url: str, *, range_header: str | None = None):
-        """Async-context-manager yielding the upstream ``httpx.Response`` opened
-        in streaming mode. Forwards a client ``Range`` header so the bridge can
-        relay 206. The caller iterates ``response.aiter_raw()`` and the upstream
-        connection is released when the context exits.
+        """Async context manager that yields a streaming upstream response.
+
+        Opens the upstream GET request in streaming mode and yields the live
+        :class:`httpx.Response` to the caller.  An optional ``Range`` header
+        is forwarded so the bridge can relay HTTP 206 partial-content
+        responses.  The caller should iterate the body via
+        ``response.aiter_raw()``.  The upstream connection is always closed
+        when the ``async with`` block exits, even if an exception is raised
+        inside it.
+
+        Usage::
+
+            async with kavita_client.stream(url, range_header=range_val) as resp:
+                async for chunk in resp.aiter_raw():
+                    yield chunk
+
+        :param url: The upstream resource URL.  May be absolute or
+            root-relative; passed through :meth:`resolve_url` before use.
+        :type url: str
+        :param range_header: Value for an HTTP ``Range`` header, forwarded
+            verbatim to Kavita to support partial-content (206) responses.
+            Pass ``None`` to omit the header.
+        :type range_header: str or None
+        :returns: An async context manager yielding an
+            :class:`httpx.Response` opened in streaming mode.
+        :raises SsrfError: If *url* fails the SSRF guard in
+            :meth:`resolve_url`.
+        :raises KavitaError: If the HTTP transport raises
+            :class:`httpx.HTTPError`, or if Kavita returns an HTTP status
+            code >= 400 (the upstream connection is closed before raising).
         """
         safe = self.resolve_url(url)
         headers: dict[str, str] = {}
