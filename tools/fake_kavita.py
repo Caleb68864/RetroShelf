@@ -25,6 +25,27 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, status, body, ctype, extra=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
+        rng = self.headers.get("Range")
+        if rng and status == 200 and rng.startswith("bytes="):
+            # Honor a simple "bytes=start-end" range with a 206.
+            try:
+                spec = rng.split("=", 1)[1].split(",")[0]
+                start_s, _, end_s = spec.partition("-")
+                start = int(start_s) if start_s else 0
+                end = int(end_s) if end_s else len(body) - 1
+                end = min(end, len(body) - 1)
+                chunk = body[start:end + 1]
+                self.send_response(206)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(chunk)))
+                self.send_header("Content-Range", f"bytes {start}-{end}/{len(body)}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(chunk)
+                return
+            except (ValueError, IndexError):
+                pass
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
