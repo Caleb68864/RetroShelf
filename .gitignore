@@ -12,12 +12,11 @@ __pycache__/
 # logic-dev-kit code graph
 graphify-out/
 
-# Forge factory run artifacts
-task-evidence/
-.factory-*.txt
-.factory-run-*/
-
 # Local cache/config volumes if created during testing
 /cache/
 /config/
 .DS_Store
+
+# NOTE: do NOT ignore .factory-*.txt or task-evidence/ — the dark-factory
+# preflight smoke-commits .factory-preflight-smoke.txt and manages its own
+# run artifacts. Ignoring them breaks the factory's commit gate (exit 63).
