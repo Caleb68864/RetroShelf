@@ -97,7 +97,7 @@ def test_home_when_kavita_down_shows_status_not_500():
     with make_client(make_handler(fail=True)) as client:
         r = client.get("/")
         assert r.status_code == 200
-        assert "Cannot reach Kavita" in r.text
+        assert "Cannot reach the library server" in r.text
 
 
 def test_feed_browse_and_book_links_are_bridge_ids():
