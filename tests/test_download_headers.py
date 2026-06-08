@@ -51,6 +51,11 @@ class FakeUpstream:
         for c in self._chunks:
             yield c
 
+    async def aread(self):
+        # Mirrors httpx.Response.aread(): buffer the full body. stream_cover
+        # buffers covers (small) rather than streaming them.
+        return b"".join(self._chunks)
+
     async def aclose(self):
         self.closed = True
 
@@ -108,11 +113,15 @@ async def test_stream_download_relays_206_and_range():
 
 
 @pytest.mark.asyncio
-async def test_stream_cover_uses_upstream_content_type():
+async def test_stream_cover_passes_through_undecodable_upstream(tmp_path):
+    # A body Pillow can't decode (here a 2-byte stub) falls back to serving the
+    # upstream bytes with the upstream content-type — covers are now buffered
+    # (not streamed) and the upstream is closed inline. [cover transcode SS-01]
     up = FakeUpstream(200, {"Content-Type": "image/png", "Content-Length": "2"}, chunks=[b"\x89P"])
-    resp = await stream_cover(FakeKC(up), "/api/image/series-cover?seriesId=1&apiKey=K")
+    resp = await stream_cover(FakeKC(up), "/api/image/series-cover?seriesId=1&apiKey=K",
+                              cache_dir=str(tmp_path))
     assert resp.media_type == "image/png"
-    body = b"".join([c async for c in resp.body_iterator])
-    assert body == b"\x89P"
-    await resp.background()
+    assert resp.body == b"\x89P"
     assert up.closed is True
+    # The apiKey must never leak into a cache filename.
+    assert not any("K" in p.name and "apiKey" in p.name for p in tmp_path.rglob("*"))
