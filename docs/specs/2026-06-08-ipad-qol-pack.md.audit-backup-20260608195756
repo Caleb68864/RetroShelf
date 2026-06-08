@@ -157,7 +157,7 @@ depends_on: []
     response `Content-Type` of `image/jpeg`.
   - [BEHAVIORAL] An oversized (e.g. 1500px) image is served downscaled so
     `max(width,height) == cover_max_edge`.
-  - [BEHAVIORAL] A small JPEG cover is served without re-encoding: response body SHA256 hash matches upstream cover bytes SHA256 (verified in test).
+  - [BEHAVIORAL] A small JPEG is served byte-identical to the input (passthrough).
   - [BEHAVIORAL] Requesting the same cover twice, with a transport that fails on a
     2nd upstream hit, proves the 2nd request is served from `{cache_dir}/covers/`.
   - [STRUCTURAL] No cache filename contains the apiKey; apiKey absent from response
