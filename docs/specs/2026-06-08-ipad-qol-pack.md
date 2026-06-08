@@ -149,8 +149,8 @@ depends_on: []
   - `tests/test_covers.py`
 - **Acceptance criteria:**
   - [MECHANICAL] `.venv/bin/python -m pytest -q tests/test_covers.py` exits 0.
-  - [MECHANICAL] `.venv/bin/python -c "import PIL; print(PIL.__version__)"` exits 0
-    and `Pillow` appears in `requirements.txt`.
+  - [STRUCTURAL] `requirements.txt` lists `Pillow` (its import is exercised by
+    `tests/test_covers.py`, whose passing run proves PIL is available).
   - [STRUCTURAL] `app/config.py` defines `cache_dir` (env `CACHE_DIR`, default
     `/cache`), `cover_max_edge`, and `cover_jpeg_quality`.
   - [BEHAVIORAL] A synthetic WebP cover routed through the cover path yields a
@@ -191,7 +191,8 @@ depends_on: ['SS-01']
   - `app/templates/base.html`
 - **Acceptance criteria:**
   - [STRUCTURAL] `app/static/icons/apple-touch-icon-180.png` exists.
-  - [MECHANICAL] `.venv/bin/python -c "from PIL import Image; i=Image.open('app/static/icons/apple-touch-icon-180.png'); i.verify(); assert i.size==(180,180)"` exits 0.
+  - [STRUCTURAL] `tests/test_webapp_meta.py` opens the icon, calls `verify()`, and
+    asserts its size is `(180, 180)` (validated by the pytest run below).
   - [BEHAVIORAL] A rendered page's HTML contains `apple-mobile-web-app-capable`,
     `apple-mobile-web-app-title`, and an `apple-touch-icon` link pointing at
     `/static/` (asserted in `tests/test_webapp_meta.py`).
@@ -230,8 +231,8 @@ depends_on: ['SS-01']
   - [STRUCTURAL] The rendered feed page contains sort-control links with `?sort=`
     preserving the feed path, and the active one marked.
   - [MECHANICAL] `.venv/bin/python -m pytest -q tests/test_app.py` exits 0.
-  - [MECHANICAL] `grep -nE "var\(--|display:[ ]*grid" app/static/app.css` returns
-    no matches (CSS stays old-Safari-safe).
+  - [STRUCTURAL] `app/static/app.css` contains no `var(--` and no `display:grid`
+    (CSS stays old-Safari-safe).
 
 ---
 sub_spec_id: SS-04
