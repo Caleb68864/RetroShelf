@@ -1,24 +1,27 @@
 # RetroShelf — paste-into-Portainer stack (pulls a pre-built image, no build).
 #
-# This is the easy path for Portainer's "Add stack → Web editor": it pulls the
-# published image from GHCR, so there is no build step. Set the values below in
-# Portainer's "Environment variables" section (or edit the defaults inline).
+# Out of the box this fronts two PUBLIC libraries — ManyBooks and Project
+# Gutenberg — so it works with ZERO configuration. Add your own Kavita library
+# later (see "Adding Kavita later" below).
 #
-# ── Prerequisites ────────────────────────────────────────────────────────────
-# 1. The image must be published & public (the docker-publish.yml GitHub Action
-#    pushes ghcr.io/caleb68864/retroshelf:latest on every push to main; make the
-#    package Public once — see that workflow's header). If you keep it private,
-#    add GHCR registry credentials in Portainer → Registries instead.
-# 2. RetroShelf must reach Kavita over Docker's network. Set KAVITA_NETWORK to
-#    the network your Kavita stack created (find it with `docker network ls`),
-#    and use Kavita's *internal* port + service name in KAVITA_OPDS_URL
-#    (e.g. http://kavita:5000/api/opds/YOUR_AUTH_KEY).
-# 3. Create the host data folders once (owned by uid 1000):
-#      sudo mkdir -p /srv/docker_data/retroshelf/{config,cache}
-#      sudo chown -R 1000:1000 /srv/docker_data/retroshelf
+# Portainer → Stacks → Add stack → Web editor → paste this → Deploy.
+# The image is public on GHCR, so no registry login is needed.
 #
-# To build from source instead of pulling, use docker-compose.yml (Portainer's
-# "Repository" method, pointed at this GitHub repo).
+# ── One-time host setup (data folders, owned by uid 1000) ────────────────────
+#     sudo mkdir -p /srv/docker_data/retroshelf/{config,cache}
+#     sudo chown -R 1000:1000 /srv/docker_data/retroshelf
+#   (Skip and it still runs, but the Reading List / download history won't persist.)
+#
+# ── Adding Kavita later ──────────────────────────────────────────────────────
+#   1. Set KAVITA_OPDS_URL to your Kavita OPDS URL — it becomes the primary feed,
+#      with ManyBooks + Gutenberg kept as extra libraries in the portal menu:
+#        KAVITA_OPDS_URL=http://kavita:5000/api/opds/YOUR_AUTH_KEY
+#   2. If Kavita runs as a Docker container on this host, RetroShelf must share
+#      its network: UNCOMMENT the two `networks:` sections at the bottom and set
+#      KAVITA_NETWORK to Kavita's network (find it with `docker network ls`); use
+#      Kavita's INTERNAL service name + port in the URL above.
+#      If Kavita is on another machine, just use its LAN IP in KAVITA_OPDS_URL —
+#      no network changes needed.
 
 services:
   retroshelf:
@@ -30,12 +33,12 @@ services:
     environment:
       - TZ=${TZ:-America/Chicago}
       - APP_PORT=8099
-      # ── REQUIRED ── Kavita's internal service name + port and your OPDS key:
-      - KAVITA_OPDS_URL=${KAVITA_OPDS_URL:?set KAVITA_OPDS_URL, e.g. http://kavita:5000/api/opds/YOUR_AUTH_KEY}
-      # Optional — derived from the OPDS origin when unset:
+      # Public libraries fronted by default (Name|URL pairs, comma-separated).
+      # Edit/override via the OPDS_FEEDS env var in Portainer.
+      - "OPDS_FEEDS=${OPDS_FEEDS:-ManyBooks|https://manybooks.net/opds, Project Gutenberg|https://www.gutenberg.org/ebooks.opds/}"
+      # Your Kavita library — leave blank for now; set it later (becomes primary).
+      - KAVITA_OPDS_URL=${KAVITA_OPDS_URL:-}
       - KAVITA_BASE_URL=${KAVITA_BASE_URL:-}
-      # Extra public libraries (Name|URL, comma-separated). Optional:
-      - OPDS_FEEDS=${OPDS_FEEDS:-}
       # Optional hardening (leave blank to disable):
       - BRIDGE_ACCESS_KEY=${BRIDGE_ACCESS_KEY:-}
       - BRIDGE_ID_SECRET=${BRIDGE_ID_SECRET:-}
@@ -51,11 +54,11 @@ services:
     volumes:
       - ${CONFIG_DIR:-/srv/docker_data/retroshelf/config}:/config
       - ${CACHE_DIR:-/srv/docker_data/retroshelf/cache}:/cache
-    networks:
-      - kavita_net
+    # ── Uncomment when adding a Docker-hosted Kavita (see header) ──
+    # networks:
+    #   - kavita_net
 
-networks:
-  # Join Kavita's existing network (external: not created by this stack).
-  kavita_net:
-    external: true
-    name: ${KAVITA_NETWORK:-kavita_default}
+# networks:
+#   kavita_net:
+#     external: true
+#     name: ${KAVITA_NETWORK:-kavita_default}
