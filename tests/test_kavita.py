@@ -51,6 +51,43 @@ def test_ssrf_error_message_masks_key():
         assert "SECRETKEY" not in str(exc)
 
 
+def _client_for(opds_url: str) -> KavitaClient:
+    cfg = load_config({"KAVITA_OPDS_URL": opds_url})
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    return KavitaClient(cfg, http)
+
+
+def test_resolve_allows_sibling_download_host_same_site():
+    # ManyBooks serves feeds on manybooks.net but book files on the sibling
+    # host library.manybooks.net (same registrable domain). No per-host config
+    # should be required for a download CDN that belongs to a configured feed.
+    kc = _client_for("https://manybooks.net/opds")
+    url = "https://library.manybooks.net/live/get-book/1/epub"
+    assert kc.resolve_url(url) == url
+
+
+def test_resolve_allows_parent_and_subdomain_same_site():
+    # Feed on www.gutenberg.org; downloads/mirrors live on the parent domain
+    # and on other subdomains — all share the gutenberg.org registrable domain.
+    kc = _client_for("https://www.gutenberg.org/ebooks.opds/")
+    assert kc.resolve_url("https://gutenberg.org/files/1/1.epub") \
+        == "https://gutenberg.org/files/1/1.epub"
+    assert kc.resolve_url("https://aleph.gutenberg.org/1/1.epub") \
+        == "https://aleph.gutenberg.org/1/1.epub"
+
+
+@pytest.mark.parametrize("bad", [
+    "https://notmanybooks.net/x",        # different registrable domain (no suffix trick)
+    "https://manybooks.net.evil.com/x",  # suffix-confusion: real reg. domain is evil.com
+    "http://library.manybooks.net/x",    # scheme downgrade (feed is https only)
+    "https://library.manybooks.net:8443/x",  # same site but non-feed port
+])
+def test_resolve_same_site_rule_does_not_overreach(bad):
+    kc = _client_for("https://manybooks.net/opds")
+    with pytest.raises(SsrfError):
+        kc.resolve_url(bad)
+
+
 # -- fetch_feed ----------------------------------------------------------------
 
 @pytest.mark.asyncio

@@ -22,7 +22,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from .config import Config, origin_tuple
+from .config import Config, ConfigError, origin_tuple, registrable_domain
 from .errors import KavitaError, SsrfError
 
 
@@ -123,16 +123,13 @@ class KavitaClient:
         if raw.startswith("//"):
             raise SsrfError(self._cfg.mask(f"Refusing protocol-relative href: {raw!r}"))
 
-        allowed = {origin_tuple(o) for o in self._cfg.allowed_origins}
         parts = urlsplit(raw)
         if parts.scheme or parts.netloc:
-            # Absolute URL: must match one of the allowed origins (every feed
-            # plus any configured extras), with default ports normalized.
-            try:
-                if origin_tuple(raw) not in allowed:
-                    raise SsrfError(self._cfg.mask(f"Refusing foreign-origin href: {raw!r}"))
-            except ValueError as exc:
-                raise SsrfError(self._cfg.mask(f"Unparseable href: {raw!r}")) from exc
+            # Absolute URL: must match an allowed origin (every feed plus any
+            # configured extras), or be a same-site sibling of one (see
+            # _origin_allowed), with default ports normalized.
+            if not self._origin_allowed(raw):
+                raise SsrfError(self._cfg.mask(f"Refusing foreign-origin href: {raw!r}"))
             return raw
 
         # Relative href. With *base* (the parent feed URL) we resolve it against
@@ -145,12 +142,44 @@ class KavitaClient:
             absolute = f"{self._cfg.kavita_origin}{raw}"
         else:
             raise SsrfError(self._cfg.mask(f"Refusing non-absolute path href: {raw!r}"))
-        try:
-            if origin_tuple(absolute) not in allowed:
-                raise SsrfError(self._cfg.mask(f"Refusing foreign-origin href: {raw!r}"))
-        except ValueError as exc:
-            raise SsrfError(self._cfg.mask(f"Unparseable href: {raw!r}")) from exc
+        if not self._origin_allowed(absolute):
+            raise SsrfError(self._cfg.mask(f"Refusing foreign-origin href: {raw!r}"))
         return absolute
+
+    def _origin_allowed(self, url: str) -> bool:
+        """Return whether *url*'s origin may be fetched under the SSRF policy.
+
+        An origin is permitted when it either (a) exactly matches a configured
+        allowed origin — every feed plus ``EXTRA_UPSTREAM_ORIGINS`` — or (b) is
+        a *same-site sibling* of one: identical scheme and port, and a shared
+        registrable domain (eTLD+1). Rule (b) lets a feed implicitly trust its
+        own download CDN (``manybooks.net`` → ``library.manybooks.net``) without
+        per-host configuration, while still rejecting scheme downgrades, foreign
+        ports, look-alike domains, and suffix-confusion tricks.
+
+        :param url: An absolute URL whose origin is to be authorised.
+        :type url: str
+        :returns: ``True`` if the origin is permitted, ``False`` otherwise.
+        :rtype: bool
+        """
+        try:
+            scheme, host, port = origin_tuple(url)
+        except (ValueError, ConfigError):
+            return False
+        try:
+            allowed = [origin_tuple(o) for o in self._cfg.allowed_origins]
+        except (ValueError, ConfigError):
+            return False
+        if (scheme, host, port) in allowed:
+            return True
+        site = registrable_domain(host)
+        if not site:
+            return False
+        for a_scheme, a_host, a_port in allowed:
+            if (scheme == a_scheme and port == a_port
+                    and registrable_domain(a_host) == site):
+                return True
+        return False
 
     # -- feed fetch ----------------------------------------------------------
     async def fetch_feed(self, url: str) -> str:

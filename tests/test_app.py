@@ -217,6 +217,26 @@ def test_search_uses_opensearch_template_q_param():
         assert "unavailable" not in r.text.lower()
 
 
+def test_search_navigation_results_link_to_feeds_not_empty():
+    # Some libraries (e.g. ManyBooks) return *navigation* entries for a search —
+    # links to per-title detail feeds, not direct acquisition entries. The result
+    # links must point at /feed/... and never render an empty href (which would
+    # reload the same search page). [search nav-entry regression]
+    def handler(request):
+        if "/search" in request.url.path:
+            return httpx.Response(200, text=ROOT_XML)  # navigation entries
+        if request.url.path == "/api/opds/SECRETKEY":
+            return httpx.Response(200, text=ROOT_XML)
+        return httpx.Response(200, text=ACQ_XML)
+    with make_client(handler) as client:
+        r = client.get("/search?q=anything")
+        assert r.status_code == 200
+        # Every rendered result must have a real link, never href="".
+        assert 'href=""' not in r.text
+        # Navigation results link into the bridge feed browser.
+        assert "/feed/" in r.text
+
+
 def test_search_unavailable_shows_message_not_silent_empty():
     # Handler 404s the search endpoint (e.g. Kavita search disabled).
     def handler(request):

@@ -123,6 +123,7 @@ networks:
 | `CACHE_FEEDS_SECONDS` | – | `300` | OPDS feed cache TTL |
 | `BRIDGE_ID_SECRET` | – | random | Stable secret so bookmarked links survive restarts |
 | `BRIDGE_ACCESS_KEY` | – | off | Require `?key=...` on every page |
+| `EXTRA_UPSTREAM_ORIGINS` | – | — | Comma-separated extra origins to trust (for download hosts on an unrelated domain) |
 | `ALLOWED_IPS` | – | off | Direct-LAN IP/CIDR allowlist (not proxy-aware) |
 | `LOG_LEVEL` | – | `info` | `debug` for verbose (masked) logs |
 | `TZ` | – | `America/Chicago` | Container timezone |
@@ -146,6 +147,13 @@ Each library's downloads/covers are fetched from its own origin (the SSRF guard
 allows every configured feed's origin automatically), each library's apiKey is
 masked, and search is scoped to the library you're in. Public feeds behind
 Cloudflare work because the bridge sends a browser `User-Agent`.
+
+Some sources serve book files from a sibling host (e.g. ManyBooks lists feeds on
+`manybooks.net` but downloads from `library.manybooks.net`). The guard trusts a
+host automatically when it shares a configured feed's registrable domain (same
+scheme and port) — so these "just work" with no extra setup. If a source serves
+files from an *unrelated* domain (some Project Gutenberg mirrors do), add it to
+`EXTRA_UPSTREAM_ORIGINS` (e.g. `EXTRA_UPSTREAM_ORIGINS=https://gutenberg.pglaf.org`).
 
 ---
 

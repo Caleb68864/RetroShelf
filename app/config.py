@@ -16,6 +16,7 @@ Module-level constants:
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -81,6 +82,61 @@ def origin_tuple(url: str) -> tuple[str, str, int]:
     host = parts.hostname.lower()
     port = parts.port if parts.port is not None else _DEFAULT_PORTS.get(scheme, 0)
     return (scheme, host, port)
+
+
+# A small, curated set of multi-label public suffixes so that ``co.uk`` &c. are
+# not mistaken for a registrable domain. This is deliberately *not* the full
+# Public Suffix List (which would need a bundled data file / dependency); it
+# covers the common ccTLDs book sources use. Hosts under an unlisted multi-label
+# suffix fall back to last-two-labels — still safe against the suffix-confusion
+# trick (``trusted.net.evil.com`` resolves to ``evil.com``), only slightly more
+# permissive within e.g. a shared cloud domain. Configure ``EXTRA_UPSTREAM_ORIGINS``
+# for any host this heuristic doesn't cover.
+_MULTI_LABEL_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "net.uk", "sch.uk", "ltd.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
+    "co.nz", "net.nz", "org.nz", "govt.nz",
+    "co.jp", "or.jp", "ne.jp", "go.jp", "ac.jp",
+    "com.br", "net.br", "org.br", "gov.br",
+    "co.za", "org.za", "net.za",
+    "com.cn", "net.cn", "org.cn", "gov.cn",
+    "co.in", "net.in", "org.in", "gen.in",
+    "com.mx", "com.ar", "com.tr", "com.sg", "com.hk", "com.tw", "com.ua",
+})
+
+
+def registrable_domain(host: str) -> str:
+    """Return the registrable domain (eTLD+1) of *host* for same-site matching.
+
+    Used by the SSRF guard so that a configured feed implicitly trusts its own
+    sibling hosts (e.g. a feed on ``manybooks.net`` trusts the book-download
+    host ``library.manybooks.net``; a feed on ``www.gutenberg.org`` trusts
+    ``aleph.gutenberg.org`` and the bare ``gutenberg.org``).
+
+    IP-literal hosts are returned unchanged — they are never collapsed to a
+    "domain", so two distinct addresses can never be treated as same-site.
+
+    :param host: A lower/mixed-case hostname (no port, no brackets).
+    :type host: str
+    :returns: The registrable domain, or the host itself when it is an IP
+        literal, a single label, or empty.
+    :rtype: str
+    """
+    host = (host or "").strip(".").lower()
+    if not host:
+        return ""
+    try:
+        ipaddress.ip_address(host)
+        return host  # raw IP — never widen to a registrable domain
+    except ValueError:
+        pass
+    labels = host.split(".")
+    if len(labels) <= 2:
+        return host
+    last_two = ".".join(labels[-2:])
+    if last_two in _MULTI_LABEL_SUFFIXES:
+        return ".".join(labels[-3:])
+    return last_two
 
 
 def _extract_api_key(opds_url: str) -> str:

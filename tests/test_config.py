@@ -1,7 +1,9 @@
 """Tests for app.config — env parsing, validation, origin derivation, masking."""
 import pytest
 
-from app.config import ConfigError, load_config, origin_tuple, _normalize_origin
+from app.config import (
+    ConfigError, load_config, origin_tuple, registrable_domain, _normalize_origin,
+)
 
 BASE_ENV = {
     "KAVITA_BASE_URL": "http://kavita:5000",
@@ -52,6 +54,27 @@ def test_origin_tuple_default_port():
     assert origin_tuple("http://kavita") == ("http", "kavita", 80)
     assert origin_tuple("https://kavita") == ("https", "kavita", 443)
     assert origin_tuple("http://kavita:5000/x") == ("http", "kavita", 5000)
+
+
+@pytest.mark.parametrize("host,expected", [
+    ("manybooks.net", "manybooks.net"),
+    ("library.manybooks.net", "manybooks.net"),
+    ("www.gutenberg.org", "gutenberg.org"),
+    ("aleph.gutenberg.org", "gutenberg.org"),
+    ("foo.bar.example.co.uk", "example.co.uk"),   # multi-label public suffix
+    ("example.co.uk", "example.co.uk"),
+    ("kavita", "kavita"),                          # single label (intranet host)
+    ("127.0.0.1", "127.0.0.1"),                    # IPv4 literal — never collapsed
+    ("::1", "::1"),                                # IPv6 literal
+    ("", ""),
+])
+def test_registrable_domain(host, expected):
+    assert registrable_domain(host) == expected
+
+
+def test_registrable_domain_distinguishes_different_ips():
+    # Two distinct IPs must never share a registrable domain (no last-2-label trap).
+    assert registrable_domain("127.0.0.1") != registrable_domain("192.0.0.1")
 
 
 def test_mask_redacts_api_key_and_access_key():
