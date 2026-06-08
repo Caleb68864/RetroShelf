@@ -582,7 +582,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return templates.TemplateResponse(request, "book.html", {
             "title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
             "summary": rec.get("s") or "", "badge": badge, "cover_url": cover_url,
-            "download_url": f"/download/{download_id}/{filename}", "back_url": "/",
+            "download_url": f"/download/{download_id}/{filename}",
+            "back_url": _back_to(request),
         })
 
     @app.get("/search", response_class=HTMLResponse)
@@ -758,6 +759,26 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         except RetroShelfError as exc:
             log.info("cover unavailable on %s: %s", request.url.path, cfg.mask(str(exc)))
             return Response(status_code=404, media_type="image/gif")
+
+
+def _back_to(request: Request) -> str:
+    """Return a same-site path to go "back" to, derived from the Referer.
+
+    If the user arrived from a ``/feed/`` or ``/search`` page we return there;
+    otherwise we fall back to the home page. Only the path+query is used (never
+    the full referrer URL), so the result is always same-origin and safe.
+
+    :param request: The incoming request.
+    :returns: A relative path such as ``/feed/<id>`` or ``/``.
+    :rtype: str
+    """
+    from urllib.parse import urlsplit
+    ref = request.headers.get("referer", "")
+    if ref:
+        rp = urlsplit(ref)
+        if rp.path.startswith(("/feed/", "/search")):
+            return rp.path + (f"?{rp.query}" if rp.query else "")
+    return "/"
 
 
 def _basename(url: str) -> str:

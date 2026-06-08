@@ -54,6 +54,12 @@ a:active { color: #ffe24a; }
   overflow: hidden;
   text-shadow: 0 0 2px rgba(255, 176, 0, 0.5);
 }
+.ascii.errbox {
+  color: #ff5a4a;
+  font-size: 14px;
+  margin: 10px auto 16px;
+  text-shadow: 0 0 2px rgba(255, 90, 74, 0.5);
+}
 .brand {
   display: block;
   font-size: 38px;
@@ -65,9 +71,17 @@ a:active { color: #ffe24a; }
 }
 .brand:active { color: #ffe24a; }
 .crest { margin-top: 4px; font-size: 13px; letter-spacing: 3px; color: #46d0d0; text-transform: uppercase; }
-.menubar { margin-top: 10px; }
-.menubar a { display: inline-block; margin: 0 5px; color: #ffb000; font-size: 15px; letter-spacing: 1px; }
-.menubar a:active { color: #ffe24a; }
+.menubar { margin-top: 12px; }
+.menubar a {
+  display: inline-block;
+  margin: 4px 3px;
+  padding: 9px 12px;
+  color: #ffb000;
+  font-size: 16px;
+  letter-spacing: 1px;
+  border: 1px solid #3a2a08;
+}
+.menubar a:active { color: #0a0a0a; background-color: #ffb000; }
 
 .toplink { color: #ffb000; }
 
@@ -144,8 +158,9 @@ h2:before { content: ">> "; color: #6e5410; }
 /* ---- Search prompt -------------------------------------------------------- */
 .search { margin: 16px 0; }
 .search input[type=text] {
-  width: 64%;
-  padding: 11px 12px;
+  width: 62%;
+  min-width: 180px;
+  padding: 14px 12px;
   font-size: 18px;
   font-family: inherit;
   color: #ffe24a;
@@ -155,7 +170,7 @@ h2:before { content: ">> "; color: #6e5410; }
 }
 .search input[type=text]:focus { outline: none; border-color: #ffb000; }
 .search input[type=submit] {
-  padding: 11px 16px;
+  padding: 14px 18px;
   font-size: 16px;
   font-family: inherit;
   font-weight: bold;
@@ -166,10 +181,11 @@ h2:before { content: ">> "; color: #6e5410; }
   background-color: #ffb000;
   border: 1px solid #ffd24a;
 }
+.search input[type=submit]:active { background-color: #ffe24a; }
 
 /* ---- Listings: NetHack inventory menu ------------------------------------ */
 .list { list-style: none; margin: 12px 0; padding: 0; }
-.item { border-bottom: 1px dotted #2a2a2a; }
+.item { border-bottom: 1px solid #2a200a; }
 
 .navlink {
   display: block;
@@ -255,4 +271,4 @@ h2:before { content: ">> "; color: #6e5410; }
   overflow: hidden;
   white-space: nowrap;
 }
-.colophon { margin-top: 10px; text-align: center; color: #6e6e6e; font-size: 13px; letter-spacing: 1px; }
+.colophon { margin-top: 10px; text-align: center; color: #8c8c5a; font-size: 13px; letter-spacing: 1px; }
