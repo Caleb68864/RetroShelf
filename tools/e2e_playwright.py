@@ -81,10 +81,10 @@ def run():
             check(dl is not None, "book page has a download button")
             if dl:
                 download_href = dl.get_attribute("href")
-                btn_text = (dl.inner_text() or "").strip()
+                btn_text = (dl.inner_text() or "").strip().lower()
                 check(bool(re.search(r"\.(epub|pdf)$", download_href)),
                       f"download URL is extension-bearing ({download_href[-40:]})")
-                check("iBooks" in btn_text or "PDF" in btn_text, f"button says Open in iBooks/PDF ({btn_text!r})")
+                check("ibooks" in btn_text or "pdf" in btn_text, f"button says Open in iBooks/PDF ({btn_text!r})")
 
         if download_href:
             print("[download headers] (via browser request)")
@@ -99,6 +99,31 @@ def run():
                 check(ct == "application/epub+zip" and "attachment" in cd and ".zip" not in cd,
                       "EPUB: epub+zip + attachment, not .zip")
 
+        # Titles must not all be "Untitled" (regression: xhtml-typed titles).
+        print("[titles]")
+        page.goto(BASE, wait_until="domcontentloaded")
+        page.click("a.button")
+        page.wait_for_load_state("domcontentloaded")
+        # descend to a listing with books
+        for _ in range(5):
+            if page.query_selector("a.book[href*='/book/']"):
+                break
+            nav = page.query_selector("a.navlink[href*='/feed/']")
+            if not nav:
+                break
+            page.goto(BASE + nav.get_attribute("href"), wait_until="domcontentloaded")
+        labels = [a.inner_text().strip() for a in page.query_selector_all("a.book .booktitle, a.navlink")]
+        real = [t for t in labels if t and "Untitled" not in t]
+        check(len(real) >= 1, f"feed shows real titles (not all Untitled): {real[:2]}")
+
+        # Search must return results (regression: ?q= vs ?query=).
+        print("[search]")
+        page.goto(f"{BASE}/search?q=love", wait_until="domcontentloaded")
+        sc = page.content()
+        check("unavailable" not in sc.lower(), "search is not 'unavailable'")
+        check(bool(page.query_selector("a.navlink, a.book")), "search returned result links")
+        check("No results" not in sc, "search did not say 'No results'")
+
         browser.close()
 
 
@@ -109,5 +134,10 @@ if __name__ == "__main__":
         print("E2E EXCEPTION:", type(exc).__name__, exc)
         errors.append(str(exc))
     print()
-    print("E2E PASS" if not errors else f"E2E FAIL ({len(errors)} issues)")
+    if errors:
+        print(f"E2E FAIL ({len(errors)} issues):")
+        for e in errors:
+            print("   - " + e)
+    else:
+        print("E2E PASS")
     sys.exit(1 if errors else 0)

@@ -10,7 +10,7 @@ SHOW_COVERS="true" \
   $PY -m uvicorn app.main:app --host 127.0.0.1 --port 8099 >/tmp/uvicorn_e2e.log 2>&1 &
 UV=$!
 sleep 4
-PYTHONPATH=. $PY tools/e2e_playwright.py http://127.0.0.1:8099
+PYTHONPATH=. $PY -u tools/e2e_playwright.py http://127.0.0.1:8099
 rc=$?
 kill $UV 2>/dev/null
 wait $UV 2>/dev/null
