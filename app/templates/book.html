@@ -11,9 +11,12 @@
 
 {% if summary %}<p class="summary">{{ summary }}</p>{% endif %}
 
+{# EPUB is a plain same-tab link so Safari hands application/epub+zip straight to
+   Books (no new tab, single tap). PDF keeps target="_blank" — it renders inline,
+   so a separate tab lets you Share -> Copy to Books and keep this page. #}
 {% for d in downloads %}
 <p>
-  <a class="button big" href="{{ d.url }}" target="_blank">
+  <a class="button big" href="{{ d.url }}"{% if d.badge == 'PDF' %} target="_blank"{% endif %}>
     {{ d.label }}{% if downloads|length > 1 %} ({{ d.badge }}){% endif %}{% if d.size %} &middot; {{ d.size }}{% endif %}
   </a>
 </p>

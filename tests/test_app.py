@@ -246,6 +246,33 @@ def test_big_mode_enlarges_tap_targets():
     assert "body.big .menubar a" in css        # tap-target enlargement in large-print mode
 
 
+def test_epub_link_is_plain_pdf_opens_new_tab():
+    # The EPUB "Open in iBooks" button must be a plain same-tab link so Safari
+    # hands application/epub+zip straight to Books (no new tab, single tap).
+    # PDFs render inline, so they keep target="_blank".
+    import re
+    with make_client(make_handler()) as client:
+        home = client.get("/").text
+        fid = re.search(r'/feed/([A-Za-z0-9_\-.]+)', home).group(1)
+        root = client.get(f"/feed/{fid}").text
+        epub_html = pdf_html = None
+        for f2 in re.findall(r'/feed/([A-Za-z0-9_\-.]+)"', root):
+            page = client.get(f"/feed/{f2}").text
+            for bid in re.findall(r'/book/([A-Za-z0-9_\-.]+)"', page):
+                d = client.get(f"/book/{bid}").text
+                if "Open in iBooks" in d:
+                    epub_html = d
+                if "Open PDF" in d:
+                    pdf_html = d
+        assert epub_html, "expected an EPUB book detail page"
+        m = re.search(r'<a class="button big" href="(/download/[^"]+\.epub)"([^>]*)>', epub_html)
+        assert m, "EPUB download button not found"
+        assert "target=" not in m.group(2), "EPUB link must not open a new tab"
+        if pdf_html:
+            mp = re.search(r'<a class="button big" href="(/download/[^"]+\.pdf)"([^>]*)>', pdf_html)
+            assert mp and 'target="_blank"' in mp.group(2), "PDF link should open a new tab"
+
+
 def test_full_chain_feed_to_download():
     with make_client(make_handler()) as client:
         home = client.get("/").text
