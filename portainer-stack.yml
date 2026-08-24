@@ -51,6 +51,18 @@ services:
       - PDF_DISPOSITION=${PDF_DISPOSITION:-inline}
       - EPUB_DISPOSITION=${EPUB_DISPOSITION:-attachment}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+    # ── Container hardening ──────────────────────────────────────────────────
+    # The app writes only to /config and /cache (both volumes) and /tmp, so the
+    # image filesystem itself can stay read-only. Dropping every capability and
+    # forbidding privilege escalation costs nothing: RetroShelf binds an
+    # unprivileged port as uid 1000 and never needs a capability at all.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ${CONFIG_DIR:-/srv/docker_data/retroshelf/config}:/config
       - ${CACHE_DIR:-/srv/docker_data/retroshelf/cache}:/cache

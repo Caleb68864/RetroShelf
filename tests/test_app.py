@@ -17,6 +17,11 @@ from app.main import create_app
 from app.store import Store
 
 
+def _token(client) -> str:
+    """The site token that authorises /star, /unstar and /prefs. [SS-15]"""
+    return client.app.state.ids.site_token
+
+
 def _test_store() -> Store:
     """A fresh, isolated Store backed by a unique temp file (no cross-test bleed)."""
     return Store(os.path.join(tempfile.mkdtemp(), "state.json"))
@@ -528,12 +533,12 @@ def test_reading_list_star_and_unstar():
         bid = _first_book_id(client)
         assert bid
         assert "reading list is empty" in client.get("/list").text.lower()
-        client.get(f"/star/{bid}")            # add (303 → /list)
+        client.get(f"/star/{bid}?t={_token(client)}")   # add (303 → /list)
         lst = client.get("/list").text
         assert "The Time Machine" in lst and "/unstar/" in lst
         assert "Remove from Reading List" in client.get(f"/book/{bid}").text
         key = re.search(r"/unstar/(\w+)", lst).group(1)
-        client.get(f"/unstar/{key}")          # remove
+        client.get(f"/unstar/{key}?t={_token(client)}")  # remove
         assert "reading list is empty" in client.get("/list").text.lower()
 
 
@@ -551,7 +556,7 @@ def test_download_recorded_in_history_and_marked():
 def test_prefs_large_print_cookie_sets_body_class():
     with make_client(make_handler()) as client:
         assert 'class="big"' not in client.get("/").text
-        home = client.get("/prefs?big=toggle&next=/").text   # follows 303 → /
+        home = client.get(f"/prefs?big=toggle&next=/&t={_token(client)}").text   # follows 303 → /
         assert "big" in home and 'class="color-amber big"' in home
 
 
@@ -559,7 +564,7 @@ def test_opds_republish_reading_list_roundtrips():
     from app.opds import parse
     with make_client(make_handler()) as client:
         bid = _first_book_id(client)
-        client.get(f"/star/{bid}")
+        client.get(f"/star/{bid}?t={_token(client)}")
         # Navigation catalog.
         root = client.get("/opds")
         assert root.status_code == 200
@@ -581,9 +586,9 @@ def test_opds_republish_reading_list_roundtrips():
 def test_prefs_phosphor_color_theme():
     with make_client(make_handler()) as client:
         assert 'class="color-amber"' in client.get("/").text  # default
-        green = client.get("/prefs?color=green&next=/").text
+        green = client.get(f"/prefs?color=green&next=/&t={_token(client)}").text
         assert "color-green" in green
-        white = client.get("/prefs?color=white&next=/").text
+        white = client.get(f"/prefs?color=white&next=/&t={_token(client)}").text
         assert "color-white" in white
 
 

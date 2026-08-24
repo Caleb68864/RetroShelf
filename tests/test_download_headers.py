@@ -51,6 +51,12 @@ class FakeUpstream:
         for c in self._chunks:
             yield c
 
+    async def aiter_bytes(self):
+        # Mirrors httpx.Response.aiter_bytes(): content-decoded chunks. This is
+        # what the size-capped cover read consumes.
+        for c in self._chunks:
+            yield c
+
     async def aread(self):
         # Mirrors httpx.Response.aread(): buffer the full body. stream_cover
         # buffers covers (small) rather than streaming them.

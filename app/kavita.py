@@ -17,6 +17,7 @@ Design (verified — see vault/MOC - FastAPI Streaming and Range):
 """
 from __future__ import annotations
 
+import ipaddress
 from contextlib import asynccontextmanager
 from urllib.parse import urljoin, urlsplit
 
@@ -32,6 +33,65 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
     "(KHTML, like Gecko) Version/16.0 Safari/605.1.15"
 )
+
+# An OPDS page is a few hundred kilobytes at the very worst. The bridge reads
+# feeds fully into memory to parse them, so an upstream that streams without
+# end — hostile, misconfigured, or simply the wrong URL pointing at a disk
+# image — would otherwise exhaust the host's RAM. Downloads are unaffected:
+# they are streamed chunk-by-chunk and never buffered. [SS-09]
+MAX_FEED_BYTES = 8 * 1024 * 1024
+
+# The shared client runs with ``read=None`` so multi-hundred-megabyte book
+# transfers are never cut off mid-stream. That is wrong for a *feed*: a stalled
+# upstream would pin a request (and a connection) forever. Feed fetches
+# therefore override the read/write timeout per request. [SS-09]
+FEED_READ_TIMEOUT = 30.0
+
+
+# Only these schemes are ever handed to the HTTP client.
+ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+# A URL longer than this is not a book link; it is an attempt to make the guard
+# (or a log line, or a downstream parser) do unbounded work.
+MAX_HREF_LEN = 4096
+
+
+def _is_internal_literal(host: str) -> bool:
+    """Return whether *host* is an IP literal pointing somewhere non-public.
+
+    Covers loopback, RFC 1918 / ULA private space, link-local (which includes
+    the ``169.254.169.254`` cloud metadata endpoint), and the unspecified and
+    reserved ranges. A hostname that is not an IP literal returns ``False``:
+    this is a syntactic check, deliberately not a DNS resolution.
+
+    :param host: A bare hostname or IP literal (no port, no brackets).
+    :rtype: bool
+    """
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (addr.is_loopback or addr.is_private or addr.is_link_local
+            or addr.is_unspecified or addr.is_reserved or addr.is_multicast)
+
+
+def _decode_feed(body: bytes, resp: httpx.Response) -> str:
+    """Decode an OPDS feed body to ``str`` without ever raising.
+
+    Prefers the charset the server declared, falls back to UTF-8, and replaces
+    undecodable bytes rather than failing the whole page — a single bad byte in
+    one book blurb must not take a shelf offline.
+
+    :param body: Raw response bytes (already size-capped).
+    :param resp: The response the bytes came from, for its declared charset.
+    :returns: The decoded document text.
+    :rtype: str
+    """
+    encoding = resp.charset_encoding or "utf-8"
+    try:
+        return body.decode(encoding, errors="replace")
+    except LookupError:  # server named a charset Python doesn't know
+        return body.decode("utf-8", errors="replace")
 
 
 def build_client(timeout_connect: float = 10.0, user_agent: str | None = None) -> httpx.AsyncClient:
@@ -116,6 +176,13 @@ class KavitaClient:
         raw = href.strip()
         if not raw:
             raise SsrfError("Refusing to resolve empty href")
+        if len(raw) > MAX_HREF_LEN:
+            raise SsrfError(f"Refusing oversized href ({len(raw)} chars)")
+        # Embedded control characters (CR, LF, tab, NUL) are how a crafted feed
+        # would try to smuggle a second request line into the upstream
+        # connection. There is no legitimate URL that contains one. [SS-13]
+        if any(ch in raw for ch in "\r\n\t\x00") or any(ord(ch) < 0x20 for ch in raw):
+            raise SsrfError("Refusing href containing control characters")
         # Reject backslashes outright (Windows-style / smuggling).
         if "\\" in raw:
             raise SsrfError(self._cfg.mask(f"Refusing backslash href: {raw!r}"))
@@ -124,6 +191,16 @@ class KavitaClient:
             raise SsrfError(self._cfg.mask(f"Refusing protocol-relative href: {raw!r}"))
 
         parts = urlsplit(raw)
+        if parts.scheme and parts.scheme.lower() not in ALLOWED_SCHEMES:
+            # An origin comparison would reject these anyway, but naming the
+            # reason keeps ``file:``/``gopher:``/``data:`` out of the logs as
+            # "foreign origin" and out of httpx entirely. [SS-13]
+            raise SsrfError(f"Refusing non-HTTP scheme: {parts.scheme.lower()!r}")
+        if parts.username or parts.password:
+            # Credentials in the URL would be forwarded upstream and are a
+            # classic way to make a hostile host *look* like a trusted one in
+            # a log line ("https://manybooks.net@evil.example/").
+            raise SsrfError("Refusing href with embedded credentials")
         if parts.scheme or parts.netloc:
             # Absolute URL: must match an allowed origin (every feed plus any
             # configured extras), or be a same-site sibling of one (see
@@ -172,6 +249,15 @@ class KavitaClient:
             return False
         if (scheme, host, port) in allowed:
             return True
+        # Past this point we are about to widen trust from a configured feed to
+        # a *sibling host under the same registrable domain*. That is what lets
+        # manybooks.net reach library.manybooks.net without configuration — but
+        # it must never be the route by which an attacker-chosen subdomain
+        # points the bridge at the host's own loopback, the LAN, or a cloud
+        # metadata service. An exactly-configured origin is still honoured
+        # above; only the *implicit* widening is refused here. [SS-13]
+        if _is_internal_literal(host):
+            return False
         site = registrable_domain(host)
         if not site:
             return False
@@ -202,27 +288,75 @@ class KavitaClient:
             code >= 400.
         """
         safe = self.resolve_url(url)
+        timeout = httpx.Timeout(
+            connect=FEED_READ_TIMEOUT, read=FEED_READ_TIMEOUT,
+            write=FEED_READ_TIMEOUT, pool=FEED_READ_TIMEOUT,
+        )
         for _ in range(6):
+            req = self._client.build_request(
+                "GET", safe, headers={"Accept": "application/atom+xml, */*"}, timeout=timeout,
+            )
             try:
-                resp = await self._client.get(safe, headers={"Accept": "application/atom+xml, */*"})
+                resp = await self._client.send(req, stream=True)
             except httpx.HTTPError as exc:
                 raise KavitaError(
                     self._cfg.mask(f"Could not reach upstream: {exc}"), url=self._cfg.mask(safe)
                 ) from exc
-            if resp.status_code in (301, 302, 303, 307, 308):
-                location = resp.headers.get("location")
-                if not location:
-                    break
-                safe = self.resolve_url(location, base=safe)  # SSRF re-check each hop
-                continue
-            if resp.status_code >= 400:
-                raise KavitaError(
-                    self._cfg.mask(f"Upstream returned HTTP {resp.status_code} for {safe}"),
-                    url=self._cfg.mask(safe),
-                    status=resp.status_code,
-                )
-            return resp.text
+            try:
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("location")
+                    if not location:
+                        break
+                    safe = self.resolve_url(location, base=safe)  # SSRF re-check each hop
+                    continue
+                if resp.status_code >= 400:
+                    raise KavitaError(
+                        self._cfg.mask(f"Upstream returned HTTP {resp.status_code} for {safe}"),
+                        url=self._cfg.mask(safe),
+                        status=resp.status_code,
+                    )
+                body = await self._read_capped(resp, MAX_FEED_BYTES, safe)
+            finally:
+                await resp.aclose()
+            return _decode_feed(body, resp)
         raise KavitaError(self._cfg.mask(f"Too many redirects fetching {url!r}"))
+
+    async def _read_capped(self, resp: httpx.Response, limit: int, safe: str) -> bytes:
+        """Read *resp*'s body into memory, refusing to exceed *limit* bytes.
+
+        A declared ``Content-Length`` over the cap is rejected before a single
+        byte is transferred; an upstream that lies about (or omits) the length
+        is cut off as soon as the accumulated body crosses the cap. [SS-09]
+
+        :param resp: A response opened with ``stream=True``.
+        :param limit: Maximum number of body bytes to accept.
+        :param safe: The already-masked URL, for the error message.
+        :returns: The complete body, guaranteed ``<= limit`` bytes.
+        :rtype: bytes
+        :raises KavitaError: If the body exceeds *limit*, or the transport fails.
+        """
+        declared = resp.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            raise KavitaError(
+                self._cfg.mask(f"Upstream feed is too large ({declared} bytes) for {safe}"),
+                url=self._cfg.mask(safe),
+            )
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > limit:
+                    raise KavitaError(
+                        self._cfg.mask(f"Upstream feed exceeded {limit} bytes for {safe}"),
+                        url=self._cfg.mask(safe),
+                    )
+                chunks.append(chunk)
+        except httpx.HTTPError as exc:
+            raise KavitaError(
+                self._cfg.mask(f"Could not read upstream feed: {exc}"), url=self._cfg.mask(safe)
+            ) from exc
+        return b"".join(chunks)
 
     # -- streaming proxy -----------------------------------------------------
     async def open_stream(self, url: str, *, range_header: str | None = None) -> httpx.Response:

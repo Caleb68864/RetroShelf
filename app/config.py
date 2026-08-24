@@ -18,11 +18,27 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 # Redaction token used wherever a secret would otherwise appear.
 REDACTED = "***"
+
+# Query parameters whose *value* is a secret regardless of what it is. Masking
+# by known value alone is not enough: the bridge access key can legitimately be
+# shorter than the 8-character masking floor, and uvicorn's access log prints
+# the raw request line (``GET /feed/x?key=hunter2``). Redacting by parameter
+# name closes that hole for any value. [H-7]
+_SECRET_QS_PARAMS = ("key", "apikey", "api_key", "access_key", "token",
+                     "access_token", "auth", "password", "secret")
+_SECRET_QS_RE = re.compile(
+    r"(?i)\b(" + "|".join(_SECRET_QS_PARAMS) + r")=[^&\s\"'>\]]*"
+)
+
+# ``/api/opds/<apiKey>`` — Kavita puts the key in the *path*, so a URL logged by
+# a third-party library is redacted even when that key is not this bridge's own.
+_OPDS_PATH_KEY_RE = re.compile(r"(?i)(/api/opds/)[^/\s?\"'>\]]+")
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
@@ -419,8 +435,11 @@ class Config:
         loosens *log verbosity*, not masking.
 
         **[C-4]** Secret values shorter than 8 characters are NOT
-        masked to avoid mangling generic OPDS path segments such as
-        ``opds`` that would otherwise match trivially short keys.
+        masked *by value* — that would mangle generic OPDS path segments
+        such as ``opds``. They are still caught structurally: any
+        ``key=``/``apiKey=``/``token=``… query parameter and any
+        ``/api/opds/<key>`` path segment is redacted by shape, whatever
+        the value. [H-7]
 
         :param text: Arbitrary string that may contain secret values.
         :type text: str
@@ -436,7 +455,8 @@ class Config:
         for secret in secrets:
             if secret and len(secret) >= 8:
                 out = out.replace(secret, REDACTED)
-        return out
+        out = _SECRET_QS_RE.sub(lambda m: f"{m.group(1)}={REDACTED}", out)
+        return _OPDS_PATH_KEY_RE.sub(lambda m: f"{m.group(1)}{REDACTED}", out)
 
     @property
     def debug(self) -> bool:

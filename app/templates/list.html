@@ -20,7 +20,7 @@
         {% if e.feed_name %}<span class="from">{{ e.feed_name }}</span>{% endif %}
       </span>
     </a>
-    <a class="unstar" href="{{ e.unstar_url }}">&#9733; remove</a>
+    <a class="unstar" href="{{ e.unstar_url }}?t={{ site_token(request) }}">&#9733; remove</a>
   </li>
 {% endfor %}
 </ul>

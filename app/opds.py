@@ -20,9 +20,28 @@ Key OPDS facts encoded here (verified — see vault/Build Constraints.md):
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from defusedxml import ElementTree as DET
+
+# Bounds on what a single feed document may cost this process. ``defusedxml``
+# already blocks entity expansion and external entities, but it has nothing to
+# say about a *syntactically valid* feed with a million entries or a title the
+# size of a novel. Every one of these limits truncates rather than raises: a
+# greedy feed should render its first page, not take the shelf offline. [SS-14]
+MAX_DOC_BYTES = 8 * 1024 * 1024
+MAX_ENTRIES = 500
+MAX_LINKS_PER_ENTRY = 64
+MAX_TITLE_LEN = 1000
+MAX_SUMMARY_LEN = 8000
+
+# ``<?xml version="1.0" encoding="iso-8859-1"?>`` on a ``str`` input is a
+# contradiction ElementTree refuses outright. Callers hand us text that has
+# already been decoded, so the declared encoding is stale by definition.
+_XML_DECL_ENCODING_RE = re.compile(
+    r"^(\s*<\?xml[^>]*?)\s+encoding\s*=\s*[\"'][^\"']*[\"']", re.IGNORECASE
+)
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ACQUISITION_REL_PREFIX = "http://opds-spec.org/acquisition"
@@ -307,8 +326,17 @@ def parse(xml_text: str | bytes) -> Feed:
         raise OpdsParseError("Empty OPDS feed document")
     try:
         if isinstance(xml_text, str):
-            xml_text = xml_text.encode("utf-8")
+            # The text was decoded using the charset the *server* declared, so
+            # any encoding named inside the document is now wrong. Strip it and
+            # re-encode as UTF-8, which is what the bytes will actually be.
+            xml_text = _XML_DECL_ENCODING_RE.sub(r"\1", xml_text, count=1).encode("utf-8")
+        if len(xml_text) > MAX_DOC_BYTES:
+            raise OpdsParseError(
+                f"OPDS feed is too large to parse ({len(xml_text)} bytes)"
+            )
         root = DET.fromstring(xml_text)
+    except OpdsParseError:
+        raise
     except Exception as exc:  # defusedxml raises various ParseError/EntitiesForbidden
         raise OpdsParseError(f"Could not parse OPDS feed: {exc}") from exc
 
@@ -334,7 +362,7 @@ def parse(xml_text: str | bytes) -> Feed:
         elif rel == "self":
             feed.self_url = href
 
-    for entry_el in root.findall(f"{ATOM}entry"):
+    for entry_el in root.findall(f"{ATOM}entry")[:MAX_ENTRIES]:
         feed.entries.append(_parse_entry(entry_el))
 
     return feed
@@ -356,14 +384,14 @@ def _parse_entry(entry_el) -> Entry:
     :rtype: Entry
     """
     entry = Entry(
-        title=_text(entry_el, "title"),
-        author=_author(entry_el),
-        summary=_text(entry_el, "summary") or _text(entry_el, "content"),
-        updated=_text(entry_el, "updated"),
+        title=_text(entry_el, "title")[:MAX_TITLE_LEN],
+        author=_author(entry_el)[:MAX_TITLE_LEN],
+        summary=(_text(entry_el, "summary") or _text(entry_el, "content"))[:MAX_SUMMARY_LEN],
+        updated=_text(entry_el, "updated")[:MAX_TITLE_LEN],
     )
 
     nav_candidate: str | None = None
-    for link in entry_el.findall(f"{ATOM}link"):
+    for link in entry_el.findall(f"{ATOM}link")[:MAX_LINKS_PER_ENTRY]:
         rel = (link.get("rel") or "").strip()
         href = (link.get("href") or "").strip()
         mtype = (link.get("type") or "").strip()

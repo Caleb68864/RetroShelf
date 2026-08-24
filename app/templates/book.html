@@ -23,7 +23,7 @@
 {% endfor %}
 
 <p>
-  <a class="button small {{ 'on' if is_fav else '' }}" href="{{ star_url }}">
+  <a class="button small {{ 'on' if is_fav else '' }}" href="{{ star_url }}?t={{ site_token(request) }}">
     {% if is_fav %}&#9733; {{ star_label }}{% else %}&#9734; {{ star_label }}{% endif %}
   </a>
 </p>

@@ -127,7 +127,7 @@ on GHCR. Edit the env values in `docker-compose.yml` first (or fork and commit).
 | `SHOW_COVERS` | – | `true` | Show cover thumbnails |
 | `CACHE_FEEDS_SECONDS` | – | `300` | OPDS feed cache TTL |
 | `BRIDGE_ID_SECRET` | – | random | Stable secret so bookmarked links survive restarts |
-| `BRIDGE_ACCESS_KEY` | – | off | Require `?key=...` on every page |
+| `BRIDGE_ACCESS_KEY` | – | off | Require a key: visit `/?key=...` once, then a cookie carries it (or send `X-Access-Key`) |
 | `EXTRA_UPSTREAM_ORIGINS` | – | — | Comma-separated extra origins to trust (for download hosts on an unrelated domain) |
 | `ALLOWED_IPS` | – | off | Direct-LAN IP/CIDR allowlist (not proxy-aware) |
 | `LOG_LEVEL` | – | `info` | `debug` for verbose (masked) logs |

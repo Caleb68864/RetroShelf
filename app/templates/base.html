@@ -33,18 +33,18 @@
   <div class="footer">
     <div class="statusline">RetroShelf the Patient Machine&nbsp;&nbsp;St:OK&nbsp;&nbsp;Lib:online&nbsp;&nbsp;T:1</div>
     <div class="prefs">
-      <a href="/prefs?big=toggle&amp;next={{ request.url.path }}">[ Large Print: {{ 'ON' if request.cookies.get('rs_big') == '1' else 'OFF' }} ]</a>
+      <a href="/prefs?big=toggle&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Large Print: {{ 'ON' if request.cookies.get('rs_big') == '1' else 'OFF' }} ]</a>
       {% if request.cookies.get('rs_covers') == '0' %}
-        <a href="/prefs?covers=on&amp;next={{ request.url.path }}">[ Covers: OFF ]</a>
+        <a href="/prefs?covers=on&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Covers: OFF ]</a>
       {% else %}
-        <a href="/prefs?covers=off&amp;next={{ request.url.path }}">[ Covers: ON ]</a>
+        <a href="/prefs?covers=off&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Covers: ON ]</a>
       {% endif %}
     </div>
     <div class="prefs">
       Phosphor:
-      <a href="/prefs?color=amber&amp;next={{ request.url.path }}">[ Amber ]</a>
-      <a href="/prefs?color=green&amp;next={{ request.url.path }}">[ Green ]</a>
-      <a href="/prefs?color=white&amp;next={{ request.url.path }}">[ White ]</a>
+      <a href="/prefs?color=amber&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Amber ]</a>
+      <a href="/prefs?color=green&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Green ]</a>
+      <a href="/prefs?color=white&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ White ]</a>
     </div>
     <div class="colophon">// press a link to turn the page</div>
   </div>

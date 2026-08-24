@@ -24,3 +24,22 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def site_token(request) -> str:
+    """Return the site token that authorises state-changing links, or ``""``.
+
+    Registered as a Jinja global so templates can stamp ``t=…`` onto the
+    ``/star``, ``/unstar`` and ``/prefs`` links without every route having to
+    thread the value through its context. Missing state degrades to an empty
+    string rather than an ``UndefinedError``, which keeps templates renderable
+    in isolation (tests, and the unconfigured-app fallback).
+
+    :param request: The current request, or anything without app state.
+    :rtype: str
+    """
+    ids = getattr(getattr(getattr(request, "app", None), "state", None), "ids", None)
+    return getattr(ids, "site_token", "") or ""
+
+
+templates.env.globals["site_token"] = site_token

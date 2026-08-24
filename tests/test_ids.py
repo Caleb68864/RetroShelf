@@ -19,7 +19,8 @@ def test_token_does_not_leak_api_key():
     assert "SECRETKEY" not in token
     # base64-decoding the token must not reveal the key either (it's encrypted).
     import base64
-    body = token.split(".", 1)[0]
+    # v2 tokens are "<version>.<body>.<mac>"; the ciphertext is the middle part.
+    body = token.split(".")[-2]
     raw = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
     assert b"SECRETKEY" not in raw
     assert b"api/opds" not in raw

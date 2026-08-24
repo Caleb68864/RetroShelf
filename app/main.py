@@ -44,11 +44,44 @@ log = logging.getLogger("retroshelf")
 # (the container HEALTHCHECK + the stylesheet). [M-7]
 _OPEN_PREFIXES = ("/health", "/static")
 
+# Cookie that remembers a validated BRIDGE_ACCESS_KEY for the rest of the visit,
+# so internal links never have to carry the secret. HttpOnly and SameSite=Lax;
+# both attributes are simply ignored by iOS 5/6 Safari, which has no JavaScript
+# running here to protect against anyway. [SS-16]
+_KEY_COOKIE = "rs_key"
+
 # Current-page sort keys for /feed (SS-03). Sorting only reorders the books on
 # the page already fetched — pagination is upstream-driven, so we never hold the
 # whole library. Navigation entries keep their order and stay grouped first.
 _SORT_KEYS = ("title", "author", "format")
 _FORMAT_ORDER = {"EPUB": 0, "PDF": 1}
+
+# Defence-in-depth headers applied to HTML pages only.
+#
+# Every one of these is *ignored* by the browsers RetroShelf exists for — iOS
+# 5/6 Safari does not implement CSP, Referrer-Policy, or frame-ancestors — and
+# an unknown response header has never broken an old browser. They cost the
+# vintage iPad nothing and protect the modern desktop browser that an
+# administrator uses to configure the same bridge. The policy is written to
+# match what this app actually is: server-rendered HTML, one same-origin
+# stylesheet, same-origin images, and no JavaScript at all. Notably absent is
+# ``upgrade-insecure-requests`` — RetroShelf is served over plain HTTP on a
+# LAN, and upgrading would break every link on the iPad.
+_HTML_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    # ``same-origin`` and not ``no-referrer``: the Back link is derived from the
+    # Referer header, and it is only ever read for same-origin navigation.
+    "Referrer-Policy": "same-origin",
+    "Content-Security-Policy": (
+        "default-src 'none'; "
+        "img-src 'self' data:; "
+        "style-src 'self'; "
+        "form-action 'self'; "
+        "base-uri 'none'; "
+        "frame-ancestors 'none'"
+    ),
+}
 
 
 def _sorted_page(entries: list[dict], sort: str) -> list[dict]:
@@ -179,6 +212,34 @@ class _SecretMaskingFilter(logging.Filter):
         return True
 
 
+def _install_mask_filter(cfg: Config) -> None:
+    """Attach a :class:`_SecretMaskingFilter` to every live logging sink.
+
+    Filters on the *root* logger only cover records that propagate to it.
+    ``uvicorn``, ``uvicorn.access``, ``uvicorn.error`` and ``httpx`` each
+    install their own handlers with ``propagate = False``, so a root-only
+    filter never sees them — and ``uvicorn.access`` logs the full request
+    line, which is exactly where ``?key=…`` would appear. Attaching to both
+    the logger and each of its handlers covers records however they arrive.
+    [H-7]
+
+    :param cfg: Active configuration supplying :meth:`~app.config.Config.mask`.
+    """
+    mask_filter = _SecretMaskingFilter(cfg)
+    manager_loggers = list(logging.Logger.manager.loggerDict.values())
+    targets = [logging.getLogger()] + [
+        lg for lg in manager_loggers if isinstance(lg, logging.Logger)
+    ]
+    for name in ("uvicorn", "uvicorn.access", "uvicorn.error", "httpx", "httpcore"):
+        logger = logging.getLogger(name)
+        if logger not in targets:
+            targets.append(logger)
+    for logger in targets:
+        logger.addFilter(mask_filter)
+        for handler in logger.handlers:
+            handler.addFilter(mask_filter)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """AsyncContextManager that wires shared state onto *app* at startup and
@@ -211,9 +272,7 @@ async def lifespan(app: FastAPI):
     app.state.search_templates = {}  # per-feed-origin OpenSearch templates, cached
     app.state.store = Store(cfg.state_path)  # Reading List + download history
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
-    mask_filter = _SecretMaskingFilter(cfg)
-    for handler in logging.getLogger().handlers:
-        handler.addFilter(mask_filter)
+    _install_mask_filter(cfg)
     log.info("RetroShelf started; proxying %s", cfg.mask(cfg.kavita_origin))
     try:
         yield
@@ -259,14 +318,33 @@ def create_app(config: Config | None = None) -> FastAPI:
         :rtype: Response
         """
         path = request.url.path
+        from_query = False
         if not any(path.startswith(p) for p in _OPEN_PREFIXES):
             client_ip = request.client.host if request.client else None
             if not ip_allowed(client_ip, cfg.allowed_ips):
                 return _error_response(request, "Forbidden", "This bridge is restricted to the local network.", 403)
-            provided = request.query_params.get("key") or request.headers.get("x-access-key")
+            query_key = request.query_params.get("key")
+            # The key may arrive three ways: in the URL (how you first open the
+            # bridge on the iPad), as a header (scripts, OPDS readers), or in
+            # the cookie set on the first successful visit. Without the cookie,
+            # every internal link would have to carry the secret — which
+            # 403'd real navigation, and put the key in the address bar, the
+            # Referer of every request, and every access-log line. [SS-16]
+            provided = (query_key
+                        or request.headers.get("x-access-key")
+                        or request.cookies.get(_KEY_COOKIE))
             if not access_key_ok(provided, cfg.bridge_access_key):
-                return _error_response(request, "Access key required", "Append ?key=YOURKEY to the address.", 403)
-        return await call_next(request)
+                return _error_response(
+                    request, "Access key required",
+                    "Append ?key=YOURKEY to the address once; "
+                    "this browser will remember it.", 403)
+            from_query = bool(query_key) and cfg.bridge_access_key is not None
+        response = await call_next(request)
+        if from_query:
+            # Remember it so the rest of the visit needs no ?key= at all.
+            response.set_cookie(_KEY_COOKIE, cfg.bridge_access_key, max_age=31536000,
+                                httponly=True, samesite="lax", path="/")
+        return response
 
     # -- middleware: static caching + HTML-only gzip (SS-04 polish) -----------
     @app.middleware("http")
@@ -284,6 +362,11 @@ def create_app(config: Config | None = None) -> FastAPI:
             response.headers["Cache-Control"] = "public, max-age=604800"
         accepts_gzip = "gzip" in request.headers.get("accept-encoding", "")
         ctype = response.headers.get("content-type", "")
+        if ctype.startswith("text/html"):
+            # HTML pages only. A book stream must keep exactly the headers
+            # :func:`~app.download.build_headers` chose for iOS. [SS-10]
+            for name, value in _HTML_SECURITY_HEADERS.items():
+                response.headers.setdefault(name, value)
         if (accepts_gzip and ctype.startswith("text/html")
                 and response.status_code == 200
                 and "range" not in request.headers
@@ -924,9 +1007,40 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             })
         return templates.TemplateResponse(request, "list.html", {"items": items})
 
+    def _require_site_token(request: Request) -> Response | None:
+        """Refuse a state-changing request that did not come from our own pages.
+
+        ``/star``, ``/unstar`` and ``/prefs`` change server-side state from a
+        plain ``GET`` link — which is exactly what an old iPad needs, since
+        RetroShelf ships no JavaScript and a ``<form>`` would spoil the plain
+        hyperlink UI. The cost is that any other page on the network could
+        trigger one with a single ``<img src="http://retroshelf/unstar/…">``.
+
+        The fix that keeps the links plain: every such link carries ``t=``, an
+        unguessable token derived from the bridge secret. Our own templates
+        know it; a foreign page does not. No cookie, no JavaScript, no header —
+        nothing an iOS 5 browser has to understand. [SS-15]
+
+        :param request: The incoming request.
+        :returns: A 403 response when the token is missing or wrong, else
+            ``None`` to signal the caller may proceed.
+        :rtype: Response or None
+        """
+        if codec(request).token_ok(request.query_params.get("t")):
+            return None
+        log.info("rejected untokened state change on %s", request.url.path)
+        return _error_response(
+            request, "Refused",
+            "That action has to be started from a RetroShelf page. "
+            "Open the book and try again.", 403,
+        )
+
     @app.get("/star/{bid}")
     async def star(request: Request, bid: str):
         """GET ``/star/{bid}`` — add a book to the Reading List, then go back."""
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
         try:
             rec = json.loads(codec(request).decode(bid))
         except (ValueError, TypeError) as exc:
@@ -938,6 +1052,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     @app.get("/unstar/{key}")
     async def unstar(request: Request, key: str):
         """GET ``/unstar/{key}`` — remove a book from the Reading List."""
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
         store(request).remove_favorite(key)
         return RedirectResponse(_back_to(request, default="/list"), status_code=303)
 
@@ -1005,15 +1122,27 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         flips large-print; ``covers=off``/``on`` hides/shows covers;
         ``color=amber|green|white`` picks the CRT phosphor palette.
         """
-        target = next if next.startswith("/") else "/"
-        resp = RedirectResponse(target, status_code=303)
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
+        resp = RedirectResponse(_safe_path(next, "/"), status_code=303)
+
+        def remember(name: str, value: str) -> None:
+            """Set a one-year display preference cookie.
+
+            ``httponly`` and ``samesite`` are inert on iOS 5/6 Safari, which
+            simply ignores attributes it does not know — they cost the iPad
+            nothing and harden the same cookie in a modern browser.
+            """
+            resp.set_cookie(name, value, max_age=31536000,
+                            httponly=True, samesite="lax", path="/")
+
         if big == "toggle":
-            resp.set_cookie("rs_big", "0" if request.cookies.get("rs_big") == "1" else "1",
-                            max_age=31536000)
+            remember("rs_big", "0" if request.cookies.get("rs_big") == "1" else "1")
         if covers in ("on", "off"):
-            resp.set_cookie("rs_covers", "1" if covers == "on" else "0", max_age=31536000)
+            remember("rs_covers", "1" if covers == "on" else "0")
         if color in ("amber", "green", "white"):
-            resp.set_cookie("rs_color", color, max_age=31536000)
+            remember("rs_color", color)
         return resp
 
     @app.get("/health")
@@ -1164,13 +1293,45 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             return Response(status_code=404, media_type="image/gif")
 
 
+def _safe_path(candidate: str | None, default: str = "/") -> str:
+    """Return *candidate* only when it is an unambiguous same-origin **path**.
+
+    A ``Location:`` (or ``next=``) value that a visitor controls must never be
+    able to leave this origin. A bare leading ``/`` is not sufficient: browsers
+    read ``//evil.example`` as protocol-relative and ``/\\evil.example`` as the
+    same thing, so both are open redirects. Accepted values therefore are a
+    single leading ``/`` followed by something that is neither ``/`` nor ``\\``,
+    with no control characters and no scheme.
+
+    :param candidate: The untrusted redirect target.
+    :param default: Path returned when *candidate* is not safe.
+    :returns: A safe, relative, same-origin path.
+    :rtype: str
+    """
+    value = (candidate or "").strip()
+    if not value.startswith("/"):
+        return default
+    if value.startswith(("//", "/\\")):
+        return default            # protocol-relative → another origin
+    if any(ch in value for ch in "\r\n\t") or "\x00" in value:
+        return default            # header/URL smuggling
+    if ":" in value.split("/", 2)[1][:16]:
+        return default            # a scheme hiding in the first segment
+    return value
+
+
+# Pages a "back" link may return to. Anchored so a crafted Referer such as
+# ``/searchevil`` or ``/feed/../..`` cannot widen the set.
+_BACK_PREFIXES = ("/feed/", "/search", "/book/", "/list")
+
+
 def _back_to(request: Request, default: str = "/") -> str:
     """Return a same-site path to go "back" to, derived from the Referer.
 
     If the user arrived from a ``/feed/``, ``/search``, ``/book/`` or ``/list``
     page we return there; otherwise we fall back to *default*. Only the
-    path+query is used (never the full referrer URL), so it is always
-    same-origin and safe.
+    path+query is used (never the full referrer URL) and the result is run
+    through :func:`_safe_path`, so it is always same-origin and safe.
 
     :param request: The incoming request.
     :param default: Path to use when there is no usable Referer.
@@ -1181,8 +1342,8 @@ def _back_to(request: Request, default: str = "/") -> str:
     ref = request.headers.get("referer", "")
     if ref:
         rp = urlsplit(ref)
-        if rp.path.startswith(("/feed/", "/search", "/book/", "/list")):
-            return rp.path + (f"?{rp.query}" if rp.query else "")
+        if rp.path.startswith(_BACK_PREFIXES):
+            return _safe_path(rp.path + (f"?{rp.query}" if rp.query else ""), default)
     return default
 
 
