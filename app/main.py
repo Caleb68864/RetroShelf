@@ -1577,7 +1577,11 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             parts = parts_for([len(b) for b in blocks], _split_target(request))
             part = part_containing(int(pos.get("block", 0)), parts)
             return RedirectResponse(f"/read/{bid}/{chapter}/{part}", status_code=303)
-        return RedirectResponse(f"/read/{bid}/0/1", status_code=303)
+        # Open at the first chapter that actually has content: a leading
+        # spine item that sanitized to zero blocks (e.g. a cover-only page
+        # shelved without Pillow) would 404 the very first page otherwise.
+        first = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
+        return RedirectResponse(f"/read/{bid}/{first}/1", status_code=303)
 
     @app.get("/read/{bid}/toc", response_class=HTMLResponse)
     async def read_toc(request: Request, bid: str) -> Response:
@@ -1844,26 +1848,41 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "".join(blocks[start:end]), bid, frag_resolver
         )
 
+        # Prev/Next skip chapters that sanitized to zero blocks (e.g. a
+        # cover-only spine item shelved without Pillow), so page turns never
+        # dead-end on a chapter whose only part would 404.
+        def _adjacent_chapter(step: int) -> int | None:
+            c = chapter + step
+            while 0 <= c < len(manifest.chapters):
+                if manifest.chapters[c].blocks > 0:
+                    return c
+                c += step
+            return None
+
         prev_url = None
         if part > 1:
             prev_url = f"/read/{bid}/{chapter}/{part - 1}"
-        elif chapter > 0:
-            # Only to point "Prev" at the *last* part of the previous chapter.
-            # A corrupt/unreadable neighbour must not 502 this (readable) page;
-            # fall back to that chapter's first part and let its own page
-            # surface any real error when the reader follows the link.
-            try:
-                prev_blocks = load_chapter(cfg.cache_dir, key, chapter - 1)
-                prev_parts = parts_for([len(b) for b in prev_blocks], target)
-                prev_url = f"/read/{bid}/{chapter - 1}/{max(1, len(prev_parts))}"
-            except ReaderError:
-                prev_url = f"/read/{bid}/{chapter - 1}/1"
+        else:
+            prev_chapter = _adjacent_chapter(-1)
+            if prev_chapter is not None:
+                # Point "Prev" at the *last* part of the previous chapter. A
+                # corrupt/unreadable neighbour must not 502 this (readable)
+                # page; fall back to its first part and let its own page
+                # surface any real error when the reader follows the link.
+                try:
+                    prev_blocks = load_chapter(cfg.cache_dir, key, prev_chapter)
+                    prev_parts = parts_for([len(b) for b in prev_blocks], target)
+                    prev_url = f"/read/{bid}/{prev_chapter}/{max(1, len(prev_parts))}"
+                except ReaderError:
+                    prev_url = f"/read/{bid}/{prev_chapter}/1"
 
         next_url = None
         if part < len(parts):
             next_url = f"/read/{bid}/{chapter}/{part + 1}"
-        elif chapter < len(manifest.chapters) - 1:
-            next_url = f"/read/{bid}/{chapter + 1}/1"
+        else:
+            next_chapter = _adjacent_chapter(1)
+            if next_chapter is not None:
+                next_url = f"/read/{bid}/{next_chapter}/1"
 
         store(request).set_position(rec, chapter, start, percent_of(manifest, chapter, start))
 

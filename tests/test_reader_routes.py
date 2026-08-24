@@ -622,3 +622,42 @@ def test_corrupt_chapter_does_not_blank_the_bookmarks_list(tmp_path):
         r = client.get(f"/read/{bid}/bookmarks")
         assert r.status_code == 200
         assert f"/read/{bid}/2/1" in r.text
+
+
+# -- robustness: chapters that sanitize to zero blocks must not trap nav ------
+
+_EMPTY_CHAPTER = (
+    '<?xml version="1.0"?>'
+    '<html xmlns="http://www.w3.org/1999/xhtml"><body>   </body></html>'
+).encode("utf-8")
+
+
+def test_open_skips_a_leading_empty_chapter(tmp_path):
+    # Chapter 0 sanitizes to zero blocks; opening the book must land on the
+    # first chapter that actually has content, not 404 on /0/1.
+    handler, _c = make_handler(make_epub(chapters=3, image=False, ncx=False,
+                                         chapter_bytes={0: _EMPTY_CHAPTER}))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        r = client.get(f"/read/{bid}", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/read/{bid}/1/1"
+        # And that first content page renders.
+        assert client.get(f"/read/{bid}/1/1").status_code == 200
+
+
+def test_next_and_prev_skip_an_empty_middle_chapter(tmp_path):
+    # Chapter 1 is empty; Next from chapter 0 and Prev from chapter 2 must
+    # jump over it rather than dead-end on a 404 part.
+    handler, _c = make_handler(make_epub(chapters=3, image=False, ncx=False,
+                                         chapter_bytes={1: _EMPTY_CHAPTER}))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        client.get(f"/read/{bid}", follow_redirects=False)  # shelve
+        page0 = client.get(f"/read/{bid}/0/1")
+        assert page0.status_code == 200
+        assert f"/read/{bid}/2/1" in page0.text     # Next skipped empty ch.1
+        assert f"/read/{bid}/1/1" not in page0.text
+        page2 = client.get(f"/read/{bid}/2/1")
+        assert page2.status_code == 200
+        assert f"/read/{bid}/0/1" in page2.text     # Prev skipped empty ch.1
