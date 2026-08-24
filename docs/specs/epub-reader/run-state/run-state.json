@@ -1,0 +1,111 @@
+{
+  "spec_path": "docs/specs/2026-08-23-epub-reader.md",
+  "spec_slug": "epub-reader",
+  "spec_title": "In-Browser EPUB Reader",
+  "spec_summary": "In-browser EPUB reader for RetroShelf; no-JS, old-iPad compatible; quality 34/35",
+  "phase_specs_loaded": true,
+  "phase_spec_paths": {
+    "1": "docs/specs/epub-reader/sub-spec-1-sanitizer-and-block-splitter.md",
+    "2": "docs/specs/epub-reader/sub-spec-2-epub-parsing-and-shelving.md",
+    "3": "docs/specs/epub-reader/sub-spec-3-pagination-progress-and-store-positions.md",
+    "4": "docs/specs/epub-reader/sub-spec-4-reader-routes-and-templates.md",
+    "5": "docs/specs/epub-reader/sub-spec-5-ui-integration-and-reader-themes.md",
+    "6": "docs/specs/epub-reader/sub-spec-6-end-to-end-integration-docs-and-evidence.md"
+  },
+  "execution_plan": {
+    "waves": [
+      {
+        "wave": 1,
+        "sub_specs": [
+          {
+            "number": 1,
+            "title": "Sanitizer and block splitter",
+            "dependencies": [],
+            "phase_spec": "docs/specs/epub-reader/sub-spec-1-sanitizer-and-block-splitter.md"
+          }
+        ]
+      },
+      {
+        "wave": 2,
+        "sub_specs": [
+          {
+            "number": 2,
+            "title": "EPUB parsing and shelving",
+            "dependencies": [
+              1
+            ],
+            "phase_spec": "docs/specs/epub-reader/sub-spec-2-epub-parsing-and-shelving.md"
+          }
+        ]
+      },
+      {
+        "wave": 3,
+        "sub_specs": [
+          {
+            "number": 3,
+            "title": "Pagination, progress, and Store positions",
+            "dependencies": [
+              2
+            ],
+            "phase_spec": "docs/specs/epub-reader/sub-spec-3-pagination-progress-and-store-positions.md"
+          }
+        ]
+      },
+      {
+        "wave": 4,
+        "sub_specs": [
+          {
+            "number": 4,
+            "title": "Reader routes and templates",
+            "dependencies": [
+              3
+            ],
+            "phase_spec": "docs/specs/epub-reader/sub-spec-4-reader-routes-and-templates.md"
+          }
+        ]
+      },
+      {
+        "wave": 5,
+        "sub_specs": [
+          {
+            "number": 5,
+            "title": "UI integration and reader themes",
+            "dependencies": [
+              4
+            ],
+            "phase_spec": "docs/specs/epub-reader/sub-spec-5-ui-integration-and-reader-themes.md"
+          }
+        ]
+      },
+      {
+        "wave": 6,
+        "sub_specs": [
+          {
+            "number": 6,
+            "title": "End-to-end integration, docs, and evidence",
+            "dependencies": [
+              4,
+              5
+            ],
+            "phase_spec": "docs/specs/epub-reader/sub-spec-6-end-to-end-integration-docs-and-evidence.md"
+          }
+        ]
+      }
+    ]
+  },
+  "shared_context": "## Meta\nProject: RetroShelf (Kavita-Retro-iPad) \u2014 repo /home/caleb/Projects/Kavita-Retro-iPad.\nSpec: docs/specs/2026-08-23-epub-reader.md (quality 34/35). Design: docs/plans/2026-08-23-epub-reader-design.md.\n\n## Context\nRetroShelf is a server-rendered, ZERO-JavaScript FastAPI + Jinja2 bridge that proxies\nOPDS libraries to iOS 5.1.1-12 Safari and hands books to iBooks with exact headers.\nThis spec adds an in-browser EPUB reader on the same constraints.\nPatterns to follow: capped reads (app/kavita.py KavitaClient._read_capped), temp-file +\nos.replace atomic writes (app/download.py cover cache, app/store.py Store._save), typed\nerrors via RetroShelfError subclass + app/main.py _ERROR_TABLE row, record projection\n(app/store.py sanitize_record), bridge ids via app/main.py _record_id, image type\nvalidation (app/download.py _safe_image_type), Sphinx docstrings, mypy zero, ruff clean.\n\n## Intent (trade-off hierarchy)\n1. Old-Safari compatibility (no JS, no CSS Grid/flex, plain <a href> links) beats everything.\n2. Correctness of the sanitizer seam beats performance.\n3. Serve-path speed beats shelve-path speed.\n4. Consistency with existing codebase patterns beats ideal design.\n5. Simple beats flexible (YAGNI).\nEscalate (stop, report PARTIAL) when: new runtime dependency needed; sanitizer cannot pass\na fixture without weakening attribute rules; existing download/header code paths need\nmodification; Store schema needs fields beyond the committed interface.\n\n## Constraints\nMusts: every upstream byte through KavitaClient.resolve_url; sanitize at shelve time;\n`| safe` only on sanitizer output, once, commented; caps (80MB EPUB spooled to temp file,\n500 spine, 2MB/chapter, 120MB unpacked, 1GB reader cache); atomic writes; no upstream URL\non disk; Sphinx docstrings; mypy zero; ruff clean.\nMust-nots: NO JavaScript / CSS Grid / unprefixed-flex; NO changes to existing\ndownload/cover/OPDS behavior or headers; NO credentialed URLs on disk or in HTML;\nNO new runtime dependencies.\n\n## Edge Cases\nMalformed chapter -> escaped-text blocks; DRM -> ReaderError friendly page; oversize ->\nReaderError before exhaustion, spool cleaned; zip-slip rejected; cache pruned mid-book ->\ntransparent re-shelve; Pillow absent -> text-only; non-EPUB record on /read -> friendly 404;\nzero readable chapters -> ReaderError; stalled upstream -> 120s bounded timeout; concurrent\nshelve -> tmp-dir + rename idempotent; literal {IMG:0} in book text -> benign.\n\n## Build & Test Commands\n- Build: /home/caleb/Projects/Kavita-Retro-iPad/.venv/bin/python -m compileall -q app\n- Test: /home/caleb/Projects/Kavita-Retro-iPad/.venv/bin/python -m pytest -q\n- Types: /home/caleb/Projects/Kavita-Retro-iPad/.venv/bin/python -m mypy app\n- Lint: /home/caleb/Projects/Kavita-Retro-iPad/.venv/bin/python -m ruff check app tests\nNote: no start_command runtime verification needed \u2014 all [BEHAVIORAL]/[INTEGRATION]\ncriteria are exercised through pytest + FastAPI TestClient with mocked upstreams (this is\nthe project's established verification style; the suite IS the runtime harness).\n",
+  "config": {
+    "build_command": ".venv/bin/python -m compileall -q app",
+    "test_command": ".venv/bin/python -m pytest -q",
+    "verification_strategy": "build+test",
+    "review_enabled": true,
+    "review_max_compliance_loops": 3,
+    "review_max_quality_loops": 2,
+    "harness_active": false,
+    "agent_model": "sonnet",
+    "review_model": "opus"
+  },
+  "worker_file_path": "/home/caleb/Work-Logic/logic-tool-plugins/forge/agents/forge-worker.md",
+  "reviewer_file_path": "/home/caleb/Work-Logic/logic-tool-plugins/forge/agents/forge-reviewer.md",
+  "infrastructure": null
+}
