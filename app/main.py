@@ -188,8 +188,8 @@ def _badge_for(fmt: str | None) -> str:
     """Return the display badge for a format token.
 
     :param fmt: A token from :func:`app.download.format_of`.
-    :returns: ``"EPUB"``, ``"PDF"``, ``"HTML"``, or ``"TEXT"`` (unknown tokens
-        fall back to ``"EPUB"``, the historic default).
+    :returns: ``"EPUB"``, ``"PDF"``, ``"HTML"``, ``"TEXT"``, or ``"CBZ"``
+        (unknown tokens fall back to ``"EPUB"``, the historic default).
     :rtype: str
     """
     return _BADGES.get(fmt or "", "EPUB")
