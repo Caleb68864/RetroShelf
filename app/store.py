@@ -24,7 +24,6 @@ import logging
 import os
 import threading
 import time
-from typing import TypeIs
 
 log = logging.getLogger("retroshelf.store")
 
@@ -80,20 +79,25 @@ def _clean_text(value: object, limit: int) -> str:
     return text[:limit]
 
 
-def _is_real_number(value: object) -> TypeIs[int | float]:
-    """Return whether *value* is a genuine ``int``/``float`` and not a ``bool``.
+def _as_real_number(value: object) -> int | float | None:
+    """Return *value* when it is a genuine ``int``/``float``, else ``None``.
 
     ``bool`` is a subclass of ``int``, so a bare ``isinstance(value, int)`` check
     would accept ``True``/``False`` as numbers. Both the position/bookmark
     coordinates and the ordering timestamps must reject that, so the guard is
-    named here rather than re-spelled at each field. Typed as a
-    :class:`typing.TypeIs` so callers still narrow the value to a number after
-    the check, exactly as the inline ``isinstance`` did.
+    named here rather than re-spelled at each field. Returning the value itself
+    (rather than a coerced ``float``) both gives the caller a non-``None``
+    binding mypy can narrow on stdlib-only typing — no 3.13 ``TypeIs`` — and
+    preserves the exact ``int`` for the integer fields, which a round-trip
+    through ``float`` could not.
 
     :param value: Any value loaded from the state file or a book record.
-    :rtype: bool
+    :returns: *value* unchanged when it is a real number, otherwise ``None``.
+    :rtype: int | float | None
     """
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    return None
 
 
 def sanitize_record(record: dict) -> dict:
@@ -116,9 +120,9 @@ def sanitize_record(record: dict) -> dict:
     # Timestamps are the ordering key for both lists, so they must survive a
     # reload — but only as numbers, never as whatever a feed put there.
     for stamp in ("added", "when"):
-        value = record.get(stamp)
-        if _is_real_number(value):
-            out[stamp] = float(value)
+        number = _as_real_number(record.get(stamp))
+        if number is not None:
+            out[stamp] = float(number)
     formats = record.get("fmts")
     if isinstance(formats, list):
         clean: list[dict[str, object]] = []
@@ -151,14 +155,14 @@ def _sanitize_position(entry: dict) -> dict | None:
     """
     rec = sanitize_record(entry)
     for field in ("chapter", "block", "percent"):
-        value = entry.get(field)
-        if not _is_real_number(value) or value < 0:
+        number = _as_real_number(entry.get(field))
+        if number is None or number < 0:
             return None
-        rec[field] = int(value)
+        rec[field] = int(number)
     if rec["percent"] > 100:
         rec["percent"] = 100
-    updated = entry.get("updated")
-    rec["updated"] = float(updated) if _is_real_number(updated) else 0.0
+    updated = _as_real_number(entry.get("updated"))
+    rec["updated"] = float(updated) if updated is not None else 0.0
     key = entry.get("key")
     if isinstance(key, str) and key:
         rec["key"] = _clean_text(key, _FIELD_LIMITS["key"])
@@ -177,13 +181,13 @@ def _sanitize_bookmark(entry: dict) -> dict | None:
     """
     out: dict = {}
     for numeric in ("chapter", "block"):
-        value = entry.get(numeric)
-        if not _is_real_number(value) or value < 0:
+        number = _as_real_number(entry.get(numeric))
+        if number is None or number < 0:
             return None
-        out[numeric] = int(value)
+        out[numeric] = int(number)
     out["label"] = _clean_text(entry.get("label"), _FIELD_LIMITS["t"])
-    when = entry.get("when")
-    out["when"] = float(when) if _is_real_number(when) else 0.0
+    when = _as_real_number(entry.get("when"))
+    out["when"] = float(when) if when is not None else 0.0
     return out
 
 
