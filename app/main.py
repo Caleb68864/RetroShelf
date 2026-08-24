@@ -66,6 +66,7 @@ from .reader import (
     percent_of,
     search_book,
     shelve_book,
+    shelve_html_book,
 )
 from .render import STATIC_DIR, templates
 from .security import access_key_ok, ip_allowed, sanitize_filename
@@ -160,6 +161,47 @@ def _download_record(record: dict, fm: dict) -> dict:
     """
     return {"u": fm["u"], "m": fm.get("m"), "t": record.get("t"),
             "a": record.get("a"), "s": record.get("s"), "c": record.get("c")}
+
+
+# Format token (from :func:`app.download.format_of`) -> display badge. EPUB/PDF
+# are the iBooks formats; HTML/TEXT are read-in-browser only.
+_BADGES = {"epub": "EPUB", "pdf": "PDF", "html": "HTML", "text": "TEXT"}
+
+# Formats the in-browser reader can open. EPUB shelves via ``shelve_book``;
+# HTML and plain text shelve via ``shelve_html_book``. PDF is never routed here
+# (it keeps its inline / Copy-to-Books behaviour).
+_READER_FORMATS = frozenset({"epub", "html", "text"})
+
+
+def _badge_for(fmt: str | None) -> str:
+    """Return the display badge for a format token.
+
+    :param fmt: A token from :func:`app.download.format_of`.
+    :returns: ``"EPUB"``, ``"PDF"``, ``"HTML"``, or ``"TEXT"`` (unknown tokens
+        fall back to ``"EPUB"``, the historic default).
+    :rtype: str
+    """
+    return _BADGES.get(fmt or "", "EPUB")
+
+
+def _reader_shelver(record: dict):
+    """Return the shelving coroutine for *record*'s format, or ``None``.
+
+    Dispatches on :func:`app.download.format_of`: EPUB shelves via
+    :func:`app.reader.shelve_book`, HTML/text via
+    :func:`app.reader.shelve_html_book`, and anything else (PDF, unknown) is
+    not readable in the browser and yields ``None``.
+
+    :param record: A decoded book record (its ``m`` media type is inspected).
+    :returns: An ``async (kc, record, cache_dir) -> Manifest`` callable, or
+        ``None`` when the format cannot be read in the browser.
+    """
+    fmt = format_of(record.get("m", ""))
+    if fmt == "epub":
+        return shelve_book
+    if fmt in _READER_FORMATS:  # html / text
+        return shelve_html_book
+    return None
 
 
 def _sorted_page(entries: list[dict], sort: str) -> list[dict]:
@@ -723,7 +765,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 acq_url = kavita.resolve_url(acq.href, base=base_url)
             except SsrfError:
                 continue
-            badge = "EPUB" if acq.is_epub else "PDF"
+            badge = _badge_for(format_of(acq.media_type))
             cover_abs = None
             if cfg.show_covers and e.cover_url:
                 try:
@@ -953,7 +995,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             bid = _record_id(codec(request), rec)
             fmt = format_of(rec.get("m", "")) or "epub"
             recent.append({"title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
-                           "badge": "EPUB" if fmt == "epub" else "PDF",
+                           "badge": _badge_for(fmt),
                            "detail_url": f"/book/{bid}", "downloaded": True})
         # "Currently Reading" shelf: up to 4 most-recently-read positions. [SS-05]
         reading = []
@@ -1044,19 +1086,19 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         except (ValueError, TypeError) as exc:
             raise BadIdError("Malformed book id") from exc
         fmt = format_of(rec.get("m", "")) or "epub"
-        badge = "EPUB" if fmt == "epub" else "PDF"
+        badge = _badge_for(fmt)
         cover_url = None
         if rec.get("c"):
             cover_url = f"/cover/{codec(request).encode(rec['c'])}"
         key = book_key(rec.get("u", ""))
         is_fav = store(request).is_favorite(key)
 
-        # In-browser reader entry point (EPUB only; PDFs keep their existing
-        # inline-viewer behaviour and get no reader button). [SS-05]
+        # In-browser reader entry point (EPUB + HTML/text; PDFs keep their
+        # existing inline-viewer behaviour and get no reader button). [SS-05]
         read_url = None
         read_label = None
         read_hint = False
-        if fmt == "epub":
+        if fmt in _READER_FORMATS:
             read_url = f"/read/{bid}"
             pos = store(request).get_position(key)
             if pos is None:
@@ -1070,8 +1112,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                     f"{int(pos.get('percent', 0))}%)"
                 )
 
-        # One download button per available format (EPUB/PDF), with size.
-        fmts = rec.get("fmts") or [{"u": rec.get("u"), "m": rec.get("m"), "f": fmt, "len": None}]
+        # One download button per available format (EPUB/PDF), with size. HTML
+        # and plain-text editions have no iBooks hand-off, so they offer no
+        # download button at all — only "Read here". [html-reader]
+        fmts = rec.get("fmts")
+        if not fmts and fmt in ("epub", "pdf"):
+            fmts = [{"u": rec.get("u"), "m": rec.get("m"), "f": fmt, "len": None}]
+        fmts = fmts or []
         dlkeys = store(request).downloaded_keys()
         downloads = []
         for fm in fmts:
@@ -1189,7 +1236,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             fmt = format_of(rec.get("m", "")) or "epub"
             items.append({
                 "title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
-                "badge": "EPUB" if fmt == "epub" else "PDF",
+                "badge": _badge_for(fmt),
                 "detail_url": f"/book/{bid}", "feed_name": rec.get("feed_name"),
                 "unstar_url": f"/unstar/{rec.get('key')}",
                 "cover_url": f"/cover/{codec(request).encode(rec['c'])}" if rec.get("c") else None,
@@ -1545,17 +1592,18 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return SPLIT_TARGETS[split]
 
     async def _open_reader_book(request: Request, bid: str) -> tuple[dict, str, Manifest] | Response:
-        """Decode *bid*, enforce the EPUB-only reader contract, and shelve the
+        """Decode *bid*, enforce the readable-format contract, and shelve the
         book on first open.
 
         Every reader page (:func:`read_book`, :func:`read_toc`,
         :func:`read_find`, :func:`read_bookmarks`, :func:`read_part`) opens the
-        same way: turn a bridge id into a shelved book, refusing anything that
-        is not an EPUB. This folds that shared preamble into one place. It
-        returns ``(record, book_key, manifest)`` on success, or a ready-to-return
-        404 :class:`Response` for a non-EPUB record — the caller returns that
-        Response verbatim, exactly as the inline guard did (the same
-        ``Response | None`` early-return idiom as :func:`_require_site_token`).
+        same way: turn a bridge id into a shelved book, refusing any format the
+        reader cannot open (see :func:`_reader_shelver` — EPUB and HTML/text are
+        readable; PDF is not). This folds that shared preamble into one place.
+        It returns ``(record, book_key, manifest)`` on success, or a
+        ready-to-return 404 :class:`Response` for an unreadable record — the
+        caller returns that Response verbatim (the same ``Response | None``
+        early-return idiom as :func:`_require_site_token`).
 
         :param request: The incoming HTTP request.
         :param bid: Opaque bridge id that encodes a JSON book record.
@@ -1566,14 +1614,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :raises ReaderError: If the book cannot be shelved.
         """
         rec = _decode_book_record(request, bid)
-        if format_of(rec.get("m", "")) != "epub":
+        shelver = _reader_shelver(rec)
+        if shelver is None:
             return _error_response(
-                request, "Not found", "Only EPUB books can be read in the browser.", 404
+                request, "Not found",
+                "Only EPUB and HTML books can be read in the browser.", 404
             )
         key = book_key(rec.get("u", ""))
         manifest = load_manifest(cfg.cache_dir, key)
         if manifest is None:
-            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+            manifest = await shelver(kc(request), rec, cfg.cache_dir)
         return rec, key, manifest
 
     @app.get("/read/{bid}")
@@ -1716,14 +1766,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if refusal is not None:
             return refusal
         rec = _decode_book_record(request, bid)
-        if format_of(rec.get("m", "")) != "epub":
+        shelver = _reader_shelver(rec)
+        if shelver is None:
             return _error_response(
-                request, "Not found", "Only EPUB books can be read in the browser.", 404
+                request, "Not found",
+                "Only EPUB and HTML books can be read in the browser.", 404
             )
         key = book_key(rec.get("u", ""))
         manifest = load_manifest(cfg.cache_dir, key)
         if manifest is None:
-            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+            manifest = await shelver(kc(request), rec, cfg.cache_dir)
         chapter = max(0, min(chapter, len(manifest.chapters) - 1))
         label = manifest.chapters[chapter].title if manifest.chapters else ""
         store(request).add_bookmark(key, chapter, max(0, block), label)

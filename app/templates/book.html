@@ -35,6 +35,7 @@
   </a>
 </p>
 
+{% if downloads %}
 <div class="hint">
 {% if badge == 'EPUB' %}
   Tap <strong>Open in iBooks</strong>. If iOS asks, choose <strong>iBooks</strong> or <strong>Books</strong>.
@@ -44,6 +45,12 @@
   <strong>Open in Books</strong>.
 {% endif %}
 </div>
+{% elif read_url %}
+<div class="hint">
+  This edition is read right here in your browser &mdash; tap
+  <strong>{{ read_label }}</strong> above. There is no separate download.
+</div>
+{% endif %}
 
 <p><a class="back" href="{{ back_url }}">Back to the stacks</a></p>
 {% endblock %}
