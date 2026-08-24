@@ -15,7 +15,9 @@ import asyncio
 import gzip
 import json
 import logging
+import os
 import random
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -41,13 +43,26 @@ from .download import (
     stream_download,
 )
 from .download import (
+    _safe_image_type,
+)
+from .download import (
     build_headers as build_download_headers,
 )
-from .errors import BadIdError, KavitaError, RetroShelfError, SsrfError
+from .errors import BadIdError, KavitaError, ReaderError, RetroShelfError, SsrfError
 from .ids import IdCodec
 from .kavita import KavitaClient, build_client
 from .opds import OpdsParseError
 from .publish import ACQ_TYPE, NAV_TYPE, build_feed
+from .reader import (
+    DEFAULT_SPLIT,
+    SPLIT_TARGETS,
+    load_chapter,
+    load_manifest,
+    part_containing,
+    parts_for,
+    percent_of,
+    shelve_book,
+)
 from .render import STATIC_DIR, templates
 from .security import access_key_ok, ip_allowed, sanitize_filename
 from .store import Store, book_key
@@ -507,6 +522,8 @@ def create_app(config: Config | None = None) -> FastAPI:
 _ERROR_TABLE: tuple[tuple[type[Exception], int, str, str], ...] = (
     (BadIdError, 404, "Not found", "That link is not valid or has expired."),
     (SsrfError, 400, "Bad request", "That request was refused for safety."),
+    (ReaderError, 502, "Can't read this book",
+     "This book can't be read in the browser — use Open in iBooks instead."),
     (KavitaError, 502, "Library unavailable",
      "Could not reach your Kavita library. Check that it is running."),
     (OpdsParseError, 502, "Library unavailable", "Could not read the library feed."),
@@ -560,6 +577,40 @@ def _error_response(request: Request, heading: str, message: str, status: int) -
     return templates.TemplateResponse(
         request, "error.html", {"heading": heading, "message": message}, status_code=status
     )
+
+
+# Matches a sanitizer-emitted placeholder (``{IMG:n}`` / ``{CH:i}``) whose
+# index is restricted to this charset. sanitize_chapter only ever emits plain
+# decimal indexes here, but the substitution result is spliced straight into
+# an HTML attribute and rendered with ``| safe`` — so the regex itself must
+# refuse to match anything wider than a bare id, never trust the input shape. [SS-04]
+_PLACEHOLDER_RE = re.compile(r"\{(IMG|CH):([A-Za-z0-9/._-]+)\}")
+
+
+def _substitute_placeholders(html: str, bid: str) -> str:
+    """Replace sanitizer placeholders with concrete ``/read/{bid}/...`` URLs.
+
+    ``{IMG:n}`` becomes ``/read/{bid}/img/{n}``; ``{CH:i}`` becomes
+    ``/read/{bid}/{i}/1`` (the first part of chapter *i*). Only characters in
+    :data:`_PLACEHOLDER_RE`'s charset can appear in the substituted index, so
+    no attacker-controlled text can widen the emitted URL beyond a path
+    segment. [SS-04]
+
+    :param html: A joined chapter part's HTML, straight from
+        :func:`app.reader.sanitize_chapter`.
+    :param bid: The book's bridge id, already known-good (decoded upstream
+        of this call).
+    :returns: *html* with every placeholder replaced by a concrete URL.
+    :rtype: str
+    """
+
+    def repl(m: re.Match[str]) -> str:
+        kind, value = m.group(1), m.group(2)
+        if kind == "IMG":
+            return f"/read/{bid}/img/{value}"
+        return f"/read/{bid}/{value}/1"
+
+    return _PLACEHOLDER_RE.sub(repl, html)
 
 
 def _register_routes(app: FastAPI, cfg: Config) -> None:
@@ -1214,12 +1265,15 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     # -- Accessibility preferences (optional cookies) ------------------------
     @app.get("/prefs")
     async def prefs(request: Request, big: str = "", covers: str = "",
-                    color: str = "", next: str = "/") -> Response:
+                    color: str = "", split: str = "", reader: str = "",
+                    next: str = "/") -> Response:
         """GET ``/prefs`` — toggle display prefs via cookies (no JS, optional).
 
         Everything works without the cookie; this only enhances. ``big=toggle``
         flips large-print; ``covers=off``/``on`` hides/shows covers;
-        ``color=amber|green|white`` picks the CRT phosphor palette.
+        ``color=amber|green|white`` picks the CRT phosphor palette;
+        ``split=small|medium|large|whole`` sets the reader's part size;
+        ``reader=book|phosphor`` picks the reader's colour theme.
         """
         refusal = _require_site_token(request)
         if refusal is not None:
@@ -1242,6 +1296,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             remember("rs_covers", "1" if covers == "on" else "0")
         if color in ("amber", "green", "white"):
             remember("rs_color", color)
+        if split in SPLIT_TARGETS:
+            remember("rs_split", split)
+        if reader in ("book", "phosphor"):
+            remember("rs_reader_theme", reader)
         return resp
 
     @app.get("/health")
@@ -1390,6 +1448,206 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         except RetroShelfError as exc:
             log.info("cover unavailable on %s: %s", request.url.path, cfg.mask(str(exc)))
             return Response(status_code=404, media_type="image/gif")
+
+    # -- in-browser EPUB reader (SS-04) --------------------------------------
+    def _decode_book_record(request: Request, bid: str) -> dict:
+        """Decode *bid* into its book record dict, or raise :class:`BadIdError`.
+
+        :param request: The incoming HTTP request.
+        :param bid: Opaque bridge id, as minted by :func:`_record_id`.
+        :returns: The decoded book record.
+        :rtype: dict
+        :raises BadIdError: If *bid* cannot be decoded, or does not decode to
+            a JSON object.
+        """
+        try:
+            rec = json.loads(codec(request).decode(bid))
+        except (ValueError, TypeError) as exc:
+            raise BadIdError("Malformed book id") from exc
+        if not isinstance(rec, dict):
+            raise BadIdError("Malformed book id")
+        return rec
+
+    def _split_target(request: Request) -> int | None:
+        """Return the target part size (in characters) for *request*.
+
+        Reads the ``rs_split`` cookie set by the extended ``/prefs`` route;
+        an unset or unrecognised cookie value falls back to
+        :data:`~app.reader.DEFAULT_SPLIT`.
+
+        :param request: The incoming HTTP request.
+        :returns: Target characters per part, or ``None`` for one part per
+            chapter (the ``"whole"`` setting).
+        :rtype: int or None
+        """
+        split = request.cookies.get("rs_split", DEFAULT_SPLIT)
+        if split not in SPLIT_TARGETS:
+            split = DEFAULT_SPLIT
+        return SPLIT_TARGETS[split]
+
+    @app.get("/read/{bid}")
+    async def read_book(request: Request, bid: str) -> Response:
+        """GET ``/read/{bid}`` — open a book in the in-browser reader.
+
+        Shelves the book on first open (parses and sanitizes the EPUB into
+        the reader cache); every later open is a local cache hit. Redirects
+        (303) to the reader's resume position when one is stored, else to
+        chapter 0 part 1.
+
+        :param request: The incoming HTTP request.
+        :param bid: Opaque bridge id that encodes a JSON book record.
+        :returns: A 303 redirect into the reader, or a friendly 404 for a
+            non-EPUB record.
+        :rtype: Response
+        :raises BadIdError: If *bid* cannot be decoded.
+        :raises ReaderError: If the book cannot be shelved (DRM, malformed,
+            oversized, etc.) — rendered via the ``_ERROR_TABLE`` row.
+        """
+        rec = _decode_book_record(request, bid)
+        if format_of(rec.get("m", "")) != "epub":
+            return _error_response(
+                request, "Not found", "Only EPUB books can be read in the browser.", 404
+            )
+        key = book_key(rec.get("u", ""))
+        manifest = load_manifest(cfg.cache_dir, key)
+        if manifest is None:
+            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        pos = store(request).get_position(key)
+        if pos is not None and 0 <= int(pos.get("chapter", 0)) < len(manifest.chapters):
+            chapter = int(pos["chapter"])
+            blocks = load_chapter(cfg.cache_dir, key, chapter)
+            parts = parts_for([len(b) for b in blocks], _split_target(request))
+            part = part_containing(int(pos.get("block", 0)), parts)
+            return RedirectResponse(f"/read/{bid}/{chapter}/{part}", status_code=303)
+        return RedirectResponse(f"/read/{bid}/0/1", status_code=303)
+
+    @app.get("/read/{bid}/toc", response_class=HTMLResponse)
+    async def read_toc(request: Request, bid: str) -> Response:
+        """GET ``/read/{bid}/toc`` — render the book's table of contents.
+
+        :param request: The incoming HTTP request.
+        :param bid: Opaque bridge id that encodes a JSON book record.
+        :returns: Rendered ``toc.html`` with the chapter list, or a friendly
+            404 for a non-EPUB record.
+        :rtype: Response
+        :raises BadIdError: If *bid* cannot be decoded.
+        :raises ReaderError: If the book cannot be shelved.
+        """
+        rec = _decode_book_record(request, bid)
+        if format_of(rec.get("m", "")) != "epub":
+            return _error_response(
+                request, "Not found", "Only EPUB books can be read in the browser.", 404
+            )
+        key = book_key(rec.get("u", ""))
+        manifest = load_manifest(cfg.cache_dir, key)
+        if manifest is None:
+            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        pos = store(request).get_position(key)
+        current_chapter = int(pos["chapter"]) if pos is not None else None
+        chapters = [
+            {"index": i, "title": c.title, "current": i == current_chapter}
+            for i, c in enumerate(manifest.chapters)
+        ]
+        return templates.TemplateResponse(request, "toc.html", {
+            "book_title": manifest.title, "bid": bid, "chapters": chapters,
+        })
+
+    # Registered before /read/{bid}/{chapter}/{part}: routing is match-order
+    # sensitive, and "img" would otherwise be swallowed as a non-numeric
+    # {chapter} segment (a 422, not the 404 the image route promises).
+    @app.get("/read/{bid}/img/{n}")
+    async def read_image(request: Request, bid: str, n: int) -> Response:
+        """GET ``/read/{bid}/img/{n}`` — serve a shelved chapter image.
+
+        Missing images (including images stripped for a text-only shelve
+        with no Pillow) return the tiny empty 404 GIF, same as ``/cover``,
+        so a broken image never corrupts the surrounding page. [H5]
+
+        :param request: The incoming HTTP request.
+        :param bid: Opaque bridge id that encodes a JSON book record.
+        :param n: The image's index within the book, as embedded by
+            :func:`app.reader.sanitize_chapter`.
+        :returns: The image bytes, or a 404 empty GIF when unavailable.
+        :rtype: Response
+        :raises BadIdError: If *bid* cannot be decoded.
+        """
+        rec = _decode_book_record(request, bid)
+        key = book_key(rec.get("u", ""))
+        image_dir = os.path.join(cfg.cache_dir, "reader", key, "images")
+        try:
+            with open(os.path.join(image_dir, str(n)), "rb") as f:
+                data = f.read()
+            with open(os.path.join(image_dir, f"{n}.ct"), encoding="ascii") as f:
+                upstream_ct = f.read().strip()
+        except OSError:
+            return Response(status_code=404, media_type="image/gif")
+        return Response(
+            content=data, media_type=_safe_image_type(upstream_ct),
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
+
+    @app.get("/read/{bid}/{chapter}/{part}", response_class=HTMLResponse)
+    async def read_part(request: Request, bid: str, chapter: int, part: int) -> Response:
+        """GET ``/read/{bid}/{chapter}/{part}`` — render one reading-length
+        part of a chapter.
+
+        Groups the chapter's sanitized blocks into parts sized by the
+        ``rs_split`` cookie, slices to *part*, substitutes sanitizer
+        placeholders into concrete ``/read/{bid}/...`` URLs, and records the
+        new reading position.
+
+        :param request: The incoming HTTP request.
+        :param bid: Opaque bridge id that encodes a JSON book record.
+        :param chapter: 0-based spine chapter index.
+        :param part: 1-based part number within *chapter*.
+        :returns: Rendered ``read.html``, or a 404 for an out-of-range
+            chapter or part.
+        :rtype: Response
+        :raises BadIdError: If *bid* cannot be decoded.
+        :raises ReaderError: If the book cannot be shelved.
+        """
+        rec = _decode_book_record(request, bid)
+        if format_of(rec.get("m", "")) != "epub":
+            return _error_response(
+                request, "Not found", "Only EPUB books can be read in the browser.", 404
+            )
+        key = book_key(rec.get("u", ""))
+        manifest = load_manifest(cfg.cache_dir, key)
+        if manifest is None:
+            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        if chapter < 0 or chapter >= len(manifest.chapters):
+            return _error_response(request, "Not found", "That chapter does not exist.", 404)
+        target = _split_target(request)
+        blocks = load_chapter(cfg.cache_dir, key, chapter)
+        parts = parts_for([len(b) for b in blocks], target)
+        if part < 1 or part > len(parts):
+            return _error_response(request, "Not found", "That part does not exist.", 404)
+        start, end = parts[part - 1]
+        content_html = _substitute_placeholders("".join(blocks[start:end]), bid)
+
+        prev_url = None
+        if part > 1:
+            prev_url = f"/read/{bid}/{chapter}/{part - 1}"
+        elif chapter > 0:
+            prev_blocks = load_chapter(cfg.cache_dir, key, chapter - 1)
+            prev_parts = parts_for([len(b) for b in prev_blocks], target)
+            prev_url = f"/read/{bid}/{chapter - 1}/{max(1, len(prev_parts))}"
+
+        next_url = None
+        if part < len(parts):
+            next_url = f"/read/{bid}/{chapter}/{part + 1}"
+        elif chapter < len(manifest.chapters) - 1:
+            next_url = f"/read/{bid}/{chapter + 1}/1"
+
+        store(request).set_position(rec, chapter, start, percent_of(manifest, chapter, start))
+
+        return templates.TemplateResponse(request, "read.html", {
+            "book_title": manifest.title, "bid": bid,
+            "chapter": chapter, "part": part, "parts_count": len(parts),
+            "chapter_title": manifest.chapters[chapter].title,
+            "content_html": content_html,
+            "prev_url": prev_url, "next_url": next_url,
+        })
 
 
 def _safe_path(candidate: str | None, default: str = "/") -> str:

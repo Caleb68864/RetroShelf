@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ book_title }} - Contents - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; {{ book_title }} &mdash; Contents</div>
+
+<ul class="list toc">
+{% for c in chapters %}
+  <li class="item{% if c.current %} current{% endif %}">
+    <a href="/read/{{ bid }}/{{ c.index }}/1">{{ c.title }}</a>
+    {% if c.current %}<span class="marker">&#9654; you are here</span>{% endif %}
+  </li>
+{% endfor %}
+</ul>
+
+<p><a class="button" href="/read/{{ bid }}/0/1">Start over</a></p>
+<p><a class="back" href="/book/{{ bid }}">Back to book</a></p>
+{% endblock %}

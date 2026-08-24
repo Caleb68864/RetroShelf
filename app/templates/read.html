@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ book_title }} - RetroShelf{% endblock %}
+{% block content %}
+<div class="readbar">
+  <a class="readtitle" href="/read/{{ bid }}/toc">{{ book_title }}</a>
+</div>
+
+<h2 class="chaptertitle">{{ chapter_title }}</h2>
+
+{# Trusted seam: content_html is sanitize_chapter's own output (SS-01), with
+   every {IMG:n}/{CH:i} placeholder already resolved to a plain /read/{bid}/...
+   URL by _substitute_placeholders. This is the only "safe" filter on this page. #}
+<div class="readpage">{{ content_html | safe }}</div>
+
+<div class="readfoot">
+  <p class="readnav">
+    {% if prev_url %}<a class="button small" href="{{ prev_url }}">&laquo; Prev</a>{% endif %}
+    {% if next_url %}<a class="button small" href="{{ next_url }}">Next &raquo;</a>{% endif %}
+  </p>
+  <p class="readpos">Ch {{ chapter + 1 }} &middot; part {{ part }} of {{ parts_count }}</p>
+  <p class="readsplit">
+    Part size:
+    <a href="/prefs?split=small&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Small ]</a>
+    <a href="/prefs?split=medium&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Medium ]</a>
+    <a href="/prefs?split=large&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Large ]</a>
+    <a href="/prefs?split=whole&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Whole chapter ]</a>
+  </p>
+  <p class="readtheme">
+    Theme:
+    <a href="/prefs?reader=book&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Book ]</a>
+    <a href="/prefs?reader=phosphor&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Phosphor ]</a>
+  </p>
+  <p><a class="back" href="/book/{{ bid }}">Back to book</a></p>
+</div>
+{% endblock %}
