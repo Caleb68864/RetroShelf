@@ -456,3 +456,23 @@ def test_reader_error_is_retroshelf_error():
     from app.errors import RetroShelfError
 
     assert issubclass(ReaderError, RetroShelfError)
+
+
+async def test_shelve_invokes_reader_cache_prune(tmp_path, monkeypatch):
+    """``shelve_book`` wires in the reader-cache ceiling (Requirement 8).
+
+    ``prune_reader_cache`` was defined-but-unwired before convergence pass 1,
+    so the 1GB cap was never enforced at runtime. A recording stub confirms a
+    completed shelve calls it with the cache root and the ceiling constant.
+    """
+    import app.reader as reader
+
+    seen: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        reader, "prune_reader_cache", lambda cd, limit: seen.append((cd, limit))
+    )
+
+    cache_dir = str(tmp_path)
+    await reader.shelve_book(FakeKC(make_epub(chapters=2)), _record(), cache_dir)
+
+    assert seen == [(cache_dir, reader.MAX_READER_CACHE_BYTES)]

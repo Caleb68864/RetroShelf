@@ -1119,6 +1119,11 @@ async def shelve_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifes
             "shelved book_key=%s chapters=%d bytes=%d ms=%d",
             key, len(manifest.chapters), spooled_bytes, elapsed_ms,
         )
+        # Enforce the reader-cache ceiling now that a fresh book has landed:
+        # newly-shelved books are the ones that push the directory over the
+        # limit, so pruning here keeps ``/cache/reader`` bounded oldest-first.
+        # Best-effort — a full disk is not a reason to fail a completed shelve.
+        prune_reader_cache(cache_dir, MAX_READER_CACHE_BYTES)
         return manifest
 
 
