@@ -2518,9 +2518,10 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
             # A 300-entry per-page ToC is noise; surface every 10th page so the
             # ToC is a usable "jump roughly here" index, not a wall of pages.
             page_no = idx + 1
+            page_title = f"Page {page_no}"
             if idx == 0 or page_no % 10 == 0:
-                toc.append((0, f"Page {page_no}", idx))
-            chapters_meta.append(ChapterMeta(title=f"Page {page_no}", blocks=1, chars=len(block)))
+                toc.append((0, page_title, idx))
+            chapters_meta.append(ChapterMeta(title=page_title, blocks=1, chars=len(block)))
             total_chars += len(block)
 
     if not chapters_meta:
