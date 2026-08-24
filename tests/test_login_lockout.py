@@ -128,6 +128,19 @@ def test_oversized_form_body_is_refused_before_parsing():
         assert r.status_code == 403
 
 
+def test_failed_login_logs_the_attempt_never_the_password(caplog):
+    st = _store_with_admin("alice", "correct-horse")
+    with make_client(store=st) as client:
+        with caplog.at_level("INFO"):
+            token = _csrf(client.get("/login").text)
+            client.post("/login", data={"_csrf": token, "username": "alice",
+                                        "password": "SUPER-SECRET-PW"},
+                        follow_redirects=False)
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "SUPER-SECRET-PW" not in text  # the secret never reaches a log
+        assert "alice" in text  # but the attempt IS recorded
+
+
 def test_throttle_absent_login_still_works():
     # No throttle on app.state (as in the base harness) → login behaves exactly
     # as before, proving the throttle is a pure add-on. [degrade-gracefully]

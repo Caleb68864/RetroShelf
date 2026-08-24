@@ -478,7 +478,10 @@ class Config:
             return text
         out = text
         secrets: list[str | None] = [f.api_key for f in self.feeds]
-        secrets += [self.api_key, self.bridge_access_key]
+        # ``bridge_id_secret`` is masked too: with accounts enabled it signs the
+        # session cookies and derives the CSRF key, so it is a live auth secret
+        # that must never survive into a log line if one ever interpolates it.
+        secrets += [self.api_key, self.bridge_access_key, self.bridge_id_secret]
         for secret in secrets:
             if secret and len(secret) >= 8:
                 out = out.replace(secret, REDACTED)

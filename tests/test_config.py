@@ -85,6 +85,14 @@ def test_mask_redacts_api_key_and_access_key():
     assert "***" in masked
 
 
+def test_mask_redacts_bridge_id_secret():
+    # The session-signing secret must never survive into a log line either.
+    cfg = load_config({**BASE_ENV, "BRIDGE_ID_SECRET": "id-secret-value-123"})
+    masked = cfg.mask("signing with id-secret-value-123 now")
+    assert "id-secret-value-123" not in masked
+    assert "***" in masked
+
+
 def test_invalid_pdf_disposition_raises():
     with pytest.raises(ConfigError):
         load_config({**BASE_ENV, "PDF_DISPOSITION": "bogus"})
