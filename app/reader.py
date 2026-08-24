@@ -997,6 +997,26 @@ def _transcode_reader_image(raw: bytes) -> tuple[bytes, str] | None:
         return None
 
 
+def _write_reader_image(images_dir: str, idx: int, served_bytes: bytes, content_type: str) -> None:
+    """Persist one transcoded page/illustration image plus its type sidecar.
+
+    Every shelved image is stored as two files: the served bytes at
+    ``images/{idx}`` and its content type at ``images/{idx}.ct``. Shared by
+    EPUB illustration extraction (:func:`_extract_images`) and CBZ page
+    extraction (:func:`_extract_cbz`) so both formats lay images out on disk
+    identically. [cbz-reader]
+
+    :param images_dir: The book's ``images/`` directory (already created).
+    :param idx: The image's integer index (its ``{IMG:n}`` placeholder number).
+    :param served_bytes: The transcoded bytes to serve for this image.
+    :param content_type: The served bytes' content type (e.g. ``image/jpeg``).
+    """
+    with open(os.path.join(images_dir, str(idx)), "wb") as f:
+        f.write(served_bytes)
+    with open(os.path.join(images_dir, f"{idx}.ct"), "w", encoding="ascii") as f:
+        f.write(content_type)
+
+
 def _extract_images(
     zf: zipfile.ZipFile, names: set[str], manifest_items: dict[str, tuple[str, str, str]],
     opf_dir: str, tmp_dir: str, budget: _UnpackBudget,
@@ -1041,10 +1061,7 @@ def _extract_images(
             continue
         out_bytes, out_ct = transcoded
         idx = len(index_by_path)
-        with open(os.path.join(images_dir, str(idx)), "wb") as f:
-            f.write(out_bytes)
-        with open(os.path.join(images_dir, f"{idx}.ct"), "w", encoding="ascii") as f:
-            f.write(out_ct)
+        _write_reader_image(images_dir, idx, out_bytes, out_ct)
         index_by_path[path] = idx
     return index_by_path
 
@@ -2494,10 +2511,7 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
                 continue  # undecodable page: skip
             out_bytes, out_ct = transcoded
             idx = len(chapters_meta)
-            with open(os.path.join(images_dir, str(idx)), "wb") as f:
-                f.write(out_bytes)
-            with open(os.path.join(images_dir, f"{idx}.ct"), "w", encoding="ascii") as f:
-                f.write(out_ct)
+            _write_reader_image(images_dir, idx, out_bytes, out_ct)
             block = f'<img src="{{IMG:{idx}}}"/>'
             with open(os.path.join(chapters_dir, f"{idx}.json"), "w", encoding="utf-8") as f:
                 json.dump({"blocks": [block], "anchors": {}}, f)
