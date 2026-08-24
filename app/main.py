@@ -98,7 +98,9 @@ _KEY_COOKIE = "rs_key"
 # Paths reachable without a session when accounts are enabled (in addition to
 # the always-open _OPEN_PREFIXES). The login/setup pages ARE the gate, so they
 # must render for an unauthenticated visitor; ALLOWED_IPS still fronts them.
-_ACCOUNTS_OPEN_PREFIXES = ("/login", "/setup")
+# Matched EXACTLY (not by prefix): these are leaf routes with no sub-paths, so a
+# future route like ``/login-history`` can never be accidentally left open. [gate]
+_ACCOUNTS_OPEN_PATHS = ("/login", "/setup")
 
 # Absolute lifetime of a session cookie (30 days). Baked into the signed token
 # as an absolute expiry and mirrored as the cookie Max-Age.
@@ -426,7 +428,7 @@ def _account_gate(request: Request, path: str) -> Response | None:
     :returns: A redirect :class:`~fastapi.responses.Response`, or ``None``.
     :rtype: Response | None
     """
-    if any(path.startswith(p) for p in _ACCOUNTS_OPEN_PREFIXES):
+    if path in _ACCOUNTS_OPEN_PATHS:
         return None
     store: Store = request.app.state.store
     if not store.has_accounts():
