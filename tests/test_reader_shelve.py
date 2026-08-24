@@ -271,6 +271,48 @@ async def test_shelve_no_pillow_is_text_only(tmp_path, monkeypatch):
     assert not any("{IMG:" in b for b in blocks)
 
 
+async def test_oversized_image_is_skipped_not_fatal(tmp_path, monkeypatch):
+    # An image larger than the per-image source cap must be dropped (book
+    # stays readable, text-only for that image), never fail the whole book.
+    monkeypatch.setattr(reader, "MAX_IMAGE_SRC_BYTES", 8)  # cover jpeg is bigger
+    cache_dir = str(tmp_path / "cache")
+    kc = FakeKC(make_epub(chapters=2, image=True))
+    manifest = await shelve_book(kc, _record(), cache_dir)
+    assert manifest.images == 0
+    assert len(manifest.chapters) == 2
+    # The dropped image's placeholder does not survive into served blocks.
+    blocks = load_chapter(cache_dir, manifest.book_key, 0)
+    assert not any("{IMG:" in b for b in blocks)
+
+
+async def test_image_count_is_capped(tmp_path, monkeypatch):
+    # The per-book image-attempt ceiling bounds decode work; at zero, no
+    # image is extracted even though the EPUB declares one, and the book
+    # still shelves cleanly.
+    monkeypatch.setattr(reader, "MAX_IMAGES", 0)
+    cache_dir = str(tmp_path / "cache")
+    kc = FakeKC(make_epub(chapters=1, image=True))
+    manifest = await shelve_book(kc, _record(), cache_dir)
+    assert manifest.images == 0
+    assert len(manifest.chapters) == 1
+
+
+def test_skipped_oversized_image_still_charges_the_budget(monkeypatch):
+    # A skipped (too-large) image must still charge the global unpacked budget,
+    # so a "many oversized images" archive cannot read past the ceiling by
+    # having every image individually skipped.
+    monkeypatch.setattr(reader, "MAX_IMAGE_SRC_BYTES", 8)
+    buf = io.BytesIO()
+    payload = b"x" * 4096
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("images/big.bin", payload)
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+        budget = reader._UnpackBudget(reader.MAX_UNPACKED_BYTES)
+        result = reader._read_image_member(zf, "images/big.bin", budget)
+    assert result is None                 # over the per-image cap -> skipped
+    assert budget.used >= reader.MAX_IMAGE_SRC_BYTES  # but the read was charged
+
+
 # -- zip-slip -------------------------------------------------------------
 
 

@@ -470,6 +470,23 @@ READER_IMAGE_JPEG_QUALITY = 80
 # worst-case single-read RAM for these specifically. [SS-02]
 MAX_METADATA_MEMBER_BYTES = 4 * 1024 * 1024
 
+# Per-image source read cap. A single embedded chapter image never
+# legitimately needs tens of megabytes; without a dedicated cap an image was
+# read under the whole 120MB unpacked budget, so one crafted image entry could
+# pull ~120MB into a transient decode buffer. An image larger than this is
+# dropped (the book stays readable, just text-only for that image) rather than
+# failing the whole book — the same "one bad image must not fail the book"
+# contract the decode step already honours. Realistic covers/illustrations are
+# a few MB at most. [SS-02]
+MAX_IMAGE_SRC_BYTES = 16 * 1024 * 1024
+
+# Ceiling on how many distinct image members shelving will attempt to read and
+# decode. A hostile OPF can declare thousands of tiny image items (each
+# resolving to a real zip member) purely to force that many decode attempts;
+# a real book's image count is far lower. Mirrors MAX_SPINE_ITEMS bounding
+# chapter work. [SS-02]
+MAX_IMAGES = 2000
+
 _PASSTHROUGH_IMAGE_FORMATS = {"JPEG", "PNG"}
 
 _HEADING_TAGS = ("h1", "h2", "h3")
@@ -953,14 +970,20 @@ def _extract_images(
     if not _PIL_AVAILABLE:
         return index_by_path
     images_dir = os.path.join(tmp_dir, "images")
+    attempts = 0
     for href, media_type, _props in manifest_items.values():
         if not media_type.startswith("image/"):
             continue
         path = _norm_zip_path(opf_dir, href)
         if path is None or path not in names or path in index_by_path:
             continue
+        if attempts >= MAX_IMAGES:
+            break
+        attempts += 1
+        raw = _read_image_member(zf, path, budget)
+        if raw is None:
+            continue
         try:
-            raw = _read_member_capped(zf, path, MAX_UNPACKED_BYTES, budget)
             img: _PILImage.Image = _PILImage.open(io.BytesIO(raw))
             img.load()
             fmt = img.format or ""
@@ -980,8 +1003,6 @@ def _extract_images(
                 img.save(buf, format="JPEG", quality=READER_IMAGE_JPEG_QUALITY)
                 out_bytes = buf.getvalue()
                 out_ct = "image/jpeg"
-        except ReaderError:
-            raise
         except Exception:  # noqa: BLE001 - a single bad image must not fail the book
             continue
         idx = len(index_by_path)
@@ -991,6 +1012,51 @@ def _extract_images(
             f.write(out_ct)
         index_by_path[path] = idx
     return index_by_path
+
+
+def _read_image_member(zf: zipfile.ZipFile, name: str, budget: _UnpackBudget) -> bytes | None:
+    """Read image member *name*, capped at :data:`MAX_IMAGE_SRC_BYTES`.
+
+    Unlike :func:`_read_member_capped` (which fails the whole book when a
+    chapter/metadata member is over-sized), an image that overflows its cap
+    or cannot be decompressed is *skipped* — the book stays readable, just
+    text-only for that image. Every byte actually pulled off the
+    decompression stream is charged against *budget* even on a skip, so a
+    "many oversized images" archive still cannot read more than the global
+    unpacked ceiling in total.
+
+    :param zf: The open archive.
+    :param name: A zip member name already validated by
+        :func:`_is_safe_member` (or a fixed, known-safe path).
+    :param budget: The shelving pass's running :class:`_UnpackBudget`.
+    :returns: The image's decompressed bytes, or ``None`` to skip it.
+    :raises ReaderError: Only via *budget* — i.e. when the cumulative
+        unpacked total crosses the global ceiling (a genuine exhaustion
+        signal that must fail the book).
+    """
+    chunks: list[bytes] = []
+    total = 0
+    too_large = False
+    try:
+        with zf.open(name) as fh:
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_IMAGE_SRC_BYTES:
+                    too_large = True
+                    break
+                chunks.append(chunk)
+    except (zipfile.BadZipFile, OSError, RuntimeError):
+        # An unreadable/zip-encrypted image is skipped, not fatal: the OCF
+        # encryption.xml check and the chapter reads already surface real DRM.
+        budget.add(total)
+        return None
+    budget.add(total)  # charges even a skipped read; may raise on global overflow
+    if too_large:
+        return None
+    return b"".join(chunks)
 
 
 def _manifest_to_dict(manifest: Manifest) -> dict:
