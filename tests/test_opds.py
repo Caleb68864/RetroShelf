@@ -122,3 +122,37 @@ def test_defused_blocks_external_entity():
     )
     with pytest.raises(OpdsParseError):
         parse(bomb)
+
+
+def test_absurd_length_attribute_degrades_to_none_not_crash():
+    # A syntactically valid feed whose acquisition link declares an
+    # over-long `length` must not crash parsing (int() refuses >4300-digit
+    # strings, and this loop runs outside parse()'s try) — the length just
+    # degrades to None, like every other over-limit field.
+    big = "9" * 6000
+    xml = (
+        '<?xml version="1.0"?>'
+        '<feed xmlns="http://www.w3.org/2005/Atom"><title>t</title>'
+        '<entry><title>b</title>'
+        '<link rel="http://opds-spec.org/acquisition" type="application/epub+zip"'
+        f' href="http://x/y.epub" length="{big}"/>'
+        '</entry></feed>'
+    )
+    feed = parse(xml)
+    assert len(feed.entries) == 1
+    acq = feed.entries[0].primary_acquisition
+    assert acq is not None
+    assert acq.length is None  # absurd length dropped, not crashed
+
+
+def test_normal_length_attribute_still_parsed():
+    xml = (
+        '<?xml version="1.0"?>'
+        '<feed xmlns="http://www.w3.org/2005/Atom"><title>t</title>'
+        '<entry><title>b</title>'
+        '<link rel="http://opds-spec.org/acquisition" type="application/epub+zip"'
+        ' href="http://x/y.epub" length="123456"/>'
+        '</entry></feed>'
+    )
+    feed = parse(xml)
+    assert feed.entries[0].primary_acquisition.length == 123456

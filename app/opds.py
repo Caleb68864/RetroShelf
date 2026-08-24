@@ -405,7 +405,14 @@ def _parse_entry(entry_el: Element) -> Entry:
         if rel.startswith(ACQUISITION_REL_PREFIX):
             length = None
             raw_len = (link.get("length") or "").strip()
-            if raw_len.isdigit():
+            # Bound the digit count before int(): a real file length is <= 19
+            # digits (< 2**63), and Python refuses to convert very long digit
+            # strings (>4300) at all, raising ValueError. Without this cap a
+            # feed declaring a novel-length `length` attribute would crash
+            # parsing with an *uncaught* ValueError (this loop runs outside
+            # parse()'s try). An absurd length simply degrades to None, like
+            # every other over-limit field here. [SS-14]
+            if raw_len.isdigit() and len(raw_len) <= 19:
                 length = int(raw_len)
             entry.acquisitions.append(Acquisition(media_type=mtype, href=href, rel=rel, length=length))
         elif rel in THUMB_RELS:
