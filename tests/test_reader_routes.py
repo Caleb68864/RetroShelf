@@ -547,3 +547,34 @@ def test_bookmark_requires_site_token(tmp_path):
         # No token → refused, and nothing is saved.
         assert client.get(f"/read/{bid}/bookmark?chapter=0&block=0").status_code == 403
         assert "no bookmarks yet" in client.get(f"/read/{bid}/bookmarks").text
+
+
+# -- footnotes: same-chapter anchor links (book fidelity) ---------------------
+
+
+def test_footnote_link_resolves_to_the_part_holding_the_note(tmp_path):
+    # A chapter with a footnote marker near the top and its body far below,
+    # so under a "small" split the marker and note land in different parts.
+    filler = "".join(f"<p>{_BIG_PARAGRAPH}</p>" for _ in range(10))
+    chapter = (
+        '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        '<p>Text with a marker <a href="#fn1">1</a> here.</p>'
+        + filler +
+        '<p id="fn1">The footnote body itself.</p>'
+        "</body></html>"
+    ).encode("utf-8")
+    handler, _c = make_handler(make_epub(chapters=1, image=False, ncx=False,
+                                         chapter_bytes={0: chapter}))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        client.cookies.set("rs_split", "small")
+        client.get(f"/read/{bid}", follow_redirects=False)  # shelve
+        page = client.get(f"/read/{bid}/0/1")
+        assert page.status_code == 200
+        # The marker renders as a link into this book's reader (not a raw #id,
+        # not a leftover placeholder), pointing at a later part of chapter 0.
+        assert "{FRAG" not in page.text
+        assert 'href="#fn1"' not in page.text
+        import re as _re
+        m = _re.search(rf'href="/read/{bid}/0/(\d+)"', page.text)
+        assert m and int(m.group(1)) >= 1  # resolved to a concrete part URL

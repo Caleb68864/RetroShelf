@@ -228,11 +228,19 @@ def _render_element(
     if tag == "a":
         href = element.get("href")
         link_index: int | None = None
-        if href and not href.startswith("#"):
-            link_index = resolve_link(href)
+        frag: str | None = None
+        if href:
+            if href.startswith("#"):
+                candidate = href[1:]
+                if _VALID_ANCHOR_ID.match(candidate):
+                    frag = candidate  # same-chapter footnote/anchor link
+            else:
+                link_index = resolve_link(href)
         inner = _render_children(
             element, depth=depth, resolve_image=resolve_image, resolve_link=resolve_link
         )
+        if frag is not None:
+            return f'<a href="{{FRAG:{frag}}}">{inner}</a>'
         if link_index is None:
             return inner
         return f'<a href="{{CH:{link_index}}}">{inner}</a>'
@@ -326,11 +334,20 @@ def _top_level_block_elements(container: Element, depth: int = 0):
             yield child
 
 
+# An HTML id worth turning into an in-chapter footnote/anchor link. Restricted
+# to the placeholder-safe charset (no quotes, angles, colon, slash or space) so
+# a ``{FRAG:id}`` sentinel is always well-formed. Note the id itself is only
+# ever used as an anchor-map lookup key — it never reaches the output HTML — so
+# this bound is about sentinel hygiene, not injection. [footnotes]
+_VALID_ANCHOR_ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
 def sanitize_chapter(
     source: str | bytes,
     *,
     resolve_image: Callable[[str], int | None],
     resolve_link: Callable[[str], int | None],
+    anchors: dict[str, int] | None = None,
 ) -> list[str]:
     """Sanitize an XHTML chapter into an ordered list of safe HTML blocks.
 
@@ -359,6 +376,10 @@ def sanitize_chapter(
         or ``None`` if it cannot be resolved (the image is dropped).
     :param resolve_link: Maps an ``a`` ``href`` to a chapter index, or
         ``None`` if it cannot be resolved (the link is unwrapped to text).
+    :param anchors: If provided, populated with ``{element_id: block_index}``
+        for every valid-id element, so same-chapter fragment links
+        (``#id`` → ``{FRAG:id}``) can be resolved to the part containing
+        their target at serve time. Left untouched when ``None``.
     :returns: An ordered list of block-level HTML fragment strings.
         Empty or whitespace-only blocks are skipped.
     """
@@ -376,8 +397,15 @@ def sanitize_chapter(
         rendered = _render_element(
             child, depth=0, resolve_image=resolve_image, resolve_link=resolve_link
         )
-        if rendered.strip():
-            blocks.append(rendered)
+        if not rendered.strip():
+            continue
+        if anchors is not None:
+            block_index = len(blocks)
+            for el in child.iter():
+                el_id = el.get("id")
+                if el_id and _VALID_ANCHOR_ID.match(el_id):
+                    anchors.setdefault(el_id, block_index)
+        blocks.append(rendered)
     return blocks
 
 
@@ -1120,10 +1148,12 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
         for i, path in enumerate(chapter_paths):
             raw = _read_member_capped(zf, path, MAX_CHAPTER_BYTES, budget)
             chapter_dir = posixpath.dirname(path)
+            anchors: dict[str, int] = {}
             blocks = sanitize_chapter(
                 raw,
                 resolve_image=_resolver(chapter_dir, image_index_by_path),
                 resolve_link=_resolver(chapter_dir, chapter_index_by_path),
+                anchors=anchors,
             )
             title = (
                 nav_titles.get(path)
@@ -1134,7 +1164,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
             chars = sum(len(b) for b in blocks)
             total_chars += chars
             with open(os.path.join(tmp_dir, "chapters", f"{i}.json"), "w", encoding="utf-8") as f:
-                json.dump({"blocks": blocks}, f)
+                json.dump({"blocks": blocks, "anchors": anchors}, f)
             chapters_meta.append(ChapterMeta(title=title, blocks=len(blocks), chars=chars))
 
     manifest = Manifest(
@@ -1347,6 +1377,34 @@ def load_chapter(cache_dir: str, book_key: str, i: int) -> list[str]:
         return [str(b) for b in blocks]
     except (FileNotFoundError, OSError, ValueError, KeyError, TypeError) as exc:
         raise ReaderError(f"Could not load chapter {i}") from exc
+
+
+def load_chapter_anchors(cache_dir: str, book_key: str, i: int) -> dict[str, int]:
+    """Load chapter *i*'s ``{anchor_id: block_index}`` map (empty if none).
+
+    Never raises: a missing/legacy chapter file (v1 shelving wrote no
+    ``anchors``) or a malformed map degrades to ``{}``, so footnote links
+    simply fall back to the chapter's first part.
+
+    :param cache_dir: The application cache root.
+    :param book_key: The book's cache key.
+    :param i: The chapter's spine index (0-based).
+    :returns: The chapter's anchor map (possibly empty).
+    :rtype: dict[str, int]
+    """
+    path = os.path.join(cache_dir, "reader", book_key, "chapters", f"{i}.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        anchors = data.get("anchors")
+        if not isinstance(anchors, dict):
+            return {}
+        return {
+            str(k): int(v) for k, v in anchors.items()
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0
+        }
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return {}
 
 
 # In-book search. Minimum query length (single characters would match every

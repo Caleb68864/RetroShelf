@@ -105,7 +105,7 @@ def test_structure_survives() -> None:
     assert 'alt="Cover"' in joined
 
 
-def test_fragment_links_unwrapped() -> None:
+def test_valid_fragment_link_becomes_footnote_placeholder() -> None:
     xhtml = (
         '<?xml version="1.0"?>'
         '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
@@ -116,8 +116,42 @@ def test_fragment_links_unwrapped() -> None:
         xhtml, resolve_image=_resolve_image_none, resolve_link=_resolve_link_none
     )
     joined = "\n".join(blocks)
-    assert "<a" not in joined
+    assert "{FRAG:note3}" in joined  # same-chapter anchor → footnote placeholder
     assert "this note" in joined
+
+
+def test_hostile_fragment_id_is_unwrapped_not_emitted() -> None:
+    # A fragment id with unsafe characters must NOT become a {FRAG:...}
+    # sentinel (it would widen the placeholder); the link degrades to text.
+    xhtml = (
+        '<?xml version="1.0"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        '<p>x<a href="#a&quot;&gt;&lt;script">bad</a>y</p>'
+        "</body></html>"
+    )
+    blocks = sanitize_chapter(
+        xhtml, resolve_image=_resolve_image_none, resolve_link=_resolve_link_none
+    )
+    joined = "\n".join(blocks)
+    assert "{FRAG" not in joined
+    assert "<a" not in joined  # unwrapped to plain text
+    assert "bad" in joined
+
+
+def test_anchor_map_records_target_block_indices() -> None:
+    xhtml = (
+        '<?xml version="1.0"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        "<p>intro</p>"
+        '<p id="fn1">the footnote body</p>'
+        "</body></html>"
+    )
+    anchors: dict[str, int] = {}
+    sanitize_chapter(
+        xhtml, resolve_image=_resolve_image_none, resolve_link=_resolve_link_none,
+        anchors=anchors,
+    )
+    assert anchors == {"fn1": 1}  # the footnote body is the second block
 
 
 def test_alt_attribute_cannot_break_out_of_quotes() -> None:

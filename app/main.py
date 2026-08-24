@@ -58,6 +58,7 @@ from .reader import (
     SEARCH_MIN_QUERY,
     SPLIT_TARGETS,
     load_chapter,
+    load_chapter_anchors,
     load_manifest,
     part_containing,
     parts_for,
@@ -593,22 +594,30 @@ def _error_response(request: Request, heading: str, message: str, status: int) -
 # decimal indexes here, but the substitution result is spliced straight into
 # an HTML attribute and rendered with ``| safe`` — so the regex itself must
 # refuse to match anything wider than a bare id, never trust the input shape. [SS-04]
-_PLACEHOLDER_RE = re.compile(r"\{(IMG|CH):([A-Za-z0-9/._-]+)\}")
+_PLACEHOLDER_RE = re.compile(r"\{(IMG|CH|FRAG):([A-Za-z0-9/._-]+)\}")
 
 
-def _substitute_placeholders(html: str, bid: str) -> str:
+def _substitute_placeholders(
+    html: str, bid: str,
+    frag_resolver: Callable[[str], str] | None = None,
+) -> str:
     """Replace sanitizer placeholders with concrete ``/read/{bid}/...`` URLs.
 
     ``{IMG:n}`` becomes ``/read/{bid}/img/{n}``; ``{CH:i}`` becomes
-    ``/read/{bid}/{i}/1`` (the first part of chapter *i*). Only characters in
-    :data:`_PLACEHOLDER_RE`'s charset can appear in the substituted index, so
-    no attacker-controlled text can widen the emitted URL beyond a path
-    segment. [SS-04]
+    ``/read/{bid}/{i}/1`` (the first part of chapter *i*); ``{FRAG:id}`` (a
+    same-chapter footnote/anchor link) is resolved by *frag_resolver* to the
+    ``/read/{bid}/{chapter}/{part}`` URL of the part containing the target —
+    the ``id`` is used only as that resolver's lookup key and never appears in
+    the emitted URL. Only characters in :data:`_PLACEHOLDER_RE`'s charset can
+    appear in a substituted value, so no attacker-controlled text can widen
+    the emitted URL beyond a path segment. [SS-04][footnotes]
 
     :param html: A joined chapter part's HTML, straight from
         :func:`app.reader.sanitize_chapter`.
     :param bid: The book's bridge id, already known-good (decoded upstream
         of this call).
+    :param frag_resolver: Maps an anchor id to a same-chapter part URL. When
+        ``None``, ``{FRAG:…}`` links fall back to the chapter's first part.
     :returns: *html* with every placeholder replaced by a concrete URL.
     :rtype: str
     """
@@ -617,6 +626,8 @@ def _substitute_placeholders(html: str, bid: str) -> str:
         kind, value = m.group(1), m.group(2)
         if kind == "IMG":
             return f"/read/{bid}/img/{value}"
+        if kind == "FRAG":
+            return frag_resolver(value) if frag_resolver is not None else f"/read/{bid}/0/1"
         return f"/read/{bid}/{value}/1"
 
     return _PLACEHOLDER_RE.sub(repl, html)
@@ -1812,7 +1823,21 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if part < 1 or part > len(parts):
             return _error_response(request, "Not found", "That part does not exist.", 404)
         start, end = parts[part - 1]
-        content_html = _substitute_placeholders("".join(blocks[start:end]), bid)
+
+        # Resolve same-chapter footnote/anchor links to the part that holds
+        # the target block. The book-controlled anchor id is only ever this
+        # lookup key — the emitted URL carries just server-side ints.
+        anchors = load_chapter_anchors(cfg.cache_dir, key, chapter)
+
+        def frag_resolver(anchor_id: str) -> str:
+            target_block = anchors.get(anchor_id)
+            if target_block is None:
+                return f"/read/{bid}/{chapter}/1"
+            return f"/read/{bid}/{chapter}/{part_containing(target_block, parts)}"
+
+        content_html = _substitute_placeholders(
+            "".join(blocks[start:end]), bid, frag_resolver
+        )
 
         prev_url = None
         if part > 1:
