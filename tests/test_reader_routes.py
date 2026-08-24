@@ -578,3 +578,47 @@ def test_footnote_link_resolves_to_the_part_holding_the_note(tmp_path):
         import re as _re
         m = _re.search(rf'href="/read/{bid}/0/(\d+)"', page.text)
         assert m and int(m.group(1)) >= 1  # resolved to a concrete part URL
+
+
+# -- robustness: a corrupt cached chapter must only affect that chapter -------
+
+
+def _corrupt_chapter(cache_dir: str, url: str, chapter: int) -> None:
+    """Overwrite a shelved chapter's cache file with unparseable bytes."""
+    from app.store import book_key
+    path = os.path.join(cache_dir, "reader", book_key(url), "chapters", f"{chapter}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("{ this is not valid json")
+
+
+def test_corrupt_neighbor_chapter_does_not_break_a_readable_page(tmp_path):
+    # Turning to chapter 1 computes a "Prev" link to the last part of chapter
+    # 0. If chapter 0's cache file is corrupt, the (readable) chapter-1 page
+    # must still render, with Prev falling back to chapter 0's first part.
+    cache_dir = str(tmp_path / "cache")
+    handler, _calls = make_handler(make_epub(chapters=3))
+    with make_client(handler, cache_dir) as client:
+        bid = _bid(client)
+        client.get(f"/read/{bid}", follow_redirects=False)  # shelve
+        _corrupt_chapter(cache_dir, BOOK_URL, 0)
+        r = client.get(f"/read/{bid}/1/1")
+        assert r.status_code == 200
+        assert f"/read/{bid}/0/1" in r.text  # Prev degraded to chapter 0 part 1
+
+
+def test_corrupt_chapter_does_not_blank_the_bookmarks_list(tmp_path):
+    # A bookmark in a chapter whose cache later becomes unreadable must still
+    # list (linking to that chapter's first part), not 502 the whole page.
+    cache_dir = str(tmp_path / "cache")
+    handler, _calls = make_handler(make_epub(chapters=3))
+    with make_client(handler, cache_dir) as client:
+        bid = _bid(client)
+        token = _token(client)
+        client.get(f"/read/{bid}", follow_redirects=False)  # shelve
+        # Bookmark chapter 2, then corrupt chapter 2's cache file.
+        client.get(f"/read/{bid}/bookmark?chapter=2&block=0&part=1&t={token}",
+                   follow_redirects=False)
+        _corrupt_chapter(cache_dir, BOOK_URL, 2)
+        r = client.get(f"/read/{bid}/bookmarks")
+        assert r.status_code == 200
+        assert f"/read/{bid}/2/1" in r.text

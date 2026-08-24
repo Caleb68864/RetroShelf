@@ -1739,8 +1739,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         for mark in store(request).bookmarks(key):
             ch, blk = mark["chapter"], mark["block"]
             if ch not in parts_cache:
-                lengths = [len(b) for b in load_chapter(cfg.cache_dir, key, ch)]
-                parts_cache[ch] = parts_for(lengths, target)
+                # One unreadable chapter must not blank the whole bookmarks
+                # list; that mark simply links to the chapter's first part.
+                try:
+                    lengths = [len(b) for b in load_chapter(cfg.cache_dir, key, ch)]
+                    parts_cache[ch] = parts_for(lengths, target)
+                except ReaderError:
+                    parts_cache[ch] = []
             part = part_containing(blk, parts_cache[ch])
             items.append({
                 "label": mark.get("label") or (
@@ -1843,9 +1848,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if part > 1:
             prev_url = f"/read/{bid}/{chapter}/{part - 1}"
         elif chapter > 0:
-            prev_blocks = load_chapter(cfg.cache_dir, key, chapter - 1)
-            prev_parts = parts_for([len(b) for b in prev_blocks], target)
-            prev_url = f"/read/{bid}/{chapter - 1}/{max(1, len(prev_parts))}"
+            # Only to point "Prev" at the *last* part of the previous chapter.
+            # A corrupt/unreadable neighbour must not 502 this (readable) page;
+            # fall back to that chapter's first part and let its own page
+            # surface any real error when the reader follows the link.
+            try:
+                prev_blocks = load_chapter(cfg.cache_dir, key, chapter - 1)
+                prev_parts = parts_for([len(b) for b in prev_blocks], target)
+                prev_url = f"/read/{bid}/{chapter - 1}/{max(1, len(prev_parts))}"
+            except ReaderError:
+                prev_url = f"/read/{bid}/{chapter - 1}/1"
 
         next_url = None
         if part < len(parts):
