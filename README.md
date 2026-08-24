@@ -62,6 +62,35 @@ Everything is server-rendered, no-JavaScript, and works on iOS 5.1.1–12 Safari
 
 ---
 
+## Read in the browser
+
+For **EPUB** books, RetroShelf can also shelve the book server-side and let
+you read it right there in old Safari — no iBooks import needed. Tap **Read
+here** on a book's page: the first open unpacks and sanitizes the EPUB into
+the reader cache (a few seconds), then every page after that is instant. Your
+place is remembered automatically (server-side, last-read-wins across
+devices), so tapping **Continue reading** always picks up where you left off,
+and the home screen's **Currently Reading** shelf shows your progress.
+
+This is **EPUB-only** — PDFs keep the existing inline-viewer / Share →
+"Copy to Books" flow described above, unchanged. A book that's DRM-protected
+or otherwise unreadable falls back gracefully: you get a friendly message and
+the regular **Open in iBooks** button still works.
+
+The footer's `rs_split` control sets how much text lands on one page:
+**Small**, **Medium** (default), **Large**, or **Whole** (chapter). It's a
+per-device cookie, no JS, and switching sizes mid-book still resumes at the
+right spot. The same footer also has a **book** / **phosphor** reader theme
+toggle (phosphor is the amber/green CRT look, same family as the site-wide
+theme switch above) and honors the Large-Print toggle.
+
+To keep the bridge safe against hostile or oversized files, the reader
+enforces hard caps: **80 MB** per EPUB, **500 chapters** per book, and a
+**1 GB** total on-disk reader cache (pruned oldest-shelved-book-first). A book
+over any cap gets a friendly error and the iBooks download path instead.
+
+---
+
 ## Getting your Kavita OPDS URL
 
 1. In Kavita, click your user icon → **Settings** → **3rd Party Clients / OPDS**.
