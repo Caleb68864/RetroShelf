@@ -898,10 +898,17 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :returns: A flat ``{field: value}`` mapping.
         :rtype: dict[str, str]
         """
+        # Reject an honestly-declared oversized body BEFORE reading it, so a
+        # multi-MB payload is never buffered into memory. [dos]
+        declared = request.headers.get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > _MAX_FORM_BYTES:
+            log.info("dropped oversized POST body (declared %s bytes) on %s",
+                     declared, request.url.path)
+            return {}
         raw = await request.body()
-        # An auth form is tiny; an oversized body is junk or abuse. Drop it before
-        # parsing so no route hashes or otherwise processes a multi-MB payload. An
-        # empty dict fails the CSRF check downstream → the uniform refusal. [dos]
+        # Backstop for a chunked/undeclared body: an auth form is tiny, so an
+        # oversized read is junk or abuse. Drop it before parsing so no route
+        # hashes a huge payload. An empty dict fails the CSRF check downstream. [dos]
         if len(raw) > _MAX_FORM_BYTES:
             log.info("dropped oversized POST body (%d bytes) on %s",
                      len(raw), request.url.path)
