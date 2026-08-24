@@ -447,3 +447,55 @@ def test_reader_size_controls_render_in_footer(tmp_path):
         assert "Text size:" in text
         assert "Spacing:" in text
         assert "size=xl" in text and "leading=roomy" in text
+
+
+# -- in-book search (findability) ---------------------------------------------
+
+_SEARCHABLE = (
+    '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>'
+    "<p>The lighthouse stood alone against the storm.</p>"
+    "<p>A second mention of the lighthouse keeper.</p></body></html>"
+).encode("utf-8")
+
+
+def test_find_returns_matches_linking_into_the_reader(tmp_path):
+    handler, _c = make_handler(make_epub(chapters=1, image=False, ncx=False,
+                                         chapter_bytes={0: _SEARCHABLE}))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        r = client.get(f"/read/{bid}/find?q=lighthouse")
+        assert r.status_code == 200
+        assert "match" in r.text
+        assert "<mark>lighthouse</mark>" in r.text
+        assert f"/read/{bid}/0/1" in r.text  # links to the part with the hit
+
+
+def test_find_empty_and_short_queries(tmp_path):
+    handler, _c = make_handler(make_epub(chapters=1, image=False, ncx=False,
+                                         chapter_bytes={0: _SEARCHABLE}))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        assert client.get(f"/read/{bid}/find").status_code == 200  # no query, form only
+        short = client.get(f"/read/{bid}/find?q=a")
+        assert "at least" in short.text  # min-length hint
+        none = client.get(f"/read/{bid}/find?q=zzzznomatch")
+        assert "No matches" in none.text
+
+
+def test_find_snippet_escapes_hostile_book_text(tmp_path):
+    # A book whose text contains a script payload must render it as inert,
+    # escaped snippet text — never as live markup on the results page.
+    hostile = (
+        '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        "<p>danger zone alert then more danger words</p></body></html>"
+    ).encode("utf-8")
+    handler, _c = make_handler(make_epub(chapters=1, image=False, ncx=False,
+                                         chapter_bytes={0: hostile}))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        r = client.get(f"/read/{bid}/find?q=danger")
+        assert r.status_code == 200
+        # Our own <mark> is the only markup around the match; no script survives
+        # and the results page carries no book-injected tags.
+        assert "<script" not in r.text
+        assert "<mark>danger</mark>" in r.text

@@ -469,6 +469,11 @@ body.read-lead-roomy .readpage { line-height: 1.95; }
 .readpos { color: #8c8c8c; margin: 0 0 10px; }
 .readsplit, .readtheme, .readsize, .readlead { margin: 0 0 8px; font-size: 15px; }
 .readsplit a, .readtheme a, .readsize a, .readlead a { margin-right: 4px; }
+.readfind { margin: 10px 0 8px; }
+
+/* In-book search results */
+.findresults .snippet { display: block; color: #b8b8a0; font-size: 15px; margin-top: 2px; }
+.findresults mark { background: #ffe24a; color: #241d14; padding: 0 1px; }
 
 /* Table of contents */
 .toc .current { color: #ffb000; }

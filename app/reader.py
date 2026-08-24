@@ -18,6 +18,7 @@ rendered output or disk.
 from __future__ import annotations
 
 import asyncio
+import html
 import io
 import json
 import logging
@@ -1346,6 +1347,94 @@ def load_chapter(cache_dir: str, book_key: str, i: int) -> list[str]:
         return [str(b) for b in blocks]
     except (FileNotFoundError, OSError, ValueError, KeyError, TypeError) as exc:
         raise ReaderError(f"Could not load chapter {i}") from exc
+
+
+# In-book search. Minimum query length (single characters would match every
+# page and are useless); results and per-book cost are bounded. [findability]
+SEARCH_MIN_QUERY = 2
+SEARCH_MAX_HITS = 60
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+@dataclass
+class SearchHit:
+    """One in-book search match, located at block granularity so the caller
+    can resolve it to the reading part under the current page size.
+
+    :ivar chapter: 0-based spine chapter index.
+    :ivar block: Index of the block within the chapter that contains the match.
+    :ivar before: Plain-text context immediately before the match.
+    :ivar match: The matched text, in the book's own casing.
+    :ivar after: Plain-text context immediately after the match.
+    """
+
+    chapter: int
+    block: int
+    before: str
+    match: str
+    after: str
+
+
+def _block_plain_text(block: str) -> str:
+    """Return a block's human-readable text: tags stripped, entities decoded."""
+    return html.unescape(_TAG_RE.sub("", block))
+
+
+def search_book(
+    cache_dir: str,
+    book_key: str,
+    chapter_count: int,
+    query: str,
+    *,
+    max_hits: int = SEARCH_MAX_HITS,
+    radius: int = 48,
+) -> list[SearchHit]:
+    """Search a shelved book's text for *query* (case-insensitive substring).
+
+    Scans each chapter's sanitized blocks as plain text (tags stripped,
+    entities decoded), returning up to *max_hits* :class:`SearchHit` snippets
+    in reading order. Returns ``[]`` for a query shorter than
+    :data:`SEARCH_MIN_QUERY`. Never raises: an unreadable chapter is skipped.
+
+    :param cache_dir: The application cache root.
+    :param book_key: The book's cache key.
+    :param chapter_count: Number of spine chapters (from the manifest).
+    :param query: The search text.
+    :param max_hits: Hard cap on returned matches.
+    :param radius: Characters of context to include on each side of a match.
+    :returns: Ordered list of matches, each locating the containing block.
+    :rtype: list[SearchHit]
+    """
+    q = query.strip()
+    if len(q) < SEARCH_MIN_QUERY:
+        return []
+    needle = q.lower()
+    hits: list[SearchHit] = []
+    for chapter in range(chapter_count):
+        try:
+            blocks = load_chapter(cache_dir, book_key, chapter)
+        except ReaderError:
+            continue
+        for block_index, block in enumerate(blocks):
+            text = _block_plain_text(block)
+            low = text.lower()
+            start = 0
+            while True:
+                pos = low.find(needle, start)
+                if pos < 0:
+                    break
+                end = pos + len(q)
+                hits.append(SearchHit(
+                    chapter=chapter,
+                    block=block_index,
+                    before=text[max(0, pos - radius):pos],
+                    match=text[pos:end],
+                    after=text[end:end + radius],
+                ))
+                if len(hits) >= max_hits:
+                    return hits
+                start = end
+    return hits
 
 
 def prune_reader_cache(cache_dir: str, limit: int) -> None:

@@ -597,3 +597,47 @@ def test_v1_manifest_without_toc_loads_with_empty_toc(tmp_path):
     m = reader._manifest_from_dict(data)
     assert m.version == 1
     assert m.toc == []
+
+
+# -- in-book search (findability) ---------------------------------------------
+
+
+async def test_search_book_finds_matches_with_snippets(tmp_path):
+    body = (
+        '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        "<p>Call me Ishmael. Some years ago I sailed the whale roads.</p>"
+        "<p>The whale is a mighty beast.</p></body></html>"
+    ).encode("utf-8")
+    kc = FakeKC(make_epub(chapters=1, image=False, ncx=False,
+                          chapter_bytes={0: body}))
+    d = str(tmp_path)
+    m = await reader.shelve_book(kc, _record(), d)
+    hits = reader.search_book(d, m.book_key, len(m.chapters), "whale")
+    assert len(hits) == 2  # two paragraphs (blocks) mention "whale"
+    assert hits[0].match == "whale"
+    assert "roads" in hits[0].after or "roads" in hits[0].before
+    assert {h.block for h in hits} == {0, 1}  # located per block for part resolution
+
+
+def test_search_book_short_query_returns_nothing(tmp_path):
+    # No shelved book needed: a sub-minimum query short-circuits before any I/O.
+    assert reader.search_book(str(tmp_path), "nokey", 3, "a") == []
+
+
+async def test_search_snippet_is_plain_text_not_markup(tmp_path):
+    # A block whose text contains angle brackets (already escaped in storage)
+    # yields plain-text snippet fields — no raw markup for the template to
+    # accidentally render unescaped.
+    body = (
+        '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        "<p>a needle &lt;b&gt;bold&lt;/b&gt; here</p></body></html>"
+    ).encode("utf-8")
+    kc = FakeKC(make_epub(chapters=1, image=False, ncx=False,
+                          chapter_bytes={0: body}))
+    d = str(tmp_path)
+    m = await reader.shelve_book(kc, _record(), d)
+    hits = reader.search_book(d, m.book_key, len(m.chapters), "needle")
+    assert len(hits) == 1
+    joined = hits[0].before + hits[0].match + hits[0].after
+    assert "<b>" in joined  # decoded to plain text, not an HTML element
+    assert "&lt;" not in joined  # entities were decoded for the snippet

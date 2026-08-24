@@ -55,12 +55,14 @@ from .opds import OpdsParseError
 from .publish import ACQ_TYPE, NAV_TYPE, build_feed
 from .reader import (
     DEFAULT_SPLIT,
+    SEARCH_MIN_QUERY,
     SPLIT_TARGETS,
     load_chapter,
     load_manifest,
     part_containing,
     parts_for,
     percent_of,
+    search_book,
     shelve_book,
 )
 from .render import STATIC_DIR, templates
@@ -1605,6 +1607,55 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             ]
         return templates.TemplateResponse(request, "toc.html", {
             "book_title": manifest.title, "bid": bid, "chapters": chapters,
+        })
+
+    @app.get("/read/{bid}/find", response_class=HTMLResponse)
+    async def read_find(request: Request, bid: str, q: str = "") -> Response:
+        """GET ``/read/{bid}/find?q=…`` — search within one shelved book.
+
+        Returns a results page linking each hit to the reading part that
+        contains it under the current page size. Snippets are rendered as
+        auto-escaped ``before``/``match``/``after`` text (no ``| safe``), so
+        book content can never inject markup on this route.
+
+        :param request: The incoming HTTP request.
+        :param bid: Opaque bridge id that encodes a JSON book record.
+        :param q: The search query.
+        :returns: Rendered ``find.html``, or a friendly 404 for a non-EPUB
+            record.
+        :rtype: Response
+        :raises BadIdError: If *bid* cannot be decoded.
+        :raises ReaderError: If the book cannot be shelved.
+        """
+        rec = _decode_book_record(request, bid)
+        if format_of(rec.get("m", "")) != "epub":
+            return _error_response(
+                request, "Not found", "Only EPUB books can be read in the browser.", 404
+            )
+        key = book_key(rec.get("u", ""))
+        manifest = load_manifest(cfg.cache_dir, key)
+        if manifest is None:
+            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        query = (q or "").strip()
+        results: list[dict] = []
+        if len(query) >= SEARCH_MIN_QUERY:
+            target = _split_target(request)
+            parts_cache: dict[int, list[tuple[int, int]]] = {}
+            for hit in search_book(cfg.cache_dir, key, len(manifest.chapters), query):
+                if hit.chapter not in parts_cache:
+                    lengths = [len(b) for b in load_chapter(cfg.cache_dir, key, hit.chapter)]
+                    parts_cache[hit.chapter] = parts_for(lengths, target)
+                part = part_containing(hit.block, parts_cache[hit.chapter])
+                title = (manifest.chapters[hit.chapter].title
+                         if hit.chapter < len(manifest.chapters) else "")
+                results.append({
+                    "title": title,
+                    "url": f"/read/{bid}/{hit.chapter}/{part}",
+                    "before": hit.before, "match": hit.match, "after": hit.after,
+                })
+        return templates.TemplateResponse(request, "find.html", {
+            "book_title": manifest.title, "bid": bid, "query": query,
+            "results": results, "min_query": SEARCH_MIN_QUERY,
         })
 
     # Registered before /read/{bid}/{chapter}/{part}: routing is match-order

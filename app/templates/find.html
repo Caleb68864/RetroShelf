@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Find in {{ book_title }} - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; Find in {{ book_title }}</div>
+
+<form class="search" action="/read/{{ bid }}/find" method="get">
+  <input type="text" name="q" value="{{ query }}" placeholder="search this book"
+         autocorrect="off" autocapitalize="off" autocomplete="off" spellcheck="false">
+  <input type="submit" value="Find">
+</form>
+
+{% if query %}
+  {% if query|length < min_query %}
+    <p class="muted">Type at least {{ min_query }} characters.</p>
+  {% elif results %}
+    <p class="muted">{{ results|length }} match{{ 'es' if results|length != 1 else '' }} for &ldquo;{{ query }}&rdquo;.</p>
+    <ul class="list findresults">
+    {% for r in results %}
+      <li class="item">
+        <a class="book" href="{{ r.url }}">
+          <span class="bookmeta">
+            {% if r.title %}<span class="booktitle">{{ r.title }}</span>{% endif %}
+            <span class="snippet">&hellip;{{ r.before }}<mark>{{ r.match }}</mark>{{ r.after }}&hellip;</span>
+          </span>
+        </a>
+      </li>
+    {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">No matches for &ldquo;{{ query }}&rdquo;.</p>
+  {% endif %}
+{% endif %}
+
+<p><a class="back" href="/book/{{ bid }}">Back to book</a></p>
+{% endblock %}
