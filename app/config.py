@@ -426,6 +426,10 @@ class Config:
     cache_dir: str = "/cache"
     cover_max_edge: int = 320
     cover_jpeg_quality: int = 80
+    # Opt-in multi-account login + profiles. Off (default) → no login, reading
+    # state is global, and the optional access-key gate is unchanged. On → the
+    # login page becomes the gate and reading state is per-profile.
+    accounts_enabled: bool = False
     # All configured OPDS feeds (the portal menu). The first is the primary.
     feeds: tuple[FeedSource, ...] = ()
 
@@ -521,6 +525,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     - ``BRIDGE_ID_SECRET`` — secret for opaque identifier signing.
     - ``ALLOWED_IPS`` — comma-separated IP/CIDR allow-list.
     - ``SHOW_COVERS`` — bool; default ``true``.
+    - ``ACCOUNTS_ENABLED`` — bool; default ``false``. When true, the login
+      page becomes the gate and reading state is per-profile.
     - ``CACHE_FEEDS_SECONDS`` — int TTL; default ``300``.
     - ``CACHE_BOOKS`` — bool; default ``false``.
     - ``LOG_LEVEL`` — verbosity; default ``"info"``.
@@ -608,6 +614,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         bridge_id_secret=(e.get("BRIDGE_ID_SECRET") or "").strip() or None,
         allowed_ips=allowed,
         show_covers=_as_bool(e.get("SHOW_COVERS"), True),
+        accounts_enabled=_as_bool(e.get("ACCOUNTS_ENABLED"), False),
         cache_feeds_seconds=_as_int(e.get("CACHE_FEEDS_SECONDS"), 300, "CACHE_FEEDS_SECONDS"),
         cache_books=_as_bool(e.get("CACHE_BOOKS"), False),
         log_level=(e.get("LOG_LEVEL") or "info").strip(),
