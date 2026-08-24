@@ -1717,7 +1717,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             return refusal
         rec = _decode_book_record(request, bid)
         if format_of(rec.get("m", "")) != "epub":
-            return _error_response(request, "Not found", "Not an EPUB.", 404)
+            return _error_response(
+                request, "Not found", "Only EPUB books can be read in the browser.", 404
+            )
         key = book_key(rec.get("u", ""))
         manifest = load_manifest(cfg.cache_dir, key)
         if manifest is None:
