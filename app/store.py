@@ -31,6 +31,10 @@ _MAX_HISTORY = 300
 # The Reading List is hand-curated, so this ceiling exists only so a stuck
 # client cannot grow the file forever. Oldest entries are dropped first.
 _MAX_FAVORITES = 2000
+# Reading positions are one per book, so this ceiling is generous headroom
+# against a runaway client rather than a realistic limit. Oldest-updated
+# entries are dropped first.
+_MAX_READING = 100
 
 # The only keys a persisted record may carry, and how long each may be. ``u``
 # (the download URL) gets the most room; free text from an upstream summary
@@ -112,6 +116,33 @@ def sanitize_record(record: dict) -> dict:
     return out
 
 
+def _sanitize_position(entry: dict) -> dict | None:
+    """Validate a persisted reading-position entry.
+
+    Applied both to entries loaded from disk (a hand-edited or corrupted
+    state file must not surface a bad ``chapter``/``block`` to the reader
+    routes) and to entries built by :meth:`Store.set_position`.
+
+    :param entry: A raw ``reading`` section value.
+    :returns: A cleaned dict, or ``None`` if *entry* has no usable position.
+    :rtype: dict | None
+    """
+    rec = sanitize_record(entry)
+    for field in ("chapter", "block", "percent"):
+        value = entry.get(field)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+            return None
+        rec[field] = int(value)
+    if rec["percent"] > 100:
+        rec["percent"] = 100
+    updated = entry.get("updated")
+    rec["updated"] = float(updated) if isinstance(updated, (int, float)) and not isinstance(updated, bool) else 0.0
+    key = entry.get("key")
+    if isinstance(key, str) and key:
+        rec["key"] = _clean_text(key, _FIELD_LIMITS["key"])
+    return rec
+
+
 class Store:
     """JSON-backed store of favourites (Reading List) and download history."""
 
@@ -119,7 +150,7 @@ class Store:
         """:param path: Filesystem path to the JSON state file."""
         self._path = path
         self._lock = threading.RLock()
-        self._data: dict = {"favorites": {}, "history": []}
+        self._data: dict = {"favorites": {}, "history": [], "reading": {}}
         self._load()
 
     # -- persistence ---------------------------------------------------------
@@ -159,6 +190,13 @@ class Store:
             self._data["history"] = [
                 sanitize_record(h) for h in history[:_MAX_HISTORY] if isinstance(h, dict)
             ]
+        reading = data.get("reading")
+        if isinstance(reading, dict):
+            self._data["reading"] = {
+                str(k): entry
+                for k, v in list(reading.items())[:_MAX_READING]
+                if isinstance(v, dict) and (entry := _sanitize_position(v)) is not None
+            }
 
     def _quarantine(self, reason: object) -> None:
         """Move an unreadable state file aside so the operator can recover it.
@@ -271,3 +309,54 @@ class Store:
         """:returns: The *limit* most recent download records."""
         with self._lock:
             return list(self._data["history"][:limit])
+
+    # -- Reading positions (SS-03) -------------------------------------------
+    def set_position(self, record: dict, chapter: int, block: int, percent: int) -> None:
+        """Record a book's current reading position.
+
+        Called on every part view from the reader routes, so this is the
+        hot path for the reading experience — the same atomic-write and
+        length-capping discipline as :meth:`add_favorite` applies.
+
+        :param record: A book view-record with a ``u`` URL.
+        :param chapter: 0-based spine chapter index.
+        :param block: 0-based index of the position's first block within
+            *chapter*.
+        :param percent: Overall progress, 0-100 (see :func:`app.reader.percent_of`).
+        """
+        key = book_key(record.get("u", ""))
+        with self._lock:
+            rec = sanitize_record(record)
+            rec["key"] = key
+            rec["chapter"] = max(0, int(chapter))
+            rec["block"] = max(0, int(block))
+            rec["percent"] = max(0, min(100, int(percent)))
+            rec["updated"] = time.time()
+            self._data["reading"][key] = rec
+            self._trim_reading()
+            self._save()
+
+    def _trim_reading(self) -> None:
+        """Drop the least-recently-updated positions past the cap.
+
+        Caller must hold the lock.
+        """
+        reading = self._data["reading"]
+        if len(reading) <= _MAX_READING:
+            return
+        ordered = sorted(reading.items(), key=lambda kv: kv[1].get("updated", 0), reverse=True)
+        self._data["reading"] = dict(ordered[:_MAX_READING])
+
+    def get_position(self, book_key: str) -> dict | None:
+        """:returns: The reading-position record for *book_key*, or ``None``."""
+        with self._lock:
+            entry = self._data["reading"].get(book_key)
+            return dict(entry) if entry is not None else None
+
+    def reading_list(self, limit: int = 4) -> list[dict]:
+        """:returns: The *limit* most-recently-updated reading positions."""
+        with self._lock:
+            ordered = sorted(
+                self._data["reading"].values(), key=lambda r: r.get("updated", 0), reverse=True
+            )
+            return ordered[:limit]

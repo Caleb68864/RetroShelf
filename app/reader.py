@@ -1205,3 +1205,113 @@ def prune_reader_cache(cache_dir: str, limit: int) -> None:
                 return
     except OSError:
         pass
+
+
+# -- Pagination and progress (SS-03) -----------------------------------------
+
+#: Maps the ``rs_split`` cookie value to a target character count per part.
+#: ``None`` (the ``"whole"`` setting) means "one part covering the whole
+#: chapter" — see :func:`parts_for`.
+SPLIT_TARGETS: dict[str, int | None] = {
+    "small": 6000,
+    "medium": 12000,
+    "large": 24000,
+    "whole": None,
+}
+
+#: The ``rs_split`` cookie value used when a device has not set one.
+DEFAULT_SPLIT = "medium"
+
+
+def parts_for(block_lengths: list[int], target_chars: int | None) -> list[tuple[int, int]]:
+    """Greedily group a chapter's blocks into reading-length parts.
+
+    Consecutive blocks are accumulated into a part until the running
+    character total reaches *target_chars*, at which point a new part
+    begins. A block is never split across parts — a single block longer
+    than *target_chars* becomes its own singleton part. This keeps part
+    boundaries stable across re-shelves (they depend only on block lengths,
+    which sanitization reproduces deterministically) and total: every block
+    in *block_lengths* appears in exactly one returned range.
+
+    :param block_lengths: Character length of each block, in reading order.
+    :param target_chars: Target characters per part, or ``None`` to return a
+        single part covering every block (the ``"whole"`` split setting).
+    :returns: Ordered ``(start, end_exclusive)`` block-index ranges.
+    :rtype: list[tuple[int, int]]
+    """
+    if not block_lengths:
+        return []
+    if target_chars is None:
+        return [(0, len(block_lengths))]
+
+    parts: list[tuple[int, int]] = []
+    start = 0
+    running = 0
+    for i, length in enumerate(block_lengths):
+        running += length
+        if running >= target_chars:
+            parts.append((start, i + 1))
+            start = i + 1
+            running = 0
+    if start < len(block_lengths):
+        parts.append((start, len(block_lengths)))
+    return parts
+
+
+def part_containing(block_index: int, parts: list[tuple[int, int]]) -> int:
+    """Find the 1-based part number holding *block_index*.
+
+    Used to resume reading at the correct part after the ``rs_split``
+    cookie changes and :func:`parts_for` regroups the same blocks
+    differently. Out-of-range indexes clamp to the nearest valid part
+    rather than raising, so a manifest that shrank (or a stale stored
+    position) degrades to "start" or "end" instead of an error.
+
+    :param block_index: 0-based index of the block to locate.
+    :param parts: Ranges as returned by :func:`parts_for`.
+    :returns: The 1-based part number containing *block_index*.
+    :rtype: int
+    """
+    if not parts:
+        return 1
+    for i, (start, end) in enumerate(parts):
+        if start <= block_index < end:
+            return i + 1
+    if block_index < parts[0][0]:
+        return 1
+    return len(parts)
+
+
+def percent_of(manifest: Manifest, chapter: int, block: int) -> int:
+    """Compute overall reading progress as a percentage.
+
+    Progress is measured in characters, not blocks or chapters, so a few
+    short chapters do not overstate how far along the reader is. The final
+    block of the final chapter always reports 100, even if rounding of the
+    character ratio would otherwise land just under it.
+
+    :param manifest: The book's :class:`Manifest`.
+    :param chapter: 0-based chapter index.
+    :param block: 0-based block index within *chapter*.
+    :returns: Percent complete, 0-100.
+    :rtype: int
+    """
+    if manifest.total_chars <= 0 or not manifest.chapters:
+        return 0
+    chapter = max(0, min(chapter, len(manifest.chapters) - 1))
+    meta = manifest.chapters[chapter]
+    is_last_chapter = chapter == len(manifest.chapters) - 1
+    is_last_block = block >= meta.blocks - 1
+    if is_last_chapter and is_last_block:
+        return 100
+    chars_before: float = sum(c.chars for c in manifest.chapters[:chapter])
+    # Approximate how far into this chapter *block* falls (per-block lengths
+    # are not carried in the manifest, only per-chapter totals), so within a
+    # chapter progress still advances block-by-block instead of jumping in
+    # one chapter-sized step.
+    if meta.blocks > 0:
+        block_frac = max(0, min(block, meta.blocks - 1)) / meta.blocks
+        chars_before += meta.chars * block_frac
+    percent = int((chars_before / manifest.total_chars) * 100)
+    return max(0, min(percent, 100))
