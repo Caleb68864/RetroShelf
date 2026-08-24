@@ -1881,8 +1881,10 @@ async def _shelve_record(
 ) -> Manifest:
     """Spool *record*'s upstream file and shelve it via *extract*.
 
-    The format-agnostic shelving skeleton shared by :func:`shelve_book`
-    (EPUB) and :func:`shelve_html_book` (HTML/text): existing-manifest fast
+    The format-agnostic shelving skeleton shared by every shelver —
+    :func:`shelve_book` (EPUB), :func:`shelve_html_book` (HTML/text),
+    :func:`shelve_pdf_book` (PDF), and :func:`shelve_cbz_book` (CBZ):
+    existing-manifest fast
     path, per-``book_key`` :class:`asyncio.Lock`, capped disk spool through
     the SSRF-guarded ``open_stream`` under a bounded timeout, a
     ``{book_key}.tmp-{pid}`` build directory made visible only by an atomic
