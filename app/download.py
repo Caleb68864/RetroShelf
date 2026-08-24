@@ -146,13 +146,18 @@ _RELAY_HEADERS = ("content-length", "accept-ranges", "content-range", "last-modi
 def format_of(media_type: str) -> str | None:
     """Return the canonical format token for a media type string.
 
-    Inspects *media_type* for the substrings ``"epub"`` or ``"pdf"``
-    (case-insensitive) and returns the corresponding token, or ``None``
-    when neither is found.
+    Inspects *media_type* (case-insensitive) and returns the format token the
+    rest of the app keys off. EPUB and PDF are the iBooks-importable formats;
+    ``"html"`` and ``"text"`` are the *in-browser-readable* formats the reader
+    can shelve (a ``text/html`` "Read online" edition, or a ``text/plain``
+    acquisition) — they have no iBooks hand-off. The checks are ordered so the
+    two iBooks formats win over the reader-only ones (``application/epub+zip``
+    contains neither ``"html"`` nor ``"pdf"``, so ordering is only a guard
+    against odd vendor types).
 
     :param media_type: Raw MIME type string (e.g. ``"application/epub+zip"``).
     :type media_type: str
-    :returns: ``"epub"``, ``"pdf"``, or ``None``.
+    :returns: ``"epub"``, ``"pdf"``, ``"html"``, ``"text"``, or ``None``.
     :rtype: str or None
     """
     mt = (media_type or "").lower()
@@ -160,6 +165,10 @@ def format_of(media_type: str) -> str | None:
         return "epub"
     if "pdf" in mt:
         return "pdf"
+    if "html" in mt:  # text/html, application/xhtml+xml
+        return "html"
+    if "text/plain" in mt:
+        return "text"
     return None
 
 

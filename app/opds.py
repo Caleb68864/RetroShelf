@@ -114,6 +114,33 @@ class Acquisition:
         """
         return "pdf" in (self.media_type or "").lower()
 
+    @property
+    def is_html(self) -> bool:
+        """Return ``True`` when :attr:`media_type` identifies an HTML document.
+
+        Detection is a case-insensitive substring match on ``"html"``, which
+        covers ``text/html`` and ``application/xhtml+xml``. Unlike EPUB/PDF an
+        HTML acquisition has no iBooks hand-off; it is a resource the in-browser
+        reader can shelve and render (see :func:`app.reader.shelve_html_book`).
+
+        :returns: ``True`` if the media type contains ``"html"``, else ``False``.
+        :rtype: bool
+        """
+        return "html" in (self.media_type or "").lower()
+
+    @property
+    def is_text(self) -> bool:
+        """Return ``True`` when :attr:`media_type` identifies a plain-text file.
+
+        A ``text/plain`` acquisition is shelved by the reader the same way an
+        HTML one is (the sanitizer's escaped-text fallback turns it into
+        paragraphs); it, too, has no iBooks path.
+
+        :returns: ``True`` if the media type is ``text/plain``, else ``False``.
+        :rtype: bool
+        """
+        return "text/plain" in (self.media_type or "").lower()
+
 
 @dataclass
 class Entry:
@@ -201,17 +228,26 @@ class Entry:
 
     @property
     def supported_acquisition(self) -> Acquisition | None:
-        """Return an EPUB or PDF acquisition (the only formats iBooks imports).
+        """Return the acquisition the bridge should surface for this entry.
 
-        EPUB is preferred over PDF. Returns ``None`` when the entry offers
-        neither — e.g. a Gutenberg book exposing only Kindle/mobi, or a comic
-        feed offering only CBZ — so the bridge never mislabels or proxies a
-        format old iPads cannot import.
+        Preference order: EPUB, then PDF (the two iBooks-importable formats),
+        then an in-browser-readable HTML acquisition, then a ``text/plain`` one.
+        EPUB/PDF stay ahead of HTML/text so a book that offers both keeps its
+        iBooks hand-off — HTML is only a *fallback* readable format, surfaced so
+        an HTML-only edition (e.g. a Gutenberg "Read online" link) can still be
+        read in the browser rather than being skipped. Returns ``None`` when the
+        entry offers none of these — e.g. a book exposing only Kindle/mobi or a
+        comic feed offering only CBZ — so the bridge never surfaces a format it
+        can neither import nor read.
 
         :returns: A supported :class:`Acquisition`, or ``None``.
         :rtype: Acquisition | None
         """
-        return self._epub_then_pdf()
+        return (
+            self._epub_then_pdf()
+            or next((a for a in self.acquisitions if a.is_html), None)
+            or next((a for a in self.acquisitions if a.is_text), None)
+        )
 
 
 @dataclass
