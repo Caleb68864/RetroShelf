@@ -81,11 +81,17 @@ every other upstream fetch — each image URL passes the same SSRF guard, so a
 page can never make the bridge reach a foreign host. HTML/text editions have
 no iBooks hand-off, so their book page shows only **Read here**.
 
-**PDFs are never routed into the reader** — they keep the existing
-inline-viewer / Share → "Copy to Books" flow described above, unchanged. A
-book that's DRM-protected or otherwise unreadable falls back gracefully: you
-get a friendly message, and where an iBooks path exists the **Open in iBooks**
-button still works.
+**PDFs read here too, via text reflow** — a PDF's text layer is extracted and
+reflowed into the same reader (chapters come from the PDF's bookmarks/outline
+when it has one). PDF is the one **dual** format: its book page keeps the
+native **Open PDF** button (inline view → Share → "Copy to Books", which
+preserves the original layout and figures) *and* offers **Read here** for
+comfortable reflowed reading. A **scanned / image-only PDF** (no text layer)
+can't be reflowed — you get a friendly page pointing you at **Open PDF**
+instead. This is text-only for now: page images aren't rendered in the reflow
+view. A book that's DRM-protected or otherwise unreadable falls back
+gracefully: you get a friendly message, and where an iBooks path exists the
+**Open in iBooks** button still works.
 
 The footer's `rs_split` control sets how much text lands on one page:
 **Small**, **Medium** (default), **Large**, or **Whole** (chapter). It's a
@@ -95,10 +101,11 @@ toggle (phosphor is the amber/green CRT look, same family as the site-wide
 theme switch above) and honors the Large-Print toggle.
 
 To keep the bridge safe against hostile or oversized files, the reader
-enforces hard caps: **80 MB** per EPUB (**16 MB** per HTML/text document),
-**500 chapters** per book, per-image size limits, and a **1 GB** total on-disk
-reader cache (pruned oldest-shelved-book-first). A book over any cap gets a
-friendly error and, where one exists, the iBooks download path instead.
+enforces hard caps: **80 MB** per EPUB or PDF (**16 MB** per HTML/text
+document), **500 chapters** per book, **5000 pages** per PDF, per-image size
+limits, and a **1 GB** total on-disk reader cache (pruned
+oldest-shelved-book-first). A book over any cap gets a friendly error and,
+where one exists, the iBooks download path instead.
 
 ---
 
