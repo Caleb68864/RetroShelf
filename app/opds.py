@@ -141,6 +141,24 @@ class Acquisition:
         """
         return "text/plain" in (self.media_type or "").lower()
 
+    @property
+    def is_cbz(self) -> bool:
+        """Return ``True`` when :attr:`media_type` identifies a CBZ comic.
+
+        Detection is a case-insensitive substring match on ``"comicbook+zip"``
+        or ``"cbz"``, covering ``application/vnd.comicbook+zip``,
+        ``application/x-cbz``, and a bare ``.cbz`` URL. A CBZ has no iBooks
+        hand-off (Books cannot import it); it is a resource the in-browser
+        reader shelves as a page-per-image comic (see
+        :func:`app.reader.shelve_cbz_book`). CBR (``application/vnd.comicbook-
+        rar`` — a RAR archive) is deliberately NOT matched — it is out of scope.
+
+        :returns: ``True`` if the media type looks like a CBZ, else ``False``.
+        :rtype: bool
+        """
+        mt = (self.media_type or "").lower()
+        return "comicbook+zip" in mt or "cbz" in mt
+
 
 @dataclass
 class Entry:
@@ -231,14 +249,15 @@ class Entry:
         """Return the acquisition the bridge should surface for this entry.
 
         Preference order: EPUB, then PDF (the two iBooks-importable formats),
-        then an in-browser-readable HTML acquisition, then a ``text/plain`` one.
-        EPUB/PDF stay ahead of HTML/text so a book that offers both keeps its
-        iBooks hand-off — HTML is only a *fallback* readable format, surfaced so
-        an HTML-only edition (e.g. a Gutenberg "Read online" link) can still be
-        read in the browser rather than being skipped. Returns ``None`` when the
-        entry offers none of these — e.g. a book exposing only Kindle/mobi or a
-        comic feed offering only CBZ — so the bridge never surfaces a format it
-        can neither import nor read.
+        then an in-browser-readable HTML acquisition, then a ``text/plain`` one,
+        then a CBZ comic. EPUB/PDF stay ahead of HTML/text/CBZ so a book that
+        offers both keeps its iBooks hand-off — the readable-only formats are
+        *fallbacks*, surfaced so an edition that offers only them (a Gutenberg
+        "Read online" HTML link, or a comic feed's CBZ) can still be read in the
+        browser rather than being skipped. Returns ``None`` when the entry offers
+        none of these — e.g. a book exposing only Kindle/mobi or a CBR (RAR)
+        comic — so the bridge never surfaces a format it can neither import nor
+        read.
 
         :returns: A supported :class:`Acquisition`, or ``None``.
         :rtype: Acquisition | None
@@ -247,6 +266,7 @@ class Entry:
             self._epub_then_pdf()
             or next((a for a in self.acquisitions if a.is_html), None)
             or next((a for a in self.acquisitions if a.is_text), None)
+            or next((a for a in self.acquisitions if a.is_cbz), None)
         )
 
 

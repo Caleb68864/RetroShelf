@@ -89,10 +89,19 @@ def test_supported_acquisition_prefers_epub_skips_unsupported():
     # PDF-only → pick PDF.
     pdf = Entry(acquisitions=[Acquisition("application/pdf", "/x.pdf", ACQ)])
     assert pdf.supported_acquisition.is_pdf
-    # Only unsupported formats (mobi / cbz) → None (entry is skipped, not mislabeled).
+    # EPUB is preferred over a CBZ when a book offers both.
+    epub_cbz = Entry(acquisitions=[
+        Acquisition("application/vnd.comicbook+zip", "/x.cbz", ACQ),
+        Acquisition("application/epub+zip", "/x.epub", ACQ),
+    ])
+    assert epub_cbz.supported_acquisition.is_epub
+    # CBZ-only → the CBZ is surfaced (read in the browser as a comic).
+    cbz_only = Entry(acquisitions=[Acquisition("application/x-cbz", "/x.cbz", ACQ)])
+    assert cbz_only.supported_acquisition.is_cbz
+    # Only genuinely unsupported formats (mobi / CBR) → None (entry skipped).
     unsupported = Entry(acquisitions=[
         Acquisition("application/x-mobipocket-ebook", "/x.mobi", ACQ),
-        Acquisition("application/x-cbz", "/x.cbz", ACQ),
+        Acquisition("application/vnd.comicbook-rar", "/x.cbr", ACQ),
     ])
     assert unsupported.supported_acquisition is None
 

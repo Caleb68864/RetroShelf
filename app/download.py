@@ -148,16 +148,24 @@ def format_of(media_type: str) -> str | None:
 
     Inspects *media_type* (case-insensitive) and returns the format token the
     rest of the app keys off. EPUB and PDF are the iBooks-importable formats;
-    ``"html"`` and ``"text"`` are the *in-browser-readable* formats the reader
-    can shelve (a ``text/html`` "Read online" edition, or a ``text/plain``
-    acquisition) — they have no iBooks hand-off. The checks are ordered so the
-    two iBooks formats win over the reader-only ones (``application/epub+zip``
-    contains neither ``"html"`` nor ``"pdf"``, so ordering is only a guard
-    against odd vendor types).
+    ``"html"``, ``"text"``, and ``"cbz"`` are the *in-browser-readable* formats
+    the reader can shelve (a ``text/html`` "Read online" edition, a
+    ``text/plain`` acquisition, or a CBZ comic) — they have no iBooks hand-off.
+    The checks are ordered so the two iBooks formats win over the reader-only
+    ones (``application/epub+zip`` contains none of ``"html"``/``"pdf"``/
+    ``"cbz"``, so ordering is only a guard against odd vendor types).
 
-    :param media_type: Raw MIME type string (e.g. ``"application/epub+zip"``).
+    The ``"cbz"`` check matches ``application/vnd.comicbook+zip``,
+    ``application/x-cbz``, and — since it is a plain substring test — a bare
+    ``.cbz`` URL, giving a URL-extension fallback for feeds that mislabel a
+    comic's media type. CBR (``application/vnd.comicbook-rar`` / ``.cbr``) is a
+    RAR archive and deliberately does NOT match — it is out of scope.
+
+    :param media_type: Raw MIME type string (e.g. ``"application/epub+zip"``),
+        or a URL when only an extension is available.
     :type media_type: str
-    :returns: ``"epub"``, ``"pdf"``, ``"html"``, ``"text"``, or ``None``.
+    :returns: ``"epub"``, ``"pdf"``, ``"cbz"``, ``"html"``, ``"text"``, or
+        ``None``.
     :rtype: str or None
     """
     mt = (media_type or "").lower()
@@ -165,6 +173,8 @@ def format_of(media_type: str) -> str | None:
         return "epub"
     if "pdf" in mt:
         return "pdf"
+    if "comicbook+zip" in mt or "cbz" in mt:  # vnd.comicbook+zip, x-cbz, .cbz
+        return "cbz"
     if "html" in mt:  # text/html, application/xhtml+xml
         return "html"
     if "text/plain" in mt:
