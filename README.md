@@ -184,6 +184,7 @@ on GHCR. Edit the env values in `docker-compose.yml` first (or fork and commit).
 | `BRIDGE_ACCESS_KEY` | – | off | Require a key: visit `/?key=...` once, then a cookie carries it (or send `X-Access-Key`) |
 | `EXTRA_UPSTREAM_ORIGINS` | – | — | Comma-separated extra origins to trust (for download hosts on an unrelated domain) |
 | `ALLOWED_IPS` | – | off | Direct-LAN IP/CIDR allowlist (not proxy-aware) |
+| `ACCOUNTS_ENABLED` | – | off | Multi-account login + profiles; first visit creates an admin at `/setup`, `/login` becomes the gate (supersedes `BRIDGE_ACCESS_KEY`), reading state is per-profile |
 | `LOG_LEVEL` | – | `info` | `debug` for verbose (masked) logs |
 | `TZ` | – | `America/Chicago` | Container timezone |
 
@@ -299,6 +300,16 @@ and never exposes it, but it has **no login by default**. If you expose it beyon
 put it behind a reverse proxy with HTTPS and authentication, and/or set `BRIDGE_ACCESS_KEY`
 and `ALLOWED_IPS`. The IP allowlist uses the direct socket address and is **not** aware of
 `X-Forwarded-For`, so it only works for direct-LAN access, not behind a proxy.
+
+**Accounts + profiles (opt-in).** Set `ACCOUNTS_ENABLED=true` for multi-account login:
+the first visit creates an admin account at `/setup`, then `/login` is the gate
+(superseding `BRIDGE_ACCESS_KEY`; `ALLOWED_IPS` still fronts it). Each account has
+Netflix-style profiles (no per-profile PIN) and its own reading state — positions,
+bookmarks, Reading List, history. Passwords are salted PBKDF2-SHA256 (stdlib, no new
+dependency); sessions are HMAC-signed, expiring, HttpOnly+SameSite=Lax cookies revocable
+by password change; every mutating form carries a server-checked CSRF token. Set a stable
+`BRIDGE_ID_SECRET` so sessions survive restarts. Note: with accounts on, external OPDS
+readers can't authenticate to `/opds` (browser login only) — a v1 limitation.
 
 What the bridge does on its own, with nothing configured:
 
