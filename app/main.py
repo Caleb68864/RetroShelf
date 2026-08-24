@@ -85,6 +85,13 @@ _KEY_COOKIE = "rs_key"
 _SORT_KEYS = ("title", "author", "format")
 _FORMAT_ORDER = {"EPUB": 0, "PDF": 1}
 
+# Reader reading-comfort preferences (cookie-driven, no-JS). Each maps to a
+# body class the reader stylesheet keys off; the default (medium size, normal
+# leading) needs no class. Validated against these sets before a cookie is set,
+# so a crafted ``?size=`` value can never reach the template. [reading-comfort]
+_READER_SIZES = ("s", "m", "l", "xl")
+_READER_LEADINGS = ("tight", "normal", "roomy")
+
 # Defence-in-depth headers applied to HTML pages only.
 #
 # Every one of these is *ignored* by the browsers RetroShelf exists for — iOS
@@ -1297,6 +1304,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     @app.get("/prefs")
     async def prefs(request: Request, big: str = "", covers: str = "",
                     color: str = "", split: str = "", reader: str = "",
+                    size: str = "", leading: str = "",
                     next: str = "/") -> Response:
         """GET ``/prefs`` — toggle display prefs via cookies (no JS, optional).
 
@@ -1304,7 +1312,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         flips large-print; ``covers=off``/``on`` hides/shows covers;
         ``color=amber|green|white`` picks the CRT phosphor palette;
         ``split=small|medium|large|whole`` sets the reader's part size;
-        ``reader=book|phosphor`` picks the reader's colour theme.
+        ``reader=book|phosphor`` picks the reader's colour theme;
+        ``size=s|m|l|xl`` sets the reader's text size;
+        ``leading=tight|normal|roomy`` sets the reader's line spacing.
         """
         refusal = _require_site_token(request)
         if refusal is not None:
@@ -1331,6 +1341,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             remember("rs_split", split)
         if reader in ("book", "phosphor"):
             remember("rs_reader_theme", reader)
+        if size in _READER_SIZES:
+            remember("rs_reader_size", size)
+        if leading in _READER_LEADINGS:
+            remember("rs_reader_leading", leading)
         return resp
 
     @app.get("/health")

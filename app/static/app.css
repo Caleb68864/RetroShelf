@@ -454,11 +454,21 @@ body.color-white .brand:active { color: #ffffff; }
 body.big .readpage { font-size: 24px; }
 body.big .chaptertitle { font-size: 26px; }
 
+/* Reading-comfort: per-reader text size (default = the 19px base above) and
+   line spacing (default = 1.6). Cookie-driven body classes, no JS. Placed
+   after the base .readpage rule so they win the cascade; the large-print
+   `big` class still enlarges everything else site-wide. */
+body.read-size-s .readpage { font-size: 16px; }
+body.read-size-l .readpage { font-size: 23px; }
+body.read-size-xl .readpage { font-size: 28px; }
+body.read-lead-tight .readpage { line-height: 1.4; }
+body.read-lead-roomy .readpage { line-height: 1.95; }
+
 .readfoot { margin-top: 18px; }
 .readnav { margin: 0 0 10px; }
 .readpos { color: #8c8c8c; margin: 0 0 10px; }
-.readsplit, .readtheme { margin: 0 0 8px; font-size: 15px; }
-.readsplit a, .readtheme a { margin-right: 4px; }
+.readsplit, .readtheme, .readsize, .readlead { margin: 0 0 8px; font-size: 15px; }
+.readsplit a, .readtheme a, .readsize a, .readlead a { margin-right: 4px; }
 
 /* Table of contents */
 .toc .current { color: #ffb000; }

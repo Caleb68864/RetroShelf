@@ -30,6 +30,19 @@
     <a href="/prefs?reader=book&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Book ]</a>
     <a href="/prefs?reader=phosphor&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Phosphor ]</a>
   </p>
+  <p class="readsize">
+    Text size:
+    <a href="/prefs?size=s&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Small ]</a>
+    <a href="/prefs?size=m&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Medium ]</a>
+    <a href="/prefs?size=l&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Large ]</a>
+    <a href="/prefs?size=xl&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Huge ]</a>
+  </p>
+  <p class="readlead">
+    Spacing:
+    <a href="/prefs?leading=tight&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Tight ]</a>
+    <a href="/prefs?leading=normal&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Normal ]</a>
+    <a href="/prefs?leading=roomy&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Roomy ]</a>
+  </p>
   <p><a class="back" href="/book/{{ bid }}">Back to book</a></p>
 </div>
 {% endblock %}

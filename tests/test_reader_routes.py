@@ -387,3 +387,63 @@ def test_reader_honors_large_print_cookie(tmp_path):
         r = client.get(f"/read/{bid}/0/1")
         assert '<body class="' in r.text
         assert " big" in r.text
+
+
+# -- reading comfort: text size + line spacing (cookie-driven, no-JS) ---------
+
+
+def test_prefs_size_and_leading_set_cookies(tmp_path):
+    handler, _calls = make_handler(make_epub(chapters=1))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        t = _token(client)
+        r = client.get(f"/prefs?size=xl&next=/&t={t}", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.cookies.get("rs_reader_size") == "xl"
+
+        r2 = client.get(f"/prefs?leading=roomy&next=/&t={t}", follow_redirects=False)
+        assert r2.status_code == 303
+        assert r2.cookies.get("rs_reader_leading") == "roomy"
+
+
+def test_prefs_rejects_bogus_size_and_leading(tmp_path):
+    handler, _calls = make_handler(make_epub(chapters=1))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        t = _token(client)
+        # A crafted value must never be set as a cookie (guards the body class).
+        r = client.get(f'/prefs?size=x"><script&next=/&t={t}', follow_redirects=False)
+        assert r.status_code == 303
+        assert r.cookies.get("rs_reader_size") is None
+
+
+def test_reader_size_and_leading_cookies_set_body_class(tmp_path):
+    handler, _calls = make_handler(make_epub(chapters=1))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        client.get(f"/read/{bid}", follow_redirects=False)
+
+        default_page = client.get(f"/read/{bid}/0/1")
+        assert "read-size-" not in default_page.text
+        assert "read-lead-" not in default_page.text
+
+        client.cookies.set("rs_reader_size", "l")
+        client.cookies.set("rs_reader_leading", "tight")
+        page = client.get(f"/read/{bid}/0/1")
+        assert "read-size-l" in page.text
+        assert "read-lead-tight" in page.text
+        # Defaults emit no class; medium/normal stay classless.
+        client.cookies.set("rs_reader_size", "m")
+        client.cookies.set("rs_reader_leading", "normal")
+        page2 = client.get(f"/read/{bid}/0/1")
+        assert "read-size-" not in page2.text
+        assert "read-lead-" not in page2.text
+
+
+def test_reader_size_controls_render_in_footer(tmp_path):
+    handler, _calls = make_handler(make_epub(chapters=1))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        client.get(f"/read/{bid}", follow_redirects=False)
+        text = client.get(f"/read/{bid}/0/1").text
+        assert "Text size:" in text
+        assert "Spacing:" in text
+        assert "size=xl" in text and "leading=roomy" in text
