@@ -5,7 +5,7 @@
 
 <ul class="list toc">
 {% for c in chapters %}
-  <li class="item{% if c.current %} current{% endif %}">
+  <li class="item toc-d{{ c.depth }}{% if c.current %} current{% endif %}">
     <a href="/read/{{ bid }}/{{ c.index }}/1">{{ c.title }}</a>
     {% if c.current %}<span class="marker">&#9654; you are here</span>{% endif %}
   </li>

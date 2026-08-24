@@ -473,6 +473,11 @@ body.read-lead-roomy .readpage { line-height: 1.95; }
 /* Table of contents */
 .toc .current { color: #ffb000; }
 .toc .marker { display: block; color: #8c8c8c; font-size: 14px; }
+/* Hierarchical nav/NCX ToC: indent nested entries (block layout, no grid). */
+.toc .toc-d1 { margin-left: 22px; }
+.toc .toc-d2 { margin-left: 44px; }
+.toc .toc-d3 { margin-left: 66px; }
+.toc .toc-d1 a, .toc .toc-d2 a, .toc .toc-d3 a { font-size: 15px; }
 
 /* Phosphor reader theme: swaps the sepia "book" look for the site's own
    terminal palette (amber/green/white chrome stays as chosen elsewhere). */

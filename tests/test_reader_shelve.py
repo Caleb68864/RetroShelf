@@ -240,7 +240,7 @@ async def test_shelve_happy_path(tmp_path):
     manifest = await shelve_book(kc, _record(), cache_dir)
 
     assert isinstance(manifest, Manifest)
-    assert manifest.version == 1
+    assert manifest.version == 2
     assert manifest.title == "Test Book"
     assert manifest.author == "Test Author"
     assert len(manifest.chapters) == 3
@@ -537,3 +537,63 @@ async def test_stale_final_dir_is_replaced_not_a_500(tmp_path):
     assert manifest.chapters  # shelved successfully over the stale dir
     assert reader.load_manifest(cache_dir, key) is not None
     assert not os.path.exists(os.path.join(stale, "junk.txt"))  # leftover cleared
+
+
+# -- hierarchical table of contents (book-fidelity) ---------------------------
+
+
+def test_nav_toc_captures_nesting_depth():
+    nav = (
+        '<html xmlns="http://www.w3.org/1999/xhtml" '
+        'xmlns:epub="http://www.idpf.org/2007/ops"><body>'
+        '<nav epub:type="toc"><ol>'
+        '<li><a href="p1.xhtml">Part One</a>'
+        '  <ol><li><a href="c1.xhtml">Chapter 1</a></li>'
+        '      <li><a href="c2.xhtml">Chapter 2</a></li></ol></li>'
+        '<li><a href="p2.xhtml">Part Two</a></li>'
+        '</ol></nav></body></html>'
+    ).encode("utf-8")
+    entries = reader._toc_entries_from_nav(nav, "OEBPS")
+    assert entries == [
+        (0, "Part One", "OEBPS/p1.xhtml"),
+        (1, "Chapter 1", "OEBPS/c1.xhtml"),
+        (1, "Chapter 2", "OEBPS/c2.xhtml"),
+        (0, "Part Two", "OEBPS/p2.xhtml"),
+    ]
+
+
+def test_ncx_toc_captures_nesting_depth():
+    ncx = (
+        '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>'
+        '<navPoint><navLabel><text>Part One</text></navLabel>'
+        '<content src="p1.xhtml"/>'
+        '<navPoint><navLabel><text>Chapter 1</text></navLabel>'
+        '<content src="c1.xhtml"/></navPoint></navPoint>'
+        '</navMap></ncx>'
+    ).encode("utf-8")
+    entries = reader._toc_entries_from_ncx(ncx, "OEBPS")
+    assert entries == [
+        (0, "Part One", "OEBPS/p1.xhtml"),
+        (1, "Chapter 1", "OEBPS/c1.xhtml"),
+    ]
+
+
+def test_build_toc_maps_paths_to_chapter_indices_and_normalizes_depth():
+    nav_toc = [(1, "Part One", "OEBPS/p1.xhtml"), (2, "Chapter 1", "OEBPS/c1.xhtml")]
+    idx = {"OEBPS/p1.xhtml": 0, "OEBPS/c1.xhtml": 1}
+    # nav preferred over ncx; shallowest depth normalized to 0; unknown paths dropped.
+    built = reader._build_toc(nav_toc, [], idx)
+    assert built == [(0, "Part One", 0), (1, "Chapter 1", 1)]
+    assert reader._build_toc([(0, "x", "OEBPS/missing.xhtml")], [], idx) == []
+
+
+def test_v1_manifest_without_toc_loads_with_empty_toc(tmp_path):
+    """A legacy v1 manifest (no ``toc`` key) loads fine and degrades to flat."""
+    data = {
+        "version": 1, "book_key": "abc", "title": "Old", "author": "",
+        "chapters": [{"title": "Ch", "blocks": 1, "chars": 5}],
+        "images": 0, "total_chars": 5, "created": 1.0,
+    }
+    m = reader._manifest_from_dict(data)
+    assert m.version == 1
+    assert m.toc == []

@@ -28,7 +28,7 @@ import shutil
 import time
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import unquote
 from xml.etree.ElementTree import Element  # noqa: S405 - typing only, parsing goes through defusedxml
 from xml.sax.saxutils import escape, quoteattr
@@ -474,6 +474,10 @@ class Manifest:
     :ivar images: Number of images extracted into ``images/``.
     :ivar total_chars: Sum of every chapter's ``chars``.
     :ivar created: ``time.time()`` at the moment shelving finished.
+    :ivar toc: Hierarchical table of contents from the EPUB nav/NCX, as
+        ``(depth, title, chapter_index)`` triples in reading order. Empty when
+        the book has no nav/NCX (the reader then falls back to the flat
+        spine-chapter list). [book-fidelity]
     """
 
     version: int
@@ -484,6 +488,7 @@ class Manifest:
     images: int
     total_chars: int
     created: float
+    toc: list[tuple[int, str, int]] = field(default_factory=list)
 
 
 class _UnpackBudget:
@@ -747,6 +752,128 @@ def _titles_from_ncx(data: bytes, ncx_dir: str) -> dict[str, str]:
     return titles
 
 
+_MAX_TOC_DEPTH = 3
+
+
+def _toc_entries_from_nav(data: bytes, nav_dir: str) -> list[tuple[int, str, str]]:
+    """Extract the *hierarchical* ToC from an EPUB3 nav document.
+
+    Walks the first ``<nav epub:type="toc">``'s nested ``<ol>``/``<li>`` tree,
+    yielding ``(depth, title, zip_path)`` in reading order — depth 0 at the top
+    level, capped at :data:`_MAX_TOC_DEPTH`.
+
+    :param data: The raw nav document bytes.
+    :param nav_dir: The nav document's own zip-relative directory.
+    :returns: Ordered ``(depth, title, path)`` triples; empty on parse failure.
+    """
+    try:
+        root = fromstring(data)
+    except (ParseError, ValueError):
+        return []
+    entries: list[tuple[int, str, str]] = []
+
+    def walk_ol(ol: Element, depth: int) -> None:
+        for li in ol:
+            if _local_name(li.tag) != "li":
+                continue
+            anchor = next((e for e in li.iter() if _local_name(e.tag) == "a"), None)
+            if anchor is not None:
+                href = anchor.get("href")
+                path = _norm_zip_path(nav_dir, href) if href else None
+                text = " ".join("".join(anchor.itertext()).split())
+                if path and text:
+                    entries.append((min(depth, _MAX_TOC_DEPTH), text, path))
+            child_ol = next((e for e in li if _local_name(e.tag) == "ol"), None)
+            if child_ol is not None:
+                walk_ol(child_ol, depth + 1)
+
+    for nav_el in root.iter():
+        if _local_name(nav_el.tag) != "nav":
+            continue
+        type_attr = next(
+            (v for k, v in nav_el.attrib.items() if _local_name(k) == "type"), ""
+        )
+        if "toc" not in type_attr.split():
+            continue
+        top_ol = next((e for e in nav_el if _local_name(e.tag) == "ol"), None)
+        if top_ol is not None:
+            walk_ol(top_ol, 0)
+        break
+    return entries
+
+
+def _toc_entries_from_ncx(data: bytes, ncx_dir: str) -> list[tuple[int, str, str]]:
+    """Extract the hierarchical ToC from an EPUB2 NCX ``navMap``.
+
+    ``navPoint`` nesting gives depth. Returns ``(depth, title, zip_path)`` in
+    reading order, capped at :data:`_MAX_TOC_DEPTH`.
+
+    :param data: The raw ``toc.ncx`` bytes.
+    :param ncx_dir: The NCX's own zip-relative directory.
+    :returns: Ordered ``(depth, title, path)`` triples; empty on parse failure.
+    """
+    try:
+        root = fromstring(data)
+    except (ParseError, ValueError):
+        return []
+    entries: list[tuple[int, str, str]] = []
+
+    def walk_point(point: Element, depth: int) -> None:
+        title_text = ""
+        src: str | None = None
+        children_points: list[Element] = []
+        for child in point:
+            cname = _local_name(child.tag)
+            if cname == "navlabel":
+                for text_el in child:
+                    if _local_name(text_el.tag) == "text":
+                        title_text = " ".join((text_el.text or "").split())
+            elif cname == "content":
+                src = child.get("src")
+            elif cname == "navpoint":
+                children_points.append(child)
+        path = _norm_zip_path(ncx_dir, src) if src else None
+        if path and title_text:
+            entries.append((min(depth, _MAX_TOC_DEPTH), title_text, path))
+        for cp in children_points:
+            walk_point(cp, depth + 1)
+
+    nav_map = next((e for e in root.iter() if _local_name(e.tag) == "navmap"), None)
+    if nav_map is not None:
+        for point in nav_map:
+            if _local_name(point.tag) == "navpoint":
+                walk_point(point, 0)
+    return entries
+
+
+def _build_toc(
+    nav_toc: list[tuple[int, str, str]],
+    ncx_toc: list[tuple[int, str, str]],
+    chapter_index_by_path: dict[str, int],
+) -> list[tuple[int, str, int]]:
+    """Map an ordered nav/NCX ToC onto spine-chapter indices.
+
+    Prefers the EPUB3 nav ToC, falling back to the NCX. Each entry's target
+    path (already fragment-stripped by :func:`_norm_zip_path`) is resolved to
+    the containing spine chapter; entries whose target is not a spine chapter
+    are dropped. The result is normalized so its shallowest entries sit at
+    depth 0.
+
+    :returns: ``(depth, title, chapter_index)`` triples, or empty for a flat
+        fallback ToC.
+    """
+    source = nav_toc or ncx_toc
+    mapped: list[tuple[int, str, int]] = []
+    for depth, title, path in source:
+        idx = chapter_index_by_path.get(path)
+        if idx is not None:
+            mapped.append((depth, title, idx))
+    if not mapped:
+        return []
+    base = min(d for d, _t, _i in mapped)
+    return [(d - base, t, i) for d, t, i in mapped]
+
+
 def _title_from_heading(source: bytes) -> str | None:
     """Return the text of the first ``h1``-``h3`` element in *source*.
 
@@ -849,6 +976,7 @@ def _manifest_to_dict(manifest: Manifest) -> dict:
         "images": manifest.images,
         "total_chars": manifest.total_chars,
         "created": manifest.created,
+        "toc": [[d, t, i] for d, t, i in manifest.toc],
     }
 
 
@@ -874,6 +1002,13 @@ def _manifest_from_dict(data: dict) -> Manifest:
         images=int(data["images"]),
         total_chars=int(data["total_chars"]),
         created=float(data["created"]),
+        # ``toc`` is v2+; a v1 manifest (or a malformed entry) degrades to the
+        # flat spine-chapter ToC, so tolerate absence and bad rows.
+        toc=[
+            (int(row[0]), str(row[1]), int(row[2]))
+            for row in data.get("toc", [])
+            if isinstance(row, (list, tuple)) and len(row) == 3
+        ],
     )
 
 
@@ -949,16 +1084,20 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
 
         chapter_index_by_path = {path: i for i, path in enumerate(chapter_paths)}
 
-        # -- chapter titles: nav doc, then NCX --
+        # -- chapter titles + hierarchical ToC: nav doc, then NCX --
         nav_titles: dict[str, str] = {}
+        nav_toc: list[tuple[int, str, str]] = []
         for href, media_type, properties in manifest_items.values():
             if "nav" in properties.split():
                 nav_path = _norm_zip_path(opf_dir, href)
                 if nav_path and nav_path in names:
                     nav_bytes = _read_member_capped(zf, nav_path, MAX_METADATA_MEMBER_BYTES, budget)
-                    nav_titles = _titles_from_nav(nav_bytes, posixpath.dirname(nav_path))
+                    nav_dir = posixpath.dirname(nav_path)
+                    nav_titles = _titles_from_nav(nav_bytes, nav_dir)
+                    nav_toc = _toc_entries_from_nav(nav_bytes, nav_dir)
                 break
         ncx_titles: dict[str, str] = {}
+        ncx_toc: list[tuple[int, str, str]] = []
         ncx_item = manifest_items.get(ncx_idref) if ncx_idref else None
         if ncx_item is None:
             ncx_item = next(
@@ -968,7 +1107,10 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
             ncx_path = _norm_zip_path(opf_dir, ncx_item[0])
             if ncx_path and ncx_path in names:
                 ncx_bytes = _read_member_capped(zf, ncx_path, MAX_METADATA_MEMBER_BYTES, budget)
-                ncx_titles = _titles_from_ncx(ncx_bytes, posixpath.dirname(ncx_path))
+                ncx_dir = posixpath.dirname(ncx_path)
+                ncx_titles = _titles_from_ncx(ncx_bytes, ncx_dir)
+                ncx_toc = _toc_entries_from_ncx(ncx_bytes, ncx_dir)
+        toc = _build_toc(nav_toc, ncx_toc, chapter_index_by_path)
 
         image_index_by_path = _extract_images(zf, names, manifest_items, opf_dir, tmp_dir, budget)
 
@@ -995,7 +1137,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
             chapters_meta.append(ChapterMeta(title=title, blocks=len(blocks), chars=chars))
 
     manifest = Manifest(
-        version=1,
+        version=2,
         book_key=key,
         title=str(record.get("t") or "") or "Untitled",
         author=str(record.get("a") or ""),
@@ -1003,6 +1145,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
         images=len(image_index_by_path),
         total_chars=total_chars,
         created=time.time(),
+        toc=toc,
     )
     with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(_manifest_to_dict(manifest), f)

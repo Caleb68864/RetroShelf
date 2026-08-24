@@ -1589,10 +1589,20 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
         pos = store(request).get_position(key)
         current_chapter = int(pos["chapter"]) if pos is not None else None
-        chapters = [
-            {"index": i, "title": c.title, "current": i == current_chapter}
-            for i, c in enumerate(manifest.chapters)
-        ]
+        # Prefer the book's hierarchical nav/NCX ToC (indented by depth);
+        # fall back to the flat spine-chapter list for books without one
+        # (or a legacy v1 manifest).
+        if manifest.toc:
+            chapters = [
+                {"index": idx, "title": title, "depth": depth,
+                 "current": idx == current_chapter}
+                for depth, title, idx in manifest.toc
+            ]
+        else:
+            chapters = [
+                {"index": i, "title": c.title, "depth": 0, "current": i == current_chapter}
+                for i, c in enumerate(manifest.chapters)
+            ]
         return templates.TemplateResponse(request, "toc.html", {
             "book_title": manifest.title, "bid": bid, "chapters": chapters,
         })
