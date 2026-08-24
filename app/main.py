@@ -57,6 +57,7 @@ from .reader import (
     DEFAULT_SPLIT,
     SEARCH_MIN_QUERY,
     SPLIT_TARGETS,
+    Manifest,
     load_chapter,
     load_chapter_anchors,
     load_manifest,
@@ -1543,6 +1544,38 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             split = DEFAULT_SPLIT
         return SPLIT_TARGETS[split]
 
+    async def _open_reader_book(request: Request, bid: str) -> tuple[dict, str, Manifest] | Response:
+        """Decode *bid*, enforce the EPUB-only reader contract, and shelve the
+        book on first open.
+
+        Every reader page (:func:`read_book`, :func:`read_toc`,
+        :func:`read_find`, :func:`read_bookmarks`, :func:`read_part`) opens the
+        same way: turn a bridge id into a shelved book, refusing anything that
+        is not an EPUB. This folds that shared preamble into one place. It
+        returns ``(record, book_key, manifest)`` on success, or a ready-to-return
+        404 :class:`Response` for a non-EPUB record — the caller returns that
+        Response verbatim, exactly as the inline guard did (the same
+        ``Response | None`` early-return idiom as :func:`_require_site_token`).
+
+        :param request: The incoming HTTP request.
+        :param bid: Opaque bridge id that encodes a JSON book record.
+        :returns: ``(record, book_key, manifest)`` on success, or a 404
+            :class:`Response` when the record is not an EPUB.
+        :rtype: tuple[dict, str, Manifest] or Response
+        :raises BadIdError: If *bid* cannot be decoded.
+        :raises ReaderError: If the book cannot be shelved.
+        """
+        rec = _decode_book_record(request, bid)
+        if format_of(rec.get("m", "")) != "epub":
+            return _error_response(
+                request, "Not found", "Only EPUB books can be read in the browser.", 404
+            )
+        key = book_key(rec.get("u", ""))
+        manifest = load_manifest(cfg.cache_dir, key)
+        if manifest is None:
+            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        return rec, key, manifest
+
     @app.get("/read/{bid}")
     async def read_book(request: Request, bid: str) -> Response:
         """GET ``/read/{bid}`` — open a book in the in-browser reader.
@@ -1561,15 +1594,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :raises ReaderError: If the book cannot be shelved (DRM, malformed,
             oversized, etc.) — rendered via the ``_ERROR_TABLE`` row.
         """
-        rec = _decode_book_record(request, bid)
-        if format_of(rec.get("m", "")) != "epub":
-            return _error_response(
-                request, "Not found", "Only EPUB books can be read in the browser.", 404
-            )
-        key = book_key(rec.get("u", ""))
-        manifest = load_manifest(cfg.cache_dir, key)
-        if manifest is None:
-            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        opened = await _open_reader_book(request, bid)
+        if isinstance(opened, Response):
+            return opened
+        rec, key, manifest = opened
         pos = store(request).get_position(key)
         if pos is not None and 0 <= int(pos.get("chapter", 0)) < len(manifest.chapters):
             chapter = int(pos["chapter"])
@@ -1601,15 +1629,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :raises BadIdError: If *bid* cannot be decoded.
         :raises ReaderError: If the book cannot be shelved.
         """
-        rec = _decode_book_record(request, bid)
-        if format_of(rec.get("m", "")) != "epub":
-            return _error_response(
-                request, "Not found", "Only EPUB books can be read in the browser.", 404
-            )
-        key = book_key(rec.get("u", ""))
-        manifest = load_manifest(cfg.cache_dir, key)
-        if manifest is None:
-            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        opened = await _open_reader_book(request, bid)
+        if isinstance(opened, Response):
+            return opened
+        rec, key, manifest = opened
         pos = store(request).get_position(key)
         current_chapter = int(pos["chapter"]) if pos is not None else None
         # Prefer the book's hierarchical nav/NCX ToC (indented by depth);
@@ -1648,15 +1671,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :raises BadIdError: If *bid* cannot be decoded.
         :raises ReaderError: If the book cannot be shelved.
         """
-        rec = _decode_book_record(request, bid)
-        if format_of(rec.get("m", "")) != "epub":
-            return _error_response(
-                request, "Not found", "Only EPUB books can be read in the browser.", 404
-            )
-        key = book_key(rec.get("u", ""))
-        manifest = load_manifest(cfg.cache_dir, key)
-        if manifest is None:
-            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        opened = await _open_reader_book(request, bid)
+        if isinstance(opened, Response):
+            return opened
+        rec, key, manifest = opened
         query = (q or "").strip()
         results: list[dict] = []
         if len(query) >= SEARCH_MIN_QUERY:
@@ -1733,15 +1751,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     @app.get("/read/{bid}/bookmarks", response_class=HTMLResponse)
     async def read_bookmarks(request: Request, bid: str) -> Response:
         """GET ``/read/{bid}/bookmarks`` — list the book's saved bookmarks."""
-        rec = _decode_book_record(request, bid)
-        if format_of(rec.get("m", "")) != "epub":
-            return _error_response(
-                request, "Not found", "Only EPUB books can be read in the browser.", 404
-            )
-        key = book_key(rec.get("u", ""))
-        manifest = load_manifest(cfg.cache_dir, key)
-        if manifest is None:
-            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        opened = await _open_reader_book(request, bid)
+        if isinstance(opened, Response):
+            return opened
+        rec, key, manifest = opened
         target = _split_target(request)
         token = codec(request).site_token
         parts_cache: dict[int, list[tuple[int, int]]] = {}
@@ -1821,15 +1834,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :raises BadIdError: If *bid* cannot be decoded.
         :raises ReaderError: If the book cannot be shelved.
         """
-        rec = _decode_book_record(request, bid)
-        if format_of(rec.get("m", "")) != "epub":
-            return _error_response(
-                request, "Not found", "Only EPUB books can be read in the browser.", 404
-            )
-        key = book_key(rec.get("u", ""))
-        manifest = load_manifest(cfg.cache_dir, key)
-        if manifest is None:
-            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        opened = await _open_reader_book(request, bid)
+        if isinstance(opened, Response):
+            return opened
+        rec, key, manifest = opened
         if chapter < 0 or chapter >= len(manifest.chapters):
             return _error_response(request, "Not found", "That chapter does not exist.", 404)
         target = _split_target(request)
