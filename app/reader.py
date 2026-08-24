@@ -28,15 +28,16 @@ import re
 import shutil
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from urllib.parse import unquote
-from xml.etree.ElementTree import Element  # noqa: S405 - typing only, parsing goes through defusedxml
+from xml.etree.ElementTree import Element, tostring  # noqa: S405 - build/serialize only; all parsing goes through defusedxml
 from xml.sax.saxutils import escape, quoteattr
 
 from defusedxml.ElementTree import ParseError, fromstring
 
-from .errors import ReaderError
+from .errors import ReaderError, SsrfError
 from .kavita import KavitaClient
 from .store import book_key as _store_book_key
 
@@ -944,6 +945,45 @@ def _title_from_heading(source: bytes) -> str | None:
     return None
 
 
+def _transcode_reader_image(raw: bytes) -> tuple[bytes, str] | None:
+    """Decode *raw* image bytes into shelf-ready ``(served_bytes, content_type)``.
+
+    Small JPEG/PNG images pass through untouched; anything larger than
+    :data:`READER_IMAGE_MAX_EDGE` on its longest edge, or in any other format,
+    is downscaled (aspect-preserving) and re-encoded as baseline JPEG — the
+    same Pillow path :func:`app.download.stream_cover` uses for covers. Shared
+    by EPUB image extraction (:func:`_extract_images`) and HTML image fetching
+    (:func:`_fetch_html_images`) so both formats downscale identically.
+
+    :param raw: The image's raw source bytes.
+    :returns: ``(served_bytes, content_type)`` on success, or ``None`` when
+        Pillow is unavailable or the bytes cannot be decoded — the caller then
+        drops the image, since a single bad image must never fail the book.
+    :rtype: tuple[bytes, str] or None
+    """
+    if not _PIL_AVAILABLE:
+        return None
+    try:
+        img: _PILImage.Image = _PILImage.open(io.BytesIO(raw))
+        img.load()
+        fmt = img.format or ""
+        w, h = img.size
+        if fmt in _PASSTHROUGH_IMAGE_FORMATS and max(w, h) <= READER_IMAGE_MAX_EDGE:
+            return raw, f"image/{fmt.lower()}"
+        if max(w, h) > READER_IMAGE_MAX_EDGE:
+            ratio = READER_IMAGE_MAX_EDGE / max(w, h)
+            img = img.resize(
+                (max(1, int(w * ratio)), max(1, int(h * ratio))), _PILImage.Resampling.LANCZOS
+            )
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=READER_IMAGE_JPEG_QUALITY)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:  # noqa: BLE001 - a single bad image must not fail the book
+        return None
+
+
 def _extract_images(
     zf: zipfile.ZipFile, names: set[str], manifest_items: dict[str, tuple[str, str, str]],
     opf_dir: str, tmp_dir: str, budget: _UnpackBudget,
@@ -983,28 +1023,10 @@ def _extract_images(
         raw = _read_image_member(zf, path, budget)
         if raw is None:
             continue
-        try:
-            img: _PILImage.Image = _PILImage.open(io.BytesIO(raw))
-            img.load()
-            fmt = img.format or ""
-            w, h = img.size
-            if fmt in _PASSTHROUGH_IMAGE_FORMATS and max(w, h) <= READER_IMAGE_MAX_EDGE:
-                out_bytes = raw
-                out_ct = f"image/{fmt.lower()}"
-            else:
-                if max(w, h) > READER_IMAGE_MAX_EDGE:
-                    ratio = READER_IMAGE_MAX_EDGE / max(w, h)
-                    img = img.resize(
-                        (max(1, int(w * ratio)), max(1, int(h * ratio))), _PILImage.Resampling.LANCZOS
-                    )
-                if img.mode not in ("RGB", "L"):
-                    img = img.convert("RGB")
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=READER_IMAGE_JPEG_QUALITY)
-                out_bytes = buf.getvalue()
-                out_ct = "image/jpeg"
-        except Exception:  # noqa: BLE001 - a single bad image must not fail the book
+        transcoded = _transcode_reader_image(raw)
+        if transcoded is None:
             continue
+        out_bytes, out_ct = transcoded
         idx = len(index_by_path)
         with open(os.path.join(images_dir, str(idx)), "wb") as f:
             f.write(out_bytes)
@@ -1308,29 +1330,543 @@ def _lock_for(key: str) -> asyncio.Lock:
     return lock
 
 
-async def shelve_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifest:
-    """Shelve *record*'s EPUB into the reader cache, or return its
-    existing :class:`Manifest` if already shelved.
+# ---------------------------------------------------------------------------
+# HTML / plain-text shelving
+# ---------------------------------------------------------------------------
+#
+# ``shelve_html_book`` reads a single upstream HTML document (a Project
+# Gutenberg "Read online" edition, or any ``text/html`` OPDS acquisition) into
+# the same shelved layout an EPUB produces, so every downstream reader function
+# works unchanged. Pipeline: spool (capped) -> normalize tag-soup HTML to
+# well-formed XHTML with the stdlib parser -> split into chapters on top-level
+# h1/h2 -> sanitize each chapter through ``sanitize_chapter`` (the sole XSS
+# wall) -> fetch + downscale referenced images through the same SSRF guard and
+# Pillow path EPUB uses. A ``text/plain`` acquisition skips normalization and
+# goes straight through the sanitizer's escaped-text fallback.
 
-    First open is expensive (download + parse + sanitize); every
-    subsequent call for the same book is a cache hit with zero upstream
-    traffic. Concurrent shelves of the *same* book on this process are
-    serialized by a per-``book_key`` :class:`asyncio.Lock`; the book is
-    built into a ``{book_key}.tmp-{pid}`` directory and only becomes
-    visible via an ``os.rename`` once complete, so a reader can never see
-    a half-written book, and a crash mid-shelve leaves no visible
-    partial state. No upstream URL is ever written to any cache file.
+# HTML books are small; 16MB is generous while bounding a hostile or mistaken
+# upstream. Spooled to disk in capped chunks like the EPUB path. [html-reader]
+MAX_HTML_BYTES = 16 * 1024 * 1024
 
-    :param kc: Kavita client used to spool the upstream EPUB. Every fetch
-        goes through its SSRF guard.
-    :param record: A book record with at least a ``u`` (acquisition URL)
-        key; ``t`` (title) and ``a`` (author) are used for the manifest
-        when present.
-    :param cache_dir: The application cache root (i.e. ``Config.cache_dir``);
-        the book is shelved under ``{cache_dir}/reader/``.
+# Ceiling on start tags accepted from one document, so a "tag bomb" (millions
+# of empty elements) cannot make normalization do unbounded work. A real book
+# stays far below this. [html-reader]
+MAX_HTML_ELEMENTS = 200_000
+
+# How many distinct images one HTML book will attempt to fetch, and the total
+# stored image bytes across them — each fetch is a live network round-trip, so
+# these bound both work and disk. Per-image source stays capped at
+# :data:`MAX_IMAGE_SRC_BYTES` (shared with EPUB). [html-reader]
+MAX_HTML_IMAGES = 200
+MAX_HTML_IMAGE_TOTAL_BYTES = 64 * 1024 * 1024
+
+# HTML void elements: emitted self-closing, never pushed on the open-tag stack.
+_HTML_VOID = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
+})
+
+# Structurally transparent wrappers: ``<html>``/``<body>`` fold into the single
+# synthetic root the normalizer emits (their flow children surface directly).
+# The ``<head>`` subtree is skipped whole (handled separately). This is a
+# layout decision, not a security one — ``sanitize_chapter`` remains the wall
+# for everything that passes through (``script``/``style``/``iframe`` are
+# emitted as elements precisely so the sanitizer is what drops them).
+_HTML_TRANSPARENT = frozenset({"html", "body"})
+
+# Attributes the normalizer preserves. ``sanitize_chapter`` drops every other
+# attribute anyway and keeps only this same set (``img`` src/alt, ``a`` href,
+# ``td``/``th`` spans) plus reading ``id`` for same-page anchor mapping.
+# Emitting a minimal set keeps the intermediate XHTML well-formed without
+# having to escape arbitrary tag-soup attribute names.
+_HTML_KEEP_ATTRS = frozenset({"src", "alt", "href", "colspan", "rowspan", "id"})
+
+# A valid XHTML element name the normalizer will emit. Anything else
+# (namespaced or exotic tag-soup names) is unwrapped: its children and text
+# survive, the tag does not — mirroring ``sanitize_chapter``'s treatment of
+# unknown elements.
+_HTML_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
+
+# Block-level starts that implicitly close an open ``<p>`` (HTML's
+# optional-end-tag rule, the subset real books rely on), so paragraphs stay
+# separate top-level blocks instead of nesting into one giant unpaginatable
+# block when an author omits ``</p>``.
+_HTML_CLOSES_P = frozenset({
+    "p", "div", "section", "article", "main", "header", "footer", "aside",
+    "figure", "figcaption", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol",
+    "li", "dl", "table", "blockquote", "pre", "hr", "tr",
+})
+
+# XML 1.0 forbids most C0 control characters even when escaped; strip them from
+# text/attribute content so the normalized document always parses. Tab, LF and
+# CR are allowed.
+_XML_BAD_CHARS = re.compile("[^\t\n\r\x20-\U0010ffff]")
+
+
+def _scrub_xml(text: str) -> str:
+    """Remove XML-1.0-illegal control characters from *text*.
+
+    :param text: Untrusted text or attribute value.
+    :returns: *text* with disallowed control characters removed.
+    """
+    return _XML_BAD_CHARS.sub("", text)
+
+
+class _XHTMLNormalizer(HTMLParser):
+    """Re-serialize tag-soup HTML into one well-formed XHTML ``<body>`` string.
+
+    This is **not** a sanitizer and grants no trust. It only turns real-world
+    HTML — unclosed tags, bare ``<br>``, undeclared entities — into a single
+    well-formed XML fragment that :func:`sanitize_chapter`, the actual XSS
+    wall, can parse and allowlist. Every element it emits is still subject to
+    that function's drop/unwrap/attribute rules; ``script``/``style``/
+    ``iframe`` are emitted faithfully so the sanitizer is demonstrably what
+    removes them.
+
+    Only non-security normalizations happen here: ``<html>``/``<body>`` fold
+    into one synthetic root, the ``<head>`` subtree is skipped, unknown-named
+    tags are unwrapped, loose top-level text is wrapped in ``<p>`` (so it
+    survives as a block), and a small optional-end-tag rule keeps paragraphs
+    separate. Collected image ``src`` values (document order, de-duplicated)
+    are exposed via :attr:`img_srcs` for the caller to fetch.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._out: list[str] = ["<body>"]
+        self._stack: list[str] = []
+        self._skip = 0  # >0 while inside a <head> subtree
+        self._elements = 0
+        self.img_srcs: list[str] = []
+        self._seen_src: set[str] = set()
+
+    def _close(self, tag: str) -> None:
+        self._out.append(f"</{tag}>")
+
+    def _implicit_close(self, tag: str) -> None:
+        """Close open elements whose end tag HTML lets an author omit.
+
+        :param tag: The start tag about to be emitted.
+        """
+        while self._stack:
+            top = self._stack[-1]
+            if top == "p" and tag in _HTML_CLOSES_P:
+                self._close(self._stack.pop())
+            elif top == "li" and tag == "li":
+                self._close(self._stack.pop())
+            elif top in ("td", "th") and tag in ("td", "th", "tr"):
+                self._close(self._stack.pop())
+            elif top == "tr" and tag == "tr":
+                self._close(self._stack.pop())
+            elif top in ("dt", "dd") and tag in ("dt", "dd"):
+                self._close(self._stack.pop())
+            else:
+                break
+
+    def _emit_attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
+        """Render the preserved subset of *attrs* as an XML attribute string.
+
+        :param tag: The (lowercased) element name.
+        :param attrs: HTMLParser's ``(name, value)`` attribute list.
+        :returns: A leading-space-prefixed attribute string (possibly empty).
+        """
+        has_id = any((a[0] or "").lower() == "id" for a in attrs)
+        pieces: list[str] = []
+        for name, value in attrs:
+            lname = (name or "").lower()
+            # Old-style ``<a name="x">`` anchors become ``id`` so ``#x``
+            # fragment links can resolve to them at serve time.
+            if lname == "name" and tag == "a" and not has_id:
+                lname = "id"
+            if lname not in _HTML_KEEP_ATTRS or value is None:
+                continue
+            pieces.append(f" {lname}={quoteattr(_scrub_xml(value))}")
+            if lname == "src" and tag == "img" and value not in self._seen_src:
+                self._seen_src.add(value)
+                self.img_srcs.append(value)
+        return "".join(pieces)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if self._skip:
+            if tag == "head":
+                self._skip += 1
+            return
+        if tag == "head":
+            self._skip = 1
+            return
+        if tag in _HTML_TRANSPARENT:
+            return
+        if self._elements >= MAX_HTML_ELEMENTS or not _HTML_NAME_RE.match(tag):
+            return  # cap hit, or unknown/exotic name unwrapped (children survive)
+        self._elements += 1
+        self._implicit_close(tag)
+        attr_str = self._emit_attrs(tag, attrs)
+        if tag in _HTML_VOID:
+            self._out.append(f"<{tag}{attr_str}/>")
+        else:
+            self._out.append(f"<{tag}{attr_str}>")
+            self._stack.append(tag)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if self._skip or tag in _HTML_TRANSPARENT:
+            return
+        if self._elements >= MAX_HTML_ELEMENTS or not _HTML_NAME_RE.match(tag):
+            return
+        self._elements += 1
+        self._implicit_close(tag)
+        self._out.append(f"<{tag}{self._emit_attrs(tag, attrs)}/>")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._skip:
+            if tag == "head":
+                self._skip -= 1
+            return
+        if tag in _HTML_TRANSPARENT or tag in _HTML_VOID or tag not in self._stack:
+            return
+        # Close any elements left open above the match, then the match itself.
+        while self._stack:
+            top = self._stack.pop()
+            self._close(top)
+            if top == tag:
+                break
+
+    def handle_data(self, data: str) -> None:
+        if self._skip or not data:
+            return
+        scrubbed = _scrub_xml(data)
+        if not self._stack:
+            # Loose text directly under <body>: inter-element whitespace is
+            # dropped; real text is wrapped so it survives (sanitize renders
+            # only element children of <body>, not its loose text).
+            if scrubbed.strip():
+                self._out.append(f"<p>{escape(scrubbed)}</p>")
+            return
+        self._out.append(escape(scrubbed))
+
+    def result(self) -> str:
+        """Close any still-open tags and return the ``<body>…</body>`` string."""
+        while self._stack:
+            self._close(self._stack.pop())
+        self._out.append("</body>")
+        return "".join(self._out)
+
+
+def _normalize_html(source: str) -> tuple[str, list[str]]:
+    """Normalize tag-soup *source* to a well-formed XHTML ``<body>`` string.
+
+    :param source: The raw HTML document text.
+    :returns: ``(xhtml, img_srcs)`` — the normalized body string and the
+        de-duplicated image ``src`` values found, in document order.
+    :raises ReaderError: If the stdlib HTML parser fails outright (rare; it is
+        deliberately lenient).
+    """
+    parser = _XHTMLNormalizer()
+    try:
+        parser.feed(source)
+        parser.close()
+    except Exception as exc:  # noqa: BLE001 - HTMLParser is lenient; guard anyway
+        raise ReaderError("This page could not be read in the browser") from exc
+    return parser.result(), parser.img_srcs
+
+
+def _split_html_chapters(body: Element) -> list[tuple[int, str | None, list[Element]]]:
+    """Group a body's top-level block elements into chapters at ``h1``/``h2``.
+
+    A new chapter begins at each top-level ``h1`` (depth 0) or ``h2`` (depth 1);
+    that heading's text titles the chapter it opens. Content before the first
+    heading forms an untitled leading chapter. A document with no top-level
+    heading yields a single untitled chapter. Reuses
+    :func:`_top_level_block_elements` so a document wrapped in one
+    ``<div>``/``<section>`` still splits on the headings inside it.
+
+    :param body: The parsed ``<body>`` element.
+    :returns: ``(depth, title_or_None, elements)`` groups in reading order.
+    """
+    chapters: list[tuple[int, str | None, list[Element]]] = []
+    depth = 0
+    title: str | None = None
+    current: list[Element] = []
+    for el in _top_level_block_elements(body):
+        name = _local_name(el.tag)
+        if name in ("h1", "h2"):
+            if current:
+                chapters.append((depth, title, current))
+                current = []
+            depth = 0 if name == "h1" else 1
+            title = " ".join("".join(el.itertext()).split()) or None
+        current.append(el)
+    if current:
+        chapters.append((depth, title, current))
+    return chapters
+
+
+def _wrap_body(elements: list[Element]) -> str:
+    """Serialize *elements* as the children of a fresh ``<body>`` XML string.
+
+    :param elements: Top-level block elements for one chapter.
+    :returns: A ``<body>…</body>`` XML string ready for :func:`sanitize_chapter`.
+    """
+    root = Element("body")
+    for el in elements:
+        root.append(el)
+    return tostring(root, encoding="unicode")
+
+
+def _html_chapter_title(title: str | None, index: int, record: dict) -> str:
+    """Pick a display title for HTML chapter *index*.
+
+    :param title: The chapter's heading text, or ``None`` for an untitled group.
+    :param index: The chapter's 0-based position.
+    :param record: The book record (its ``t`` titles the leading chapter).
+    :returns: A non-empty display title.
+    """
+    if title:
+        return title
+    if index == 0:
+        return str(record.get("t") or "") or "Beginning"
+    return f"Section {index + 1}"
+
+
+async def _fetch_capped_image(kc: KavitaClient, url: str) -> bytes | None:
+    """Fetch *url* into memory, capped at :data:`MAX_IMAGE_SRC_BYTES`.
+
+    *url* must already be an SSRF-validated absolute URL (see
+    :func:`_fetch_html_images`); ``open_stream`` re-validates it. Any failure
+    — network error, over-cap body, malformed stream — returns ``None`` so the
+    image is dropped without failing the book.
+
+    :param kc: Kavita client; its ``open_stream`` applies the SSRF guard.
+    :param url: The absolute, already-validated image URL.
+    :returns: The image's raw bytes, or ``None`` to drop it.
+    """
+    try:
+        resp = await kc.open_stream(url)
+    except Exception:  # noqa: BLE001 - a single bad image must not fail the book
+        return None
+    total = 0
+    chunks: list[bytes] = []
+    try:
+        declared = resp.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > MAX_IMAGE_SRC_BYTES:
+            return None
+        async for chunk in resp.aiter_raw():
+            total += len(chunk)
+            if total > MAX_IMAGE_SRC_BYTES:
+                return None
+            chunks.append(chunk)
+    except Exception:  # noqa: BLE001 - a single bad image must not fail the book
+        return None
+    finally:
+        await resp.aclose()
+    return b"".join(chunks)
+
+
+async def _fetch_html_images(
+    kc: KavitaClient, book_url: str, srcs: list[str], tmp_dir: str,
+) -> dict[str, int]:
+    """Fetch, SSRF-guard, and downscale the images an HTML book references.
+
+    Each raw ``src`` is resolved against *book_url* through the SAME SSRF guard
+    every other upstream fetch uses (:meth:`KavitaClient.resolve_url`); a
+    foreign-origin or malformed ``src`` raises :class:`SsrfError` and the image
+    is dropped **without being fetched**. Successful fetches are downscaled by
+    the shared :func:`_transcode_reader_image` and written as
+    ``images/{n}`` + ``images/{n}.ct``, exactly like EPUB images. A no-op
+    (empty map) when Pillow is unavailable — the book is then text-only and
+    every ``img`` placeholder is dropped.
+
+    :param kc: Kavita client used to resolve and fetch each image.
+    :param book_url: The book's own URL, the base for relative ``src`` values.
+    :param srcs: De-duplicated image ``src`` strings, in document order.
+    :param tmp_dir: The in-progress shelving directory; images land under
+        ``{tmp_dir}/images/``.
+    :returns: Map of original ``src`` string to stored image index.
+    """
+    index_by_src: dict[str, int] = {}
+    if not _PIL_AVAILABLE:
+        return index_by_src
+    images_dir = os.path.join(tmp_dir, "images")
+    total_bytes = 0
+    for src in srcs:
+        if len(index_by_src) >= MAX_HTML_IMAGES or total_bytes >= MAX_HTML_IMAGE_TOTAL_BYTES:
+            break
+        try:
+            abs_url = kc.resolve_url(src, base=book_url)
+        except SsrfError:
+            continue  # foreign-origin / malformed src: never fetched, dropped
+        raw = await _fetch_capped_image(kc, abs_url)
+        if raw is None:
+            continue
+        transcoded = _transcode_reader_image(raw)
+        if transcoded is None:
+            continue
+        out_bytes, out_ct = transcoded
+        idx = len(index_by_src)
+        with open(os.path.join(images_dir, str(idx)), "wb") as f:
+            f.write(out_bytes)
+        with open(os.path.join(images_dir, f"{idx}.ct"), "w", encoding="ascii") as f:
+            f.write(out_ct)
+        index_by_src[src] = idx
+        total_bytes += len(out_bytes)
+    return index_by_src
+
+
+def _sanitize_html_chapters(
+    body: Element, resolve_image: Callable[[str], int | None],
+) -> list[tuple[int, str | None, list[str], dict[str, int]]]:
+    """Split *body* into chapters and sanitize each into stored blocks.
+
+    Every chapter's element group is re-serialized and passed through
+    :func:`sanitize_chapter` — the single XSS wall — so nothing from the
+    upstream document reaches served HTML unallowlisted. In-document links
+    (``<a href="…">``) resolve to ``None`` (unwrapped to text): a single HTML
+    file has no sibling chapters to link to, and same-page ``#fragment`` links
+    are handled inside the sanitizer.
+
+    :param body: The parsed, normalized ``<body>`` element.
+    :param resolve_image: Maps an ``img`` ``src`` to its stored image index.
+    :returns: ``(depth, title, blocks, anchors)`` per non-empty chapter.
+    """
+    def resolve_link(_href: str) -> int | None:
+        return None
+
+    chapters: list[tuple[int, str | None, list[str], dict[str, int]]] = []
+    for depth, title, elements in _split_html_chapters(body):
+        anchors: dict[str, int] = {}
+        blocks = sanitize_chapter(
+            _wrap_body(elements),
+            resolve_image=resolve_image,
+            resolve_link=resolve_link,
+            anchors=anchors,
+        )
+        if blocks:
+            chapters.append((depth, title, blocks, anchors))
+    return chapters
+
+
+async def _extract_html_book(
+    kc: KavitaClient, spool_path: str, key: str, record: dict, tmp_dir: str,
+) -> Manifest:
+    """Parse the spooled HTML/text document into *tmp_dir*'s shelved form.
+
+    HTML is normalized (:func:`_normalize_html`), its images fetched and
+    guarded (:func:`_fetch_html_images`), then split and sanitized
+    (:func:`_sanitize_html_chapters`). A ``text/plain`` document skips
+    normalization and images and goes straight through
+    :func:`sanitize_chapter`'s escaped-text fallback as one chapter. Produces
+    the identical :class:`Manifest` + ``chapters/*.json`` shape as
+    :func:`_extract_epub`.
+
+    :param kc: Kavita client, used to fetch images (HTML only).
+    :param spool_path: Path to the fully-downloaded document on disk.
+    :param key: The book's cache key (``Manifest.book_key``).
+    :param record: The caller's book record; ``t``/``a``/``m``/``u`` are read.
+        No URL from *record* is ever written to disk.
+    :param tmp_dir: The in-progress shelving directory (with empty
+        ``chapters/`` and ``images/`` subdirectories).
+    :returns: The completed :class:`Manifest` (also written to
+        ``manifest.json``).
+    :raises ReaderError: On an unparseable document or one with no readable text.
+    """
+    with open(spool_path, "rb") as f:
+        source = f.read().decode("utf-8", errors="replace")
+
+    if "html" in str(record.get("m", "")).lower():
+        normalized, img_srcs = _normalize_html(source)
+        image_index_by_src = await _fetch_html_images(
+            kc, str(record.get("u", "")), img_srcs, tmp_dir
+        )
+        try:
+            root = fromstring(normalized)
+        except (ParseError, ValueError) as exc:
+            raise ReaderError("This page could not be read in the browser") from exc
+        chapters = _sanitize_html_chapters(
+            _find_body(root), lambda s: image_index_by_src.get(s)
+        )
+        images = len(image_index_by_src)
+    else:
+        # Plain text: one chapter via the sanitizer's escaped-text fallback
+        # (blank-line-split <p> blocks). No images, no headings.
+        anchors: dict[str, int] = {}
+        blocks = sanitize_chapter(
+            source, resolve_image=lambda _s: None, resolve_link=lambda _h: None,
+            anchors=anchors,
+        )
+        chapters = (
+            [(0, str(record.get("t") or "") or None, blocks, anchors)] if blocks else []
+        )
+        images = 0
+
+    chapters_meta: list[ChapterMeta] = []
+    toc: list[tuple[int, str, int]] = []
+    total_chars = 0
+    for i, (depth, title, blocks, anchors) in enumerate(chapters):
+        chars = sum(len(b) for b in blocks)
+        total_chars += chars
+        ctitle = _html_chapter_title(title, i, record)
+        with open(os.path.join(tmp_dir, "chapters", f"{i}.json"), "w", encoding="utf-8") as f:
+            json.dump({"blocks": blocks, "anchors": anchors}, f)
+        chapters_meta.append(ChapterMeta(title=ctitle, blocks=len(blocks), chars=chars))
+        toc.append((depth, ctitle, i))
+
+    if not chapters_meta:
+        raise ReaderError("This page has no readable text")
+
+    manifest = Manifest(
+        version=2,
+        book_key=key,
+        title=str(record.get("t") or "") or "Untitled",
+        author=str(record.get("a") or ""),
+        chapters=chapters_meta,
+        images=images,
+        total_chars=total_chars,
+        created=time.time(),
+        toc=toc,
+    )
+    with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(_manifest_to_dict(manifest), f)
+    return manifest
+
+
+#: Extract callback signature for :func:`_shelve_record`. Given the spooled
+#: source file, the book key, the caller's record, and the (already-created)
+#: in-progress ``tmp_dir``, it parses/sanitizes the book into ``tmp_dir`` and
+#: returns the completed :class:`Manifest`. Awaitable so an HTML book can fetch
+#: its images over the network (:func:`_extract_html_book`); the EPUB extractor
+#: does only local work and adapts through :func:`_extract_epub_shelf`.
+_ShelfExtractor = Callable[[KavitaClient, str, str, dict, str], Awaitable["Manifest"]]
+
+
+async def _shelve_record(
+    kc: KavitaClient, record: dict, cache_dir: str, *,
+    spool_cap: int, extract: _ShelfExtractor,
+) -> Manifest:
+    """Spool *record*'s upstream file and shelve it via *extract*.
+
+    The format-agnostic shelving skeleton shared by :func:`shelve_book`
+    (EPUB) and :func:`shelve_html_book` (HTML/text): existing-manifest fast
+    path, per-``book_key`` :class:`asyncio.Lock`, capped disk spool through
+    the SSRF-guarded ``open_stream`` under a bounded timeout, a
+    ``{book_key}.tmp-{pid}`` build directory made visible only by an atomic
+    ``os.rename`` (so a reader never sees a half-written book and a crash
+    leaves no visible partial state), cross-process race resolution, spool
+    cleanup, one masked INFO log line, and oldest-first cache pruning. The
+    *only* per-format differences are the spool size cap and the *extract*
+    callback. No upstream URL is ever written to any cache file.
+
+    :param kc: Kavita client; every fetch goes through its SSRF guard.
+    :param record: A book record with at least a ``u`` (acquisition URL) key;
+        ``t`` (title) and ``a`` (author) feed the manifest when present.
+    :param cache_dir: The application cache root; the book is shelved under
+        ``{cache_dir}/reader/``.
+    :param spool_cap: Maximum spooled body size in bytes for this format.
+    :param extract: The format-specific parser (see :data:`_ShelfExtractor`).
     :returns: The book's :class:`Manifest`.
-    :raises ReaderError: On DRM, malformed/oversized EPUBs, an oversized
-        spine, zero readable chapters, or a shelving timeout.
+    :raises ReaderError: On malformed/oversized input, a shelving timeout, or
+        any format-specific failure raised by *extract*.
     :raises KavitaError: If the upstream fetch fails outright.
     """
     url = str(record.get("u", ""))
@@ -1352,7 +1888,7 @@ async def shelve_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifes
         try:
             try:
                 spooled_bytes = await asyncio.wait_for(
-                    _spool_epub(kc, url, spool_path, MAX_EPUB_BYTES), timeout=SHELVE_TIMEOUT
+                    _spool_epub(kc, url, spool_path, spool_cap), timeout=SHELVE_TIMEOUT
                 )
             except TimeoutError as exc:
                 raise ReaderError("Timed out downloading this book") from exc
@@ -1363,7 +1899,7 @@ async def shelve_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifes
             os.makedirs(os.path.join(tmp_dir, "chapters"))
             os.makedirs(os.path.join(tmp_dir, "images"))
             try:
-                manifest = _extract_epub(spool_path, key, record, tmp_dir)
+                manifest = await extract(kc, spool_path, key, record, tmp_dir)
             except Exception:
                 _rmtree_ignore(tmp_dir)
                 raise
@@ -1408,6 +1944,80 @@ async def shelve_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifes
         # Best-effort — a full disk is not a reason to fail a completed shelve.
         prune_reader_cache(cache_dir, MAX_READER_CACHE_BYTES)
         return manifest
+
+
+async def _extract_epub_shelf(
+    kc: KavitaClient, spool_path: str, key: str, record: dict, tmp_dir: str,
+) -> Manifest:
+    """Awaitable adapter making the synchronous EPUB extractor a
+    :data:`_ShelfExtractor`.
+
+    EPUB parsing reads only the local spool file (its images come from the
+    zip), so it does no network I/O and *kc* is unused; the parse stays
+    synchronous — this wrapper exists solely to satisfy the awaitable
+    extractor contract that HTML shelving needs for remote image fetches.
+
+    :param kc: Unused (EPUB images come from the spooled archive).
+    :param spool_path: Path to the fully-downloaded EPUB on disk.
+    :param key: The book's cache key.
+    :param record: The caller's book record.
+    :param tmp_dir: The in-progress shelving directory.
+    :returns: The completed :class:`Manifest`.
+    """
+    return _extract_epub(spool_path, key, record, tmp_dir)
+
+
+async def shelve_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifest:
+    """Shelve *record*'s EPUB into the reader cache, or return its existing
+    :class:`Manifest` if already shelved.
+
+    First open is expensive (download + parse + sanitize); every subsequent
+    call for the same book is a cache hit with zero upstream traffic. See
+    :func:`_shelve_record` for the shared shelving mechanics.
+
+    :param kc: Kavita client used to spool the upstream EPUB. Every fetch goes
+        through its SSRF guard.
+    :param record: A book record with at least a ``u`` (acquisition URL) key;
+        ``t`` (title) and ``a`` (author) are used for the manifest when present.
+    :param cache_dir: The application cache root (i.e. ``Config.cache_dir``);
+        the book is shelved under ``{cache_dir}/reader/``.
+    :returns: The book's :class:`Manifest`.
+    :raises ReaderError: On DRM, malformed/oversized EPUBs, an oversized spine,
+        zero readable chapters, or a shelving timeout.
+    :raises KavitaError: If the upstream fetch fails outright.
+    """
+    return await _shelve_record(
+        kc, record, cache_dir, spool_cap=MAX_EPUB_BYTES, extract=_extract_epub_shelf
+    )
+
+
+async def shelve_html_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifest:
+    """Shelve *record*'s HTML (or plain-text) document into the reader cache.
+
+    The HTML counterpart to :func:`shelve_book`: it produces the identical
+    :class:`Manifest` + ``chapters/*.json`` + ``images/*`` layout, so every
+    downstream reader function (:func:`load_manifest`, :func:`load_chapter`,
+    :func:`parts_for`, :func:`percent_of`, :func:`search_book`, anchors)
+    works unchanged. A single upstream HTML document is normalized to
+    well-formed XHTML, split into chapters on its top-level ``h1``/``h2``
+    headings, sanitized through :func:`sanitize_chapter` (the one XSS wall),
+    and its images are fetched — each re-validated through the SSRF guard —
+    and downscaled exactly like EPUB images. See :func:`_extract_html_book`.
+
+    :param kc: Kavita client used to spool the document and fetch its images.
+        Every fetch goes through its SSRF guard.
+    :param record: A book record with at least a ``u`` (acquisition URL) key;
+        ``t`` (title) and ``a`` (author) are used for the manifest when present.
+    :param cache_dir: The application cache root; the book is shelved under
+        ``{cache_dir}/reader/``.
+    :returns: The book's :class:`Manifest`.
+    :raises ReaderError: On an oversized/unparseable document, one with no
+        readable text, or a shelving timeout.
+    :raises KavitaError: If the upstream fetch fails outright.
+    """
+    return await _shelve_record(
+        kc, record, cache_dir, spool_cap=MAX_HTML_BYTES, extract=_extract_html_book
+    )
 
 
 def load_manifest(cache_dir: str, book_key: str) -> Manifest | None:
