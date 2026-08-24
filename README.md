@@ -64,18 +64,28 @@ Everything is server-rendered, no-JavaScript, and works on iOS 5.1.1–12 Safari
 
 ## Read in the browser
 
-For **EPUB** books, RetroShelf can also shelve the book server-side and let
-you read it right there in old Safari — no iBooks import needed. Tap **Read
-here** on a book's page: the first open unpacks and sanitizes the EPUB into
-the reader cache (a few seconds), then every page after that is instant. Your
-place is remembered automatically (server-side, last-read-wins across
-devices), so tapping **Continue reading** always picks up where you left off,
-and the home screen's **Currently Reading** shelf shows your progress.
+For **EPUB** books — and any book offered as a **web page (HTML)** or plain
+text — RetroShelf can also shelve the book server-side and let you read it
+right there in old Safari, no iBooks import needed. Tap **Read here** on a
+book's page: the first open unpacks and sanitizes the book into the reader
+cache (a few seconds), then every page after that is instant. Your place is
+remembered automatically (server-side, last-read-wins across devices), so
+tapping **Continue reading** always picks up where you left off, and the home
+screen's **Currently Reading** shelf shows your progress.
 
-This is **EPUB-only** — PDFs keep the existing inline-viewer / Share →
-"Copy to Books" flow described above, unchanged. A book that's DRM-protected
-or otherwise unreadable falls back gracefully: you get a friendly message and
-the regular **Open in iBooks** button still works.
+EPUB is always preferred when a book offers it; an **HTML** edition (for
+example Project Gutenberg's "Read online" link) is a read-in-browser fallback
+for books that offer no EPUB. HTML books split into chapters on their own
+headings, images are fetched and downscaled just like EPUB images, and — like
+every other upstream fetch — each image URL passes the same SSRF guard, so a
+page can never make the bridge reach a foreign host. HTML/text editions have
+no iBooks hand-off, so their book page shows only **Read here**.
+
+**PDFs are never routed into the reader** — they keep the existing
+inline-viewer / Share → "Copy to Books" flow described above, unchanged. A
+book that's DRM-protected or otherwise unreadable falls back gracefully: you
+get a friendly message, and where an iBooks path exists the **Open in iBooks**
+button still works.
 
 The footer's `rs_split` control sets how much text lands on one page:
 **Small**, **Medium** (default), **Large**, or **Whole** (chapter). It's a
@@ -85,9 +95,10 @@ toggle (phosphor is the amber/green CRT look, same family as the site-wide
 theme switch above) and honors the Large-Print toggle.
 
 To keep the bridge safe against hostile or oversized files, the reader
-enforces hard caps: **80 MB** per EPUB, **500 chapters** per book, and a
-**1 GB** total on-disk reader cache (pruned oldest-shelved-book-first). A book
-over any cap gets a friendly error and the iBooks download path instead.
+enforces hard caps: **80 MB** per EPUB (**16 MB** per HTML/text document),
+**500 chapters** per book, per-image size limits, and a **1 GB** total on-disk
+reader cache (pruned oldest-shelved-book-first). A book over any cap gets a
+friendly error and, where one exists, the iBooks download path instead.
 
 ---
 

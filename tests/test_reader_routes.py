@@ -231,7 +231,9 @@ def test_pdf_record_bid_is_friendly_404(tmp_path):
         bid = _bid(client, url=PDF_URL, media="application/pdf")
         r = client.get(f"/read/{bid}")
         assert r.status_code == 404
-        assert "Only EPUB books" in r.text
+        # PDF is not a browser-readable format (unchanged behaviour); the reader
+        # steers to the download path with a friendly message.
+        assert "can be read in the browser" in r.text
 
 
 def test_drm_fixture_returns_502_reader_error_page(tmp_path):
