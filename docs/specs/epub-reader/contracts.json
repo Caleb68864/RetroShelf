@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "spec_slug": "epub-reader",
+  "contracts": [
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        2
+      ],
+      "name": "sanitize_chapter",
+      "kind": "function",
+      "signature": "sanitize_chapter(source: str | bytes, *, resolve_image: Callable[[str], int | None], resolve_link: Callable[[str], int | None]) -> list[str]",
+      "file_path": "app/reader.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 2,
+      "consumer_sub_specs": [
+        3,
+        4
+      ],
+      "name": "Manifest",
+      "kind": "type",
+      "signature": "Manifest(version: int, book_key: str, title: str, author: str, chapters: list[ChapterMeta], images: int, total_chars: int, created: float)",
+      "file_path": "app/reader.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 2,
+      "consumer_sub_specs": [
+        4
+      ],
+      "name": "shelve_book",
+      "kind": "function",
+      "signature": "async shelve_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifest",
+      "file_path": "app/reader.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 2,
+      "consumer_sub_specs": [
+        4
+      ],
+      "name": "ReaderError",
+      "kind": "type",
+      "signature": "class ReaderError(RetroShelfError)",
+      "file_path": "app/errors.py",
+      "content_sha256": "2d9689ae95770e0191a9f3ae9a3ad3e5a0059ad22bae13f4d10244b35bfbbec1"
+    },
+    {
+      "owner_sub_spec": 3,
+      "consumer_sub_specs": [
+        4
+      ],
+      "name": "parts_for",
+      "kind": "function",
+      "signature": "parts_for(block_lengths: list[int], target_chars: int | None) -> list[tuple[int, int]]",
+      "file_path": "app/reader.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 3,
+      "consumer_sub_specs": [
+        4,
+        5
+      ],
+      "name": "set_position",
+      "kind": "function",
+      "signature": "Store.set_position(record: dict, chapter: int, block: int, percent: int) -> None; get_position(book_key) -> dict | None; reading_list(limit=4) -> list[dict]",
+      "file_path": "app/store.py",
+      "content_sha256": "7ea8d72501a83dd46306909070d7d2803fd08d62304b16b1b018524bda95bd07"
+    },
+    {
+      "owner_sub_spec": 4,
+      "consumer_sub_specs": [
+        5,
+        6
+      ],
+      "name": "/read/{bid}",
+      "kind": "route",
+      "signature": "GET /read/{bid} | /read/{bid}/toc | /read/{bid}/{chapter:int}/{part:int} | /read/{bid}/img/{n:int}",
+      "file_path": "app/main.py",
+      "content_sha256": "2172316681533970a9ebd9225496b79c4da9276ec635cec7a1c190aaba6e8306"
+    }
+  ]
+}

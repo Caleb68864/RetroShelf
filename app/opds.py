@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from xml.etree.ElementTree import Element
 
 from defusedxml import ElementTree as DET
 
@@ -78,6 +79,10 @@ class Acquisition:
     :ivar rel: Full ``rel`` attribute value from the ``atom:link`` element,
         always starting with ``http://opds-spec.org/acquisition``.
     :vartype rel: str
+
+    :ivar length: Declared file size in bytes from the link's ``length``
+        attribute, or ``None`` when absent or non-numeric.
+    :vartype length: int | None
     """
 
     media_type: str
@@ -252,7 +257,7 @@ class Feed:
     self_url: str | None = None
 
 
-def _all_text(el) -> str:
+def _all_text(el: Element | None) -> str:
     """Return all descendant text of *el*, whitespace-collapsed.
 
     Handles Atom ``type="xhtml"`` / ``type="html"`` elements where the
@@ -271,7 +276,7 @@ def _all_text(el) -> str:
     return " ".join("".join(el.itertext()).split())
 
 
-def _text(el, tag: str) -> str:
+def _text(el: Element, tag: str) -> str:
     """Return the full collapsed text of the first ``{ATOM}{tag}`` child.
 
     Uses :func:`_all_text` so typed-XHTML/HTML titles and summaries are read
@@ -288,7 +293,7 @@ def _text(el, tag: str) -> str:
     return _all_text(el.find(f"{ATOM}{tag}"))
 
 
-def _author(entry) -> str:
+def _author(entry: Element) -> str:
     """Extract the author name from an Atom ``entry`` element.
 
     Navigates ``atom:author`` -> ``atom:name`` and returns the collapsed text.
@@ -368,7 +373,7 @@ def parse(xml_text: str | bytes) -> Feed:
     return feed
 
 
-def _parse_entry(entry_el) -> Entry:
+def _parse_entry(entry_el: Element) -> Entry:
     """Parse a single ``atom:entry`` XML element into an :class:`Entry`.
 
     Extracts title, author, summary/content, updated timestamp, acquisition

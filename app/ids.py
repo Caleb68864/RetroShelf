@@ -55,10 +55,22 @@ _V2_MAC_LEN = 16
 
 
 def _b64e(b: bytes) -> str:
+    """Encode *b* as unpadded URL-safe base64 text.
+
+    :param b: Raw bytes to encode.
+    :returns: URL-safe base64 string with the ``=`` padding stripped.
+    :rtype: str
+    """
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
 
 def _b64d(s: str) -> bytes:
+    """Decode unpadded URL-safe base64 *s*, restoring any stripped padding.
+
+    :param s: URL-safe base64 string (padding optional).
+    :returns: The decoded bytes.
+    :rtype: bytes
+    """
     pad = "=" * (-len(s) % 4)
     return base64.urlsafe_b64decode(s + pad)
 

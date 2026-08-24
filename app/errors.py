@@ -49,7 +49,11 @@ class KavitaError(RetroShelfError):
     :ivar status: HTTP status code from Kavita, or ``None``.
     """
 
-    def __init__(self, message: str, *, url: str | None = None, status: int | None = None):
+    def __init__(self, message: str, *, url: str | None = None, status: int | None = None) -> None:
+        """Store the failure context and initialise the base exception.
+
+        See the class docstring for the parameter semantics.
+        """
         self.url = url
         self.status = status
         super().__init__(message)

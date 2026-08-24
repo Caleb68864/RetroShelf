@@ -20,6 +20,10 @@ ACQ_REL = "http://opds-spec.org/acquisition"
 
 
 def _now() -> str:
+    """Return the current UTC time as an Atom ``<updated>`` timestamp string.
+
+    :rtype: str
+    """
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
@@ -69,7 +73,15 @@ def build_feed(*, feed_id: str, title: str, self_href: str, start_href: str,
     return ET.tostring(feed, encoding="utf-8", xml_declaration=True)
 
 
-def _link(parent, rel: str, href: str, type_: str) -> None:
+def _link(parent: ET.Element, rel: str, href: str, type_: str) -> None:
+    """Append an ``atom:link`` element to *parent*.
+
+    :param parent: The ``feed`` or ``entry`` element to attach the link to.
+    :type parent: xml.etree.ElementTree.Element
+    :param rel: Link relation (e.g. ``"self"`` or an OPDS acquisition rel).
+    :param href: Absolute URL of the link target.
+    :param type_: Media type of the linked resource.
+    """
     el = ET.SubElement(parent, f"{{{ATOM}}}link")
     el.set("rel", rel)
     el.set("href", href)

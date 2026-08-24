@@ -260,7 +260,11 @@ class FeedSource:
 
 
 def _feed_name_from_url(url: str) -> str:
-    """Derive a friendly feed name from a URL's host (e.g. ``Manybooks``)."""
+    """Derive a friendly feed name from a URL's host (e.g. ``Manybooks``).
+
+    :param url: The feed URL whose hostname supplies the name.
+    :rtype: str
+    """
     host = (urlsplit(url).hostname or "feed").lower()
     if host.startswith("www."):
         host = host[4:]
@@ -276,6 +280,10 @@ def _parse_feeds(e: dict[str, str]) -> list[FeedSource]:
     ``KAVITA_OPDS_URL`` (if set) is prepended as the primary feed, named by
     ``KAVITA_FEED_NAME`` (default "Library"). Duplicate URLs are dropped.
 
+    :param e: Environment mapping to read the feed variables from.
+    :type e: dict[str, str]
+    :returns: Ordered, de-duplicated feed list (primary feed first).
+    :rtype: list[FeedSource]
     :raises ConfigError: if an entry's URL is missing a scheme or host.
     """
     entries: list[tuple[str | None, str]] = []
@@ -374,6 +382,21 @@ class Config:
         header sent to upstream servers. ``None`` causes the bridge to
         use a browser-like default string.
     :vartype upstream_user_agent: str | None
+    :ivar state_dir: Directory holding the JSON state file (Reading List +
+        download history). Defaults to ``"/config"``.
+    :vartype state_dir: str
+    :ivar cache_dir: Root directory for the cover image disk cache.
+        Defaults to ``"/cache"``.
+    :vartype cache_dir: str
+    :ivar cover_max_edge: Maximum pixel dimension for proxied covers;
+        larger images are downscaled. Defaults to ``320``.
+    :vartype cover_max_edge: int
+    :ivar cover_jpeg_quality: JPEG re-encode quality for transcoded covers.
+        Defaults to ``80``.
+    :vartype cover_jpeg_quality: int
+    :ivar feeds: All configured OPDS feeds (the portal menu); the first
+        entry is the primary feed.
+    :vartype feeds: tuple[FeedSource, ...]
     """
 
     kavita_base_url: str

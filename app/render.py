@@ -26,7 +26,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
-def site_token(request) -> str:
+def site_token(request: object) -> str:
     """Return the site token that authorises state-changing links, or ``""``.
 
     Registered as a Jinja global so templates can stamp ``t=…`` onto the
@@ -36,6 +36,7 @@ def site_token(request) -> str:
     in isolation (tests, and the unconfigured-app fallback).
 
     :param request: The current request, or anything without app state.
+    :type request: object
     :rtype: str
     """
     ids = getattr(getattr(getattr(request, "app", None), "state", None), "ids", None)

@@ -55,8 +55,14 @@ def book_key(url: str) -> str:
     return hashlib.sha256((url or "").encode("utf-8")).hexdigest()[:16]
 
 
-def _clean_text(value, limit: int) -> str:
-    """Coerce *value* to a length-capped string, dropping control characters."""
+def _clean_text(value: object, limit: int) -> str:
+    """Coerce *value* to a length-capped string, dropping control characters.
+
+    :param value: Any value an upstream feed or the state file supplied;
+        ``None`` becomes ``""``.
+    :param limit: Maximum number of characters to keep.
+    :rtype: str
+    """
     if value is None:
         return ""
     text = value if isinstance(value, str) else str(value)
@@ -109,7 +115,7 @@ def sanitize_record(record: dict) -> dict:
 class Store:
     """JSON-backed store of favourites (Reading List) and download history."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str) -> None:
         """:param path: Filesystem path to the JSON state file."""
         self._path = path
         self._lock = threading.RLock()
@@ -154,8 +160,12 @@ class Store:
                 sanitize_record(h) for h in history[:_MAX_HISTORY] if isinstance(h, dict)
             ]
 
-    def _quarantine(self, reason) -> None:
-        """Move an unreadable state file aside so the operator can recover it."""
+    def _quarantine(self, reason: object) -> None:
+        """Move an unreadable state file aside so the operator can recover it.
+
+        :param reason: Why the file was unreadable (an exception or a short
+            description), included in the warning log line.
+        """
         backup = f"{self._path}.corrupt"
         try:
             os.replace(self._path, backup)

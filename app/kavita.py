@@ -18,6 +18,7 @@ Design (verified — see vault/MOC - FastAPI Streaming and Range):
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import urljoin, urlsplit
 
@@ -423,7 +424,7 @@ class KavitaClient:
         raise KavitaError(self._cfg.mask(f"Too many redirects from {url!r}"))
 
     @asynccontextmanager
-    async def stream(self, url: str, *, range_header: str | None = None):
+    async def stream(self, url: str, *, range_header: str | None = None) -> AsyncIterator[httpx.Response]:
         """Async context manager that yields a streaming upstream response.
 
         Opens the upstream GET request in streaming mode and yields the live

@@ -68,10 +68,18 @@ def _safe_image_type(content_type: str | None) -> str:
 
 
 def _cover_cache_key(url: str) -> str:
+    """Return the cover cache filename key for *url* (its SHA-256 hex digest).
+
+    Hashing means the upstream URL — embedded ``apiKey`` included — never
+    appears in a cache filename.
+
+    :param url: The fully-qualified upstream cover URL.
+    :rtype: str
+    """
     return hashlib.sha256(url.encode()).hexdigest()
 
 
-async def _read_capped(resp, limit: int) -> bytes:
+async def _read_capped(resp: httpx.Response, limit: int) -> bytes:
     """Read *resp* fully into memory, aborting past *limit* bytes.
 
     :param resp: A streaming ``httpx.Response``.

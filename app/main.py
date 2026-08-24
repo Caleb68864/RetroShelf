@@ -17,7 +17,9 @@ import json
 import logging
 import random
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, Request
@@ -30,7 +32,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, opds
-from .config import Config, ConfigError, load_config, origin_tuple
+from .config import Config, ConfigError, FeedSource, load_config, origin_tuple
 from .download import (
     EPUB_MIME,
     PDF_MIME,
@@ -169,7 +171,7 @@ class FeedCache:
     before a new one is inserted.
     """
 
-    def __init__(self, ttl_seconds: int, max_entries: int = 256):
+    def __init__(self, ttl_seconds: int, max_entries: int = 256) -> None:
         """Initialise the cache.
 
         :param ttl_seconds: Lifetime of each cached entry in seconds.
@@ -230,7 +232,7 @@ class _SecretMaskingFilter(logging.Filter):
     that secrets cannot appear in any sink regardless of their origin.
     """
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config) -> None:
         """Initialise the filter with the active configuration.
 
         :param cfg: Application configuration object whose
@@ -291,14 +293,15 @@ def _install_mask_filter(cfg: Config) -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """AsyncContextManager that wires shared state onto *app* at startup and
     tears it down on shutdown.
 
     On entry:
 
     * Creates and attaches an :class:`~app.kavita.KavitaClient`,
-      :class:`~app.ids.IdCodec`, and :class:`FeedCache` to ``app.state``.
+      :class:`~app.ids.IdCodec`, :class:`FeedCache`, and
+      :class:`~app.store.Store` to ``app.state``.
     * Configures the root logger at the level specified by
       :attr:`~app.config.Config.log_level`.
     * Attaches a :class:`_SecretMaskingFilter` to every root-logger handler.
@@ -364,7 +367,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     # -- middleware: optional access key + IP allowlist ----------------------
     @app.middleware("http")
-    async def gate(request: Request, call_next):
+    async def gate(request: Request, call_next: Callable[[Request], Awaitable[Any]]) -> Response:
         """HTTP middleware: enforce IP allowlist and access-key checks.
 
         Requests whose path begins with any prefix in :data:`_OPEN_PREFIXES`
@@ -413,7 +416,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     # -- middleware: static caching + HTML-only gzip (SS-04 polish) -----------
     @app.middleware("http")
-    async def polish(request: Request, call_next):
+    async def polish(request: Request, call_next: Callable[[Request], Awaitable[Any]]) -> Response:
         """Add a long cache header to ``/static`` and gzip HTML pages.
 
         Gzip is applied **only** to ``text/html`` responses when the client
@@ -450,7 +453,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     # -- error handlers ------------------------------------------------------
     @app.exception_handler(RetroShelfError)
-    async def handle_domain_error(request: Request, exc: RetroShelfError):
+    async def handle_domain_error(request: Request, exc: RetroShelfError) -> Response:
         """Exception handler for all :class:`~app.errors.RetroShelfError` subclasses.
 
         Maps the exception type to an HTTP status code and heading via
@@ -472,7 +475,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         return _error_response(request, heading, msg, status)
 
     @app.exception_handler(Exception)
-    async def handle_unexpected(request: Request, exc: Exception):
+    async def handle_unexpected(request: Request, exc: Exception) -> Response:
         """Catch-all exception handler for any unhandled :class:`Exception`.
 
         Logs the full masked traceback at ``ERROR`` level but returns only a
@@ -564,8 +567,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     Defines and registers:
 
-    * Two private helper closures (``kc``, ``codec``) for extracting shared
-      state from the request.
+    * Private helper closures (``kc``, ``codec``, ``store``) for extracting
+      shared state from the request.
     * ``_to_view_model`` — translates a parsed OPDS feed into template dicts.
     * ``_load_feed`` — cache-aware feed fetcher.
     * ``_do_download`` — shared download/HEAD logic reused by all download routes.
@@ -617,6 +620,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :type ids: IdCodec
         :param kavita: Kavita client used to validate and resolve upstream URLs.
         :type kavita: KavitaClient
+        :param base_url: URL of the feed document the entries came from;
+            relative hrefs are resolved against it. ``None`` restricts
+            resolution to root-relative paths on the primary origin.
+        :type base_url: str or None
+        :param downloaded: Set of already-downloaded book keys used to flag
+            entries, or ``None`` to skip flagging.
+        :type downloaded: set or None
         :returns: A list of dicts ready for Jinja2 template rendering.  Each
             dict has an ``is_nav`` boolean key and further keys depending on
             whether the entry is a navigation link or an acquisition entry.
@@ -699,7 +709,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         cache.put(cache_key, feed)
         return feed
 
-    def _feed_for_url(url: str):
+    def _feed_for_url(url: str) -> FeedSource:
         """Return the configured :class:`FeedSource` whose origin owns *url*.
 
         Used to scope search to the right library and to label feed pages.
@@ -771,9 +781,15 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     # -- diagnostics + insight pages -----------------------------------------
     @app.get("/status", response_class=HTMLResponse)
-    async def status_page(request: Request):
+    async def status_page(request: Request) -> HTMLResponse:
         """GET ``/status`` — live health of every configured library."""
-        async def check(source) -> dict:
+        async def check(source: FeedSource) -> dict:
+            """Probe one library's root feed, timing it; never raises.
+
+            :param source: The configured feed to probe.
+            :returns: A status row dict for ``status.html``.
+            :rtype: dict
+            """
             t0 = time.monotonic()
             try:
                 body = await kc(request).fetch_feed(source.url)
@@ -792,7 +808,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return templates.TemplateResponse(request, "status.html", {"rows": rows})
 
     @app.get("/random")
-    async def surprise_me(request: Request):
+    async def surprise_me(request: Request) -> Response:
         """GET ``/random`` — "Surprise Me": a budgeted random walk into the
         libraries that jumps to a random book. Tolerant of dead-ends/404s — it
         skips a failed branch and tries others rather than giving up."""
@@ -833,16 +849,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     # -- pages ---------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
-    async def home(request: Request):
+    async def home(request: Request) -> HTMLResponse:
         """GET ``/`` — render the home/status page.
 
-        Probes the Kavita OPDS root feed to report connectivity status and
-        provides a link to the root feed page.
+        Probes the primary (first) configured feed to report connectivity and
+        builds the portal menu of all configured libraries.
 
         :param request: The incoming HTTP request.
         :type request: Request
-        :returns: Rendered ``home.html`` with ``kavita_ok``, ``status_detail``,
-            and ``root_feed_url`` template variables.
+        :returns: Rendered ``home.html`` with connectivity status, the portal
+            feed menu, the Reading List count, and the recent-downloads shelf.
         :rtype: HTMLResponse
         """
         # Connectivity status reflects the primary (first) feed.
@@ -878,7 +894,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         })
 
     @app.get("/feed/{fid}", response_class=HTMLResponse)
-    async def feed(request: Request, fid: str, sort: str = ""):
+    async def feed(request: Request, fid: str, sort: str = "") -> HTMLResponse:
         """GET ``/feed/{fid}`` — render a paginated OPDS feed page.
 
         Decodes the bridge feed id *fid*, re-validates the resolved URL through
@@ -924,7 +940,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         })
 
     @app.get("/book/{bid}", response_class=HTMLResponse)
-    async def book(request: Request, bid: str):
+    async def book(request: Request, bid: str) -> HTMLResponse:
         """GET ``/book/{bid}`` — render the book detail / download page.
 
         Decodes the bridge book id *bid* (a JSON record encoded by
@@ -990,7 +1006,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         })
 
     @app.get("/search", response_class=HTMLResponse)
-    async def search(request: Request, q: str = "", feed: str = ""):
+    async def search(request: Request, q: str = "", feed: str = "") -> HTMLResponse:
         """GET ``/search?q=QUERY[&feed=FID]`` — render the search results page.
 
         Searches within one library (the *feed* bridge id, or the primary feed
@@ -1012,7 +1028,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         # concurrently and must not each re-read (and re-lock) the store.
         downloaded = store(request).downloaded_keys()
 
-        async def _search_one(source) -> dict:
+        async def _search_one(source: FeedSource) -> dict:
             """Search one library; never raises — failures become error groups."""
             try:
                 su = await _resolve_search_url(request, q, source.url)
@@ -1050,7 +1066,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         })
 
     @app.get("/help", response_class=HTMLResponse)
-    async def help_page(request: Request):
+    async def help_page(request: Request) -> HTMLResponse:
         """GET ``/help`` — render the static help page.
 
         :param request: The incoming HTTP request.
@@ -1062,7 +1078,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     # -- Reading List (cross-feed favourites) --------------------------------
     @app.get("/list", response_class=HTMLResponse)
-    async def reading_list(request: Request):
+    async def reading_list(request: Request) -> HTMLResponse:
         """GET ``/list`` — the cross-library Reading List of starred books."""
         items = []
         for rec in store(request).favorites():
@@ -1106,7 +1122,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         )
 
     @app.get("/star/{bid}")
-    async def star(request: Request, bid: str):
+    async def star(request: Request, bid: str) -> Response:
         """GET ``/star/{bid}`` — add a book to the Reading List, then go back."""
         refusal = _require_site_token(request)
         if refusal is not None:
@@ -1120,7 +1136,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return RedirectResponse(_back_to(request, default="/list"), status_code=303)
 
     @app.get("/unstar/{key}")
-    async def unstar(request: Request, key: str):
+    async def unstar(request: Request, key: str) -> Response:
         """GET ``/unstar/{key}`` — remove a book from the Reading List."""
         refusal = _require_site_token(request)
         if refusal is not None:
@@ -1130,13 +1146,28 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
     # -- OPDS publisher: re-publish the Reading List as a real OPDS feed ------
     def _public_base(request: Request) -> str:
+        """Return the public base URL used in published OPDS feed links.
+
+        Prefers the configured ``BRIDGE_PUBLIC_URL``; falls back to the
+        request's own base URL. Never ends in a ``/``.
+
+        :param request: The incoming request.
+        :rtype: str
+        """
         return (cfg.bridge_public_url or str(request.base_url)).rstrip("/")
 
     def _key_suffix() -> str:
+        """Return the ``?key=…`` suffix for published OPDS links, or ``""``.
+
+        An external OPDS reader has no cookie primed by a browser visit, so
+        the links it follows must carry the access key when one is configured.
+
+        :rtype: str
+        """
         return f"?key={cfg.bridge_access_key}" if cfg.bridge_access_key else ""
 
     @app.get("/opds")
-    async def opds_root(request: Request):
+    async def opds_root(request: Request) -> Response:
         """GET ``/opds`` — RetroShelf's own OPDS navigation catalog."""
         base, ks = _public_base(request), _key_suffix()
         xml = build_feed(
@@ -1151,7 +1182,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return Response(content=xml, media_type=NAV_TYPE)
 
     @app.get("/opds/reading-list")
-    async def opds_reading_list(request: Request):
+    async def opds_reading_list(request: Request) -> Response:
         """GET ``/opds/reading-list`` — the Reading List as an OPDS acquisition
         feed, so any OPDS reader can subscribe to your curated shelf."""
         base, ks = _public_base(request), _key_suffix()
@@ -1183,7 +1214,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     # -- Accessibility preferences (optional cookies) ------------------------
     @app.get("/prefs")
     async def prefs(request: Request, big: str = "", covers: str = "",
-                    color: str = "", next: str = "/"):
+                    color: str = "", next: str = "/") -> Response:
         """GET ``/prefs`` — toggle display prefs via cookies (no JS, optional).
 
         Everything works without the cookie; this only enhances. ``big=toggle``
@@ -1214,7 +1245,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return resp
 
     @app.get("/health")
-    async def health():
+    async def health() -> PlainTextResponse:
         """GET ``/health`` — container health-check endpoint.
 
         Returns the plain-text string ``ok`` with a 200 status.  This route
@@ -1227,7 +1258,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return PlainTextResponse("ok")
 
     # -- downloads / covers --------------------------------------------------
-    async def _do_download(request: Request, did: str, name_hint: str | None = None):
+    async def _do_download(request: Request, did: str, name_hint: str | None = None) -> Response:
         """Shared GET/HEAD download logic reused by all download route handlers.
 
         Decodes the bridge download id *did*, re-validates the resolved URL
@@ -1280,7 +1311,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         )
 
     @app.api_route("/download/{did}/{filename}", methods=["GET", "HEAD"])
-    async def download_named(request: Request, did: str, filename: str):
+    async def download_named(request: Request, did: str, filename: str) -> Response:
         """GET/HEAD ``/download/{did}/{filename}`` — download a book with an explicit filename.
 
         The *filename* path segment is the clean, title-based name old Safari
@@ -1298,7 +1329,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return await _do_download(request, did, name_hint=filename)
 
     @app.api_route("/download/{did}", methods=["GET", "HEAD"])
-    async def download(request: Request, did: str):
+    async def download(request: Request, did: str) -> Response:
         """GET/HEAD ``/download/{did}`` — download a book without an explicit filename.
 
         :param request: The incoming HTTP request.
@@ -1311,7 +1342,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return await _do_download(request, did)
 
     @app.api_route("/open/{did}", methods=["GET", "HEAD"])
-    async def open_alias(request: Request, did: str):
+    async def open_alias(request: Request, did: str) -> Response:
         """GET/HEAD ``/open/{did}`` — alias of the download route for ADE / reader apps.
 
         Some e-reader applications (e.g. Adobe Digital Editions) POST or GET
@@ -1328,7 +1359,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return await _do_download(request, did)
 
     @app.api_route("/cover/{cid}", methods=["GET", "HEAD"])
-    async def cover(request: Request, cid: str):
+    async def cover(request: Request, cid: str) -> Response:
         """GET/HEAD ``/cover/{cid}`` — proxy a book cover image from Kavita.
 
         Cover failures return a tiny empty 404 GIF rather than a full HTML
@@ -1481,11 +1512,23 @@ except ConfigError as _cfg_exc:  # pragma: no cover - only when env unset
     app = FastAPI(title="RetroShelf (unconfigured)")
 
     @app.get("/health")
-    async def _health_unconfigured():
+    async def _health_unconfigured() -> PlainTextResponse:
+        """GET ``/health`` — health check for the unconfigured fallback app.
+
+        :returns: Plain-text ``"ok"`` with HTTP 200.
+        :rtype: PlainTextResponse
+        """
         return PlainTextResponse("ok")
 
     @app.get("/{_path:path}")
-    async def _unconfigured(_path: str):
+    async def _unconfigured(_path: str) -> PlainTextResponse:
+        """Catch-all: explain that RetroShelf is missing its configuration.
+
+        :param _path: The requested path (unused).
+        :type _path: str
+        :returns: A plain-text 500 response naming the configuration error.
+        :rtype: PlainTextResponse
+        """
         return PlainTextResponse(
             f"RetroShelf is not configured: {_startup_error}", status_code=500
         )
