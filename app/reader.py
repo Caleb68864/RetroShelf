@@ -287,6 +287,44 @@ def _find_body(root: Element) -> Element:
     return root
 
 
+# Transparent structural wrappers. Some EPUBs (especially EPUB3) wrap a whole
+# chapter in one ``<section>``/``<div>``, which would otherwise collapse the
+# chapter into a single un-splittable block — verified against a real
+# Project Gutenberg EPUB3 (Frankenstein: 32 chapters, only 38 blocks). We
+# descend through these at the top level so the real paragraphs/headings inside
+# become individual blocks and fine pagination works. [book-fidelity]
+_FLOW_CONTAINERS = frozenset({"section", "div", "article", "main"})
+_MAX_FLATTEN_DEPTH = 6
+
+
+def _top_level_block_elements(container: Element, depth: int = 0):
+    """Yield the effective top-level block elements of a chapter *container*.
+
+    A transparent structural wrapper (``section``/``div``/``article``/``main``)
+    with no direct text of its own is descended into, so its block-level
+    children surface as individual blocks rather than one giant block. Wrappers
+    that carry direct text, non-container children, or nesting past
+    :data:`_MAX_FLATTEN_DEPTH` are yielded whole (rendered normally). Order is
+    preserved; content is never dropped.
+
+    :param container: The ``<body>`` (or a wrapper being descended).
+    :param depth: Current descent depth, bounded by :data:`_MAX_FLATTEN_DEPTH`.
+    :returns: An iterator of the elements to render as top-level blocks.
+    """
+    for child in container:
+        name = _local_name(child.tag)
+        transparent = (
+            name in _FLOW_CONTAINERS
+            and depth < _MAX_FLATTEN_DEPTH
+            and not (child.text and child.text.strip())
+            and len(child)  # has element children to surface
+        )
+        if transparent:
+            yield from _top_level_block_elements(child, depth + 1)
+        else:
+            yield child
+
+
 def sanitize_chapter(
     source: str | bytes,
     *,
@@ -333,7 +371,7 @@ def sanitize_chapter(
     body = _find_body(root)
 
     blocks: list[str] = []
-    for child in body:
+    for child in _top_level_block_elements(body):
         rendered = _render_element(
             child, depth=0, resolve_image=resolve_image, resolve_link=resolve_link
         )

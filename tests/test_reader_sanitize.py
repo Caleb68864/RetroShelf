@@ -242,3 +242,41 @@ def test_colspan_validated() -> None:
     assert 'colspan="two"' not in joined
     assert 'colspan="3"' in joined
     assert 'rowspan="x"' not in joined
+
+
+def test_section_wrapper_flattens_to_individual_blocks() -> None:
+    """A chapter wrapped in one <section> paginates by paragraph, not as a
+    single un-splittable block (book-fidelity fix; verified on a real EPUB3)."""
+    xhtml = (
+        "<html><body><section>"
+        + "".join(f"<p>Paragraph {i}.</p>" for i in range(5))
+        + "</section></body></html>"
+    )
+    blocks = sanitize_chapter(
+        xhtml, resolve_image=_resolve_image_none, resolve_link=_resolve_link_none
+    )
+    assert len(blocks) == 5
+    assert all(b.startswith("<p>") for b in blocks)
+
+
+def test_nested_div_wrappers_flatten() -> None:
+    """Nested transparent wrappers still surface the real blocks."""
+    xhtml = (
+        "<html><body><div><div>"
+        "<h2>Title</h2><p>One.</p><p>Two.</p>"
+        "</div></div></body></html>"
+    )
+    blocks = sanitize_chapter(
+        xhtml, resolve_image=_resolve_image_none, resolve_link=_resolve_link_none
+    )
+    assert len(blocks) == 3
+
+
+def test_wrapper_with_direct_text_is_kept_whole() -> None:
+    """A container carrying its own text is NOT flattened (no content loss)."""
+    xhtml = "<html><body><div>Loose text before <p>a para</p></div></body></html>"
+    blocks = sanitize_chapter(
+        xhtml, resolve_image=_resolve_image_none, resolve_link=_resolve_link_none
+    )
+    assert len(blocks) == 1
+    assert "Loose text before" in blocks[0]
