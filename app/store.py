@@ -24,6 +24,7 @@ import logging
 import os
 import threading
 import time
+from typing import TypeIs
 
 log = logging.getLogger("retroshelf.store")
 
@@ -79,6 +80,22 @@ def _clean_text(value: object, limit: int) -> str:
     return text[:limit]
 
 
+def _is_real_number(value: object) -> TypeIs[int | float]:
+    """Return whether *value* is a genuine ``int``/``float`` and not a ``bool``.
+
+    ``bool`` is a subclass of ``int``, so a bare ``isinstance(value, int)`` check
+    would accept ``True``/``False`` as numbers. Both the position/bookmark
+    coordinates and the ordering timestamps must reject that, so the guard is
+    named here rather than re-spelled at each field. Typed as a
+    :class:`typing.TypeIs` so callers still narrow the value to a number after
+    the check, exactly as the inline ``isinstance`` did.
+
+    :param value: Any value loaded from the state file or a book record.
+    :rtype: bool
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def sanitize_record(record: dict) -> dict:
     """Project *record* onto the persisted schema with every field bounded.
 
@@ -100,7 +117,7 @@ def sanitize_record(record: dict) -> dict:
     # reload — but only as numbers, never as whatever a feed put there.
     for stamp in ("added", "when"):
         value = record.get(stamp)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if _is_real_number(value):
             out[stamp] = float(value)
     formats = record.get("fmts")
     if isinstance(formats, list):
@@ -135,13 +152,13 @@ def _sanitize_position(entry: dict) -> dict | None:
     rec = sanitize_record(entry)
     for field in ("chapter", "block", "percent"):
         value = entry.get(field)
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        if not _is_real_number(value) or value < 0:
             return None
         rec[field] = int(value)
     if rec["percent"] > 100:
         rec["percent"] = 100
     updated = entry.get("updated")
-    rec["updated"] = float(updated) if isinstance(updated, (int, float)) and not isinstance(updated, bool) else 0.0
+    rec["updated"] = float(updated) if _is_real_number(updated) else 0.0
     key = entry.get("key")
     if isinstance(key, str) and key:
         rec["key"] = _clean_text(key, _FIELD_LIMITS["key"])
@@ -161,12 +178,12 @@ def _sanitize_bookmark(entry: dict) -> dict | None:
     out: dict = {}
     for numeric in ("chapter", "block"):
         value = entry.get(numeric)
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        if not _is_real_number(value) or value < 0:
             return None
         out[numeric] = int(value)
     out["label"] = _clean_text(entry.get("label"), _FIELD_LIMITS["t"])
     when = entry.get("when")
-    out["when"] = float(when) if isinstance(when, (int, float)) and not isinstance(when, bool) else 0.0
+    out["when"] = float(when) if _is_real_number(when) else 0.0
     return out
 
 
