@@ -20,6 +20,10 @@ Exception hierarchy
 
     :class:`ReaderError`
         The in-browser EPUB reader could not shelve or serve a book.
+
+        :class:`PdfNoTextError`
+            A PDF has no extractable text layer (scanned/image-only), so it
+            cannot be reflowed — the caller steers the reader to Open PDF.
 """
 from __future__ import annotations
 
@@ -91,4 +95,17 @@ class ReaderError(RetroShelfError):
     or a stalled upstream during shelving.  The application layer maps
     this to a friendly error page that steers the operator back to the
     iBooks download path.
+    """
+
+
+class PdfNoTextError(ReaderError):
+    """A PDF was structurally valid but carries no extractable text layer.
+
+    Raised by the PDF shelver when a document extracts to (near-)empty text
+    across every page — the hallmark of a scanned or image-only PDF that the
+    text-reflow reader cannot render.  Distinct from its :class:`ReaderError`
+    base so the application layer can show a tailored "no readable text —
+    use Open PDF" page (with the native inline-view download link) rather
+    than the generic reader error, while still being caught by any
+    ``except ReaderError`` handler as a safe fallback.
     """

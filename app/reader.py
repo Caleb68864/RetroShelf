@@ -37,7 +37,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 from defusedxml.ElementTree import ParseError, fromstring
 
-from .errors import ReaderError, SsrfError
+from .errors import PdfNoTextError, ReaderError, SsrfError
 from .kavita import KavitaClient
 from .store import book_key as _store_book_key
 
@@ -51,6 +51,12 @@ try:
     _PILImage.MAX_IMAGE_PIXELS = 64_000_000
 except ImportError:  # pragma: no cover
     _PIL_AVAILABLE = False
+
+try:
+    import pypdf as _pypdf
+    _PYPDF_AVAILABLE = True
+except ImportError:  # pragma: no cover - pypdf is a declared runtime dependency
+    _PYPDF_AVAILABLE = False
 
 log = logging.getLogger("retroshelf.reader")
 
@@ -2017,6 +2023,294 @@ async def shelve_html_book(kc: KavitaClient, record: dict, cache_dir: str) -> Ma
     """
     return await _shelve_record(
         kc, record, cache_dir, spool_cap=MAX_HTML_BYTES, extract=_extract_html_book
+    )
+
+
+# ---------------------------------------------------------------------------
+# PDF text-reflow shelving
+# ---------------------------------------------------------------------------
+#
+# ``shelve_pdf_book`` turns a text-layer PDF into the same shelved layout an
+# EPUB/HTML book produces, so every downstream reader function works unchanged.
+# This is v1: TEXT REFLOW ONLY — the PDF's text layer and outline are
+# extracted; page images are NOT rendered. A scanned/image-only PDF (no text
+# layer) raises :class:`PdfNoTextError`, which the route turns into a friendly
+# "use Open PDF" page. Pipeline: spool (capped) -> ``pypdf`` open (DRM/corrupt
+# guarded) -> per-page ``extract_text`` -> chapter boundaries from the document
+# outline (or page-grouped fallback) -> per-chapter text run through
+# :func:`_escaped_text_fallback`, so extracted text is HTML-ESCAPED (never
+# re-parsed as markup) before it reaches the single ``| safe`` render seam.
+
+# A PDF download is a few tens of MB at most; 80MB mirrors the EPUB cap while
+# bounding a hostile or mistaken upstream. Spooled to disk in capped chunks by
+# the shared skeleton. [pdf-reader]
+MAX_PDF_BYTES = 80 * 1024 * 1024
+
+# A document with thousands of pages is not a book we reflow in a browser;
+# capping bounds per-page extraction work. Realistic books stay well under. A
+# PDF over this cap fails with a friendly error steering to Open PDF. [pdf-reader]
+MAX_PDF_PAGES = 5000
+
+# Ceiling on total extracted (escaped) text characters across the whole book,
+# so a PDF whose text layer expands to hundreds of MB cannot exhaust memory or
+# the reader-cache budget on its own. [pdf-reader]
+MAX_PDF_TEXT_CHARS = 40 * 1024 * 1024
+
+# A book whose entire text layer extracts to fewer than this many non-space
+# characters is treated as having NO usable text (scanned/image-only), and the
+# reflow reader defers to Open PDF via :class:`PdfNoTextError`. Small enough
+# that any genuinely text-bearing book clears it. [pdf-reader]
+PDF_MIN_TEXT_CHARS = 16
+
+# When a PDF has no usable outline, its pages are grouped into chapters this
+# many pages at a time, so a long book still gets a navigable (bounded) ToC and
+# resumable chapters instead of one monolithic chapter. A book of at most this
+# many pages becomes a single chapter titled by the book. [pdf-reader]
+PDF_PAGES_PER_CHAPTER = 10
+
+# Hard cap on chapters a PDF outline can produce, mirroring
+# :data:`MAX_SPINE_ITEMS`: a hostile outline with thousands of entries cannot
+# make shelving build an unbounded number of chapter files. [pdf-reader]
+MAX_PDF_CHAPTERS = 500
+
+
+def _flatten_pdf_outline(
+    reader: "_pypdf.PdfReader", outline: object, depth: int = 0,
+) -> list[tuple[int, str, int]]:
+    """Flatten a ``pypdf`` outline tree into ``(depth, title, page_index)``.
+
+    ``pypdf`` returns the outline as a list in reading order where a nested
+    list holds the children of the entry immediately before it. Each leaf is a
+    destination with a ``.title`` resolvable to a 0-based page index via
+    :meth:`pypdf.PdfReader.get_destination_page_number`. Entries whose page or
+    title cannot be resolved are skipped (a broken bookmark must not fail the
+    book). Depth is capped at :data:`_MAX_TOC_DEPTH`.
+
+    :param reader: The open ``pypdf`` reader (for page-number resolution).
+    :param outline: A ``reader.outline`` node (list) to walk.
+    :param depth: Current outline nesting depth.
+    :returns: Ordered ``(depth, title, page_index)`` triples.
+    """
+    entries: list[tuple[int, str, int]] = []
+    if not isinstance(outline, list):
+        return entries
+    for item in outline:
+        if isinstance(item, list):
+            entries.extend(_flatten_pdf_outline(reader, item, depth + 1))
+            continue
+        try:
+            page = reader.get_destination_page_number(item)
+            title = " ".join(str(item.title or "").split())
+        except Exception:  # noqa: BLE001 - a broken bookmark must not fail the book
+            continue
+        if title and isinstance(page, int) and page >= 0:
+            entries.append((min(depth, _MAX_TOC_DEPTH), title, page))
+    return entries
+
+
+def _pdf_chapter_ranges(
+    entries: list[tuple[int, str, int]], num_pages: int, record: dict,
+) -> tuple[list[tuple[str, int, int]], list[tuple[int, str, int]]]:
+    """Plan chapter page-ranges and the hierarchical ToC for a PDF.
+
+    When the outline yields entries, each distinct start page begins a chapter
+    (pages before the first entry form a leading chapter); every outline entry
+    maps to the chapter it opens, giving a real nested ToC. With no usable
+    outline, pages are grouped in fixed :data:`PDF_PAGES_PER_CHAPTER` runs (a
+    single chapter titled by the book when the whole document fits one group).
+
+    :param entries: Flattened outline, as from :func:`_flatten_pdf_outline`.
+    :param num_pages: Total page count of the document.
+    :param record: The book record (its ``t`` titles the leading/only chapter).
+    :returns: ``(chapters, toc)`` where *chapters* is an ordered list of
+        ``(title, start_page, end_page_exclusive)`` and *toc* is
+        ``(depth, title, chapter_index)`` in reading order.
+    """
+    book_title = str(record.get("t") or "") or "Untitled"
+    valid = [(d, t, p) for d, t, p in entries if 0 <= p < num_pages]
+    if valid:
+        starts = sorted({p for _d, _t, p in valid})
+        if starts[0] > 0:
+            starts.insert(0, 0)  # leading matter before the first bookmark
+        starts = starts[:MAX_PDF_CHAPTERS]
+        chapter_of_page = {p: i for i, p in enumerate(starts)}
+        title_for_start: dict[int, str] = {}
+        for _d, title, page in valid:
+            title_for_start.setdefault(page, title)
+        chapters: list[tuple[str, int, int]] = []
+        for i, sp in enumerate(starts):
+            ep = starts[i + 1] if i + 1 < len(starts) else num_pages
+            title = title_for_start.get(sp) or (book_title if sp == 0 else f"Section {i + 1}")
+            chapters.append((title, sp, ep))
+        toc: list[tuple[int, str, int]] = []
+        for depth, title, page in valid:
+            ci = chapter_of_page.get(page)
+            if ci is not None:
+                toc.append((depth, title, ci))
+        if toc:
+            base = min(d for d, _t, _i in toc)
+            toc = [(d - base, t, i) for d, t, i in toc]
+        return chapters, toc
+
+    # No outline: fixed page-run chapters (or one chapter for a short book).
+    if num_pages <= PDF_PAGES_PER_CHAPTER:
+        return [(book_title, 0, num_pages)], [(0, book_title, 0)]
+    chapters = []
+    toc = []
+    for ci, start in enumerate(range(0, num_pages, PDF_PAGES_PER_CHAPTER)):
+        end = min(start + PDF_PAGES_PER_CHAPTER, num_pages)
+        title = f"Pages {start + 1}–{end}"
+        chapters.append((title, start, end))
+        toc.append((0, title, ci))
+        if len(chapters) >= MAX_PDF_CHAPTERS:
+            break
+    return chapters, toc
+
+
+def _extract_pdf(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manifest:
+    """Parse the spooled PDF at *spool_path* into *tmp_dir*'s shelved form.
+
+    Opens the PDF with ``pypdf`` (guarding malformed/encrypted files into a
+    friendly :class:`ReaderError`), extracts each page's text layer, and groups
+    pages into chapters by the document outline (:func:`_pdf_chapter_ranges`).
+    Every chapter's text is escaped and split into ``<p>`` blocks by
+    :func:`_escaped_text_fallback` — the extracted text is treated as PLAIN
+    TEXT and never re-parsed as markup, so a page whose text literally contains
+    ``<script>`` renders as visible characters. Produces the identical
+    :class:`Manifest` + ``chapters/*.json`` layout as :func:`_extract_epub`
+    (v1: no page images).
+
+    :param spool_path: Path to the fully-downloaded PDF file on disk.
+    :param key: The book's cache key (``Manifest.book_key``).
+    :param record: The caller's book record; only ``t``/``a`` are read.
+    :param tmp_dir: The in-progress shelving directory (with empty
+        ``chapters/`` and ``images/`` subdirectories).
+    :returns: The completed :class:`Manifest` (also written to ``manifest.json``).
+    :raises PdfNoTextError: If the document has no extractable text layer.
+    :raises ReaderError: On an encrypted, malformed, or oversized PDF.
+    """
+    if not _PYPDF_AVAILABLE:  # pragma: no cover - pypdf is a declared dependency
+        raise ReaderError("This PDF can't be read in the browser — use Open PDF instead")
+
+    try:
+        with open(spool_path, "rb") as fh:
+            reader = _pypdf.PdfReader(fh)
+            if reader.is_encrypted:
+                raise ReaderError(
+                    "This PDF is protected and can't be read in the browser — use Open PDF"
+                )
+            num_pages = len(reader.pages)
+            if num_pages == 0:
+                raise ReaderError("This PDF has no pages")
+            if num_pages > MAX_PDF_PAGES:
+                raise ReaderError(f"This PDF has too many pages (limit {MAX_PDF_PAGES})")
+
+            page_texts: list[str] = []
+            total_text = 0
+            for page in reader.pages:
+                try:
+                    text = page.extract_text() or ""
+                except Exception:  # noqa: BLE001 - one bad page must not fail the book
+                    text = ""
+                total_text += len(text)
+                if total_text > MAX_PDF_TEXT_CHARS:
+                    raise ReaderError("This PDF has more text than can be read here")
+                page_texts.append(text)
+
+            outline_entries = _flatten_pdf_outline(reader, reader.outline)
+    except ReaderError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any pypdf failure -> friendly error
+        raise ReaderError("This does not look like a readable PDF file") from exc
+
+    if sum(len(t.strip()) for t in page_texts) < PDF_MIN_TEXT_CHARS:
+        # No usable text layer at all: a scanned / image-only PDF. Signal the
+        # route to steer the reader to Open PDF rather than reflow nothing.
+        raise PdfNoTextError("This PDF has no readable text layer")
+
+    chapter_ranges, toc = _pdf_chapter_ranges(outline_entries, num_pages, record)
+
+    chapters_meta: list[ChapterMeta] = []
+    total_chars = 0
+    for i, (title, start_page, end_page) in enumerate(chapter_ranges):
+        # Join the chapter's pages with a blank line so each page becomes its
+        # own paragraph block at minimum (giving pagination something to split).
+        chapter_text = "\n\n".join(page_texts[start_page:end_page])
+        blocks = _escaped_text_fallback(chapter_text)
+        chars = sum(len(b) for b in blocks)
+        total_chars += chars
+        with open(os.path.join(tmp_dir, "chapters", f"{i}.json"), "w", encoding="utf-8") as f:
+            json.dump({"blocks": blocks, "anchors": {}}, f)
+        chapters_meta.append(ChapterMeta(title=title, blocks=len(blocks), chars=chars))
+
+    manifest = Manifest(
+        version=2,
+        book_key=key,
+        title=str(record.get("t") or "") or "Untitled",
+        author=str(record.get("a") or ""),
+        chapters=chapters_meta,
+        images=0,  # v1: text reflow only, no page images
+        total_chars=total_chars,
+        created=time.time(),
+        toc=toc,
+    )
+    with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(_manifest_to_dict(manifest), f)
+    return manifest
+
+
+async def _extract_pdf_shelf(
+    kc: KavitaClient, spool_path: str, key: str, record: dict, tmp_dir: str,
+) -> Manifest:
+    """Awaitable adapter making the synchronous PDF extractor a
+    :data:`_ShelfExtractor`.
+
+    PDF text extraction reads only the local spool file (v1 has no images), so
+    it does no network I/O and *kc* is unused; this wrapper exists solely to
+    satisfy the awaitable extractor contract the shared skeleton expects.
+
+    :param kc: Unused (PDF reflow reads only the spooled file).
+    :param spool_path: Path to the fully-downloaded PDF on disk.
+    :param key: The book's cache key.
+    :param record: The caller's book record.
+    :param tmp_dir: The in-progress shelving directory.
+    :returns: The completed :class:`Manifest`.
+    """
+    return _extract_pdf(spool_path, key, record, tmp_dir)
+
+
+async def shelve_pdf_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifest:
+    """Shelve *record*'s PDF (text reflow) into the reader cache.
+
+    The PDF counterpart to :func:`shelve_book`: it produces the identical
+    :class:`Manifest` + ``chapters/*.json`` layout, so every downstream reader
+    function (:func:`load_manifest`, :func:`load_chapter`, :func:`parts_for`,
+    :func:`percent_of`, :func:`search_book`, positions, bookmarks) works
+    unchanged. The PDF's text layer is extracted per page, chaptered by its
+    document outline (or page-grouped when it has none), and each chapter's
+    text is escaped through :func:`_escaped_text_fallback` — never re-parsed as
+    markup — before reaching the one ``| safe`` render seam. A scanned /
+    image-only PDF (no text layer) raises :class:`PdfNoTextError` so the route
+    can steer the reader to the native Open-PDF path. See :func:`_extract_pdf`.
+
+    Unlike EPUB/HTML, the PDF book page keeps BOTH this "Read here" entry point
+    and the existing "Open PDF" download button (the layout-preserving native
+    inline view / Copy-to-Books flow); the two are complementary.
+
+    :param kc: Kavita client used to spool the upstream PDF. Every fetch goes
+        through its SSRF guard.
+    :param record: A book record with at least a ``u`` (acquisition URL) key;
+        ``t`` (title) and ``a`` (author) are used for the manifest when present.
+    :param cache_dir: The application cache root; the book is shelved under
+        ``{cache_dir}/reader/``.
+    :returns: The book's :class:`Manifest`.
+    :raises PdfNoTextError: If the PDF has no extractable text layer.
+    :raises ReaderError: On an encrypted, malformed, or oversized PDF, or a
+        shelving timeout.
+    :raises KavitaError: If the upstream fetch fails outright.
+    """
+    return await _shelve_record(
+        kc, record, cache_dir, spool_cap=MAX_PDF_BYTES, extract=_extract_pdf_shelf
     )
 
 
