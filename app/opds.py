@@ -423,13 +423,10 @@ def _parse_entry(entry_el: Element) -> Entry:
         elif "image" in rel and mtype.startswith("image/"):
             # Generic image link fallback.
             entry.cover_url = entry.cover_url or href
-        else:
-            # A navigable (sub-catalog) link — remember the first atom+xml one,
-            # else the first non-acquisition link.
-            if nav_candidate is None and ("atom+xml" in mtype or rel in ("subsection", "")):
-                nav_candidate = href
-            elif nav_candidate is None:
-                nav_candidate = href
+        elif nav_candidate is None:
+            # First non-acquisition, non-image link becomes the sub-catalog
+            # (navigation) target; any later such link is ignored.
+            nav_candidate = href
 
     if not entry.acquisitions:
         entry.nav_href = nav_candidate
