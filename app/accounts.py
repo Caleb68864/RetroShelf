@@ -69,6 +69,9 @@ _DUMMY_SALT = b"retroshelf/dummy"
 # :class:`app.ids.IdCodec` binds its own version marker.
 _SESSION_PREFIX = "s1"
 _SESSION_MAC_LEN = 16
+
+#: Name of the HttpOnly session cookie carrying the signed session token.
+SESSION_COOKIE = "rs_session"
 # A legitimate session cookie is a few hundred bytes; anything far larger is
 # junk or abuse and is rejected before any crypto work is done.
 _MAX_SESSION_LEN = 4096
