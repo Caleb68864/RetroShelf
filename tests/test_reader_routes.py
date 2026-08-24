@@ -225,15 +225,18 @@ def test_resume_position_survives_a_split_size_change(tmp_path):
 # -- friendly errors -----------------------------------------------------
 
 
-def test_pdf_record_bid_is_friendly_404(tmp_path):
+def test_pdf_record_routes_into_reader(tmp_path):
+    # PDF is now a browser-readable format (text reflow via shelve_pdf_book),
+    # so a PDF record no longer gets a format-404. This shared handler serves
+    # an unparseable PDF body, so shelving yields a friendly reader error (502,
+    # steering to Open PDF/iBooks) rather than the "only EPUB/HTML/PDF" 404.
+    # (Full PDF reflow coverage lives in tests/test_reader_pdf.py.)
     handler, _calls = make_handler(make_epub(chapters=1))
     with make_client(handler, str(tmp_path / "cache")) as client:
         bid = _bid(client, url=PDF_URL, media="application/pdf")
         r = client.get(f"/read/{bid}")
-        assert r.status_code == 404
-        # PDF is not a browser-readable format (unchanged behaviour); the reader
-        # steers to the download path with a friendly message.
-        assert "can be read in the browser" in r.text
+        assert r.status_code == 502
+        assert "iBooks" in r.text
 
 
 def test_drm_fixture_returns_502_reader_error_page(tmp_path):
@@ -327,13 +330,16 @@ def test_book_page_epub_has_read_link_and_first_open_hint(tmp_path):
         assert "first open takes a moment" in r.text
 
 
-def test_book_page_pdf_has_no_read_link(tmp_path):
+def test_book_page_pdf_has_both_read_and_open_pdf(tmp_path):
+    # PDF is a DUAL path: the book page offers BOTH the "Read here" reflow
+    # reader AND the native "Open PDF" download button.
     handler, _calls = make_handler(make_epub(chapters=1))
     with make_client(handler, str(tmp_path / "cache")) as client:
         bid = _bid(client, url=PDF_URL, media="application/pdf")
         r = client.get(f"/book/{bid}")
         assert r.status_code == 200
-        assert "/read/" not in r.text
+        assert f"/read/{bid}" in r.text  # reflow reader button present
+        assert "Open PDF" in r.text       # native download button kept
 
 
 def test_book_and_home_show_continue_reading_after_a_part_view(tmp_path):

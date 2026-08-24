@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} - RetroShelf{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="error">This PDF has no readable text layer &mdash; it is most likely
+scanned page images. It can&rsquo;t be reflowed for in-browser reading.</p>
+{# PDF renders inline, so a separate tab lets you Share -> Copy to Books and
+   keep this page. Mirrors the book page's Open-PDF button. #}
+<p><a class="button big" href="{{ pdf_url }}" target="_blank">Open PDF</a></p>
+<div class="hint">
+  Tap <strong>Open PDF</strong> and wait for it to appear. Then tap the
+  <strong>Share</strong> button and choose <strong>Copy to iBooks</strong> /
+  <strong>Open in Books</strong>.
+</div>
+<p><a class="back" href="{{ back_url }}">Back to the stacks</a></p>
+{% endblock %}

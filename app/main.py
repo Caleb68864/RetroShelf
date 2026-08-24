@@ -48,7 +48,14 @@ from .download import (
 from .download import (
     build_headers as build_download_headers,
 )
-from .errors import BadIdError, KavitaError, ReaderError, RetroShelfError, SsrfError
+from .errors import (
+    BadIdError,
+    KavitaError,
+    PdfNoTextError,
+    ReaderError,
+    RetroShelfError,
+    SsrfError,
+)
 from .ids import IdCodec
 from .kavita import KavitaClient, build_client
 from .opds import OpdsParseError
@@ -67,6 +74,7 @@ from .reader import (
     search_book,
     shelve_book,
     shelve_html_book,
+    shelve_pdf_book,
 )
 from .render import STATIC_DIR, templates
 from .security import access_key_ok, ip_allowed, sanitize_filename
@@ -168,9 +176,10 @@ def _download_record(record: dict, fm: dict) -> dict:
 _BADGES = {"epub": "EPUB", "pdf": "PDF", "html": "HTML", "text": "TEXT"}
 
 # Formats the in-browser reader can open. EPUB shelves via ``shelve_book``;
-# HTML and plain text shelve via ``shelve_html_book``. PDF is never routed here
-# (it keeps its inline / Copy-to-Books behaviour).
-_READER_FORMATS = frozenset({"epub", "html", "text"})
+# HTML and plain text shelve via ``shelve_html_book``; PDF (text reflow) shelves
+# via ``shelve_pdf_book``. PDF is a DUAL path — unlike EPUB/HTML it ALSO keeps
+# its native "Open PDF" inline / Copy-to-Books download button on the book page.
+_READER_FORMATS = frozenset({"epub", "html", "text", "pdf"})
 
 
 def _badge_for(fmt: str | None) -> str:
@@ -189,8 +198,9 @@ def _reader_shelver(record: dict):
 
     Dispatches on :func:`app.download.format_of`: EPUB shelves via
     :func:`app.reader.shelve_book`, HTML/text via
-    :func:`app.reader.shelve_html_book`, and anything else (PDF, unknown) is
-    not readable in the browser and yields ``None``.
+    :func:`app.reader.shelve_html_book`, PDF (text reflow) via
+    :func:`app.reader.shelve_pdf_book`, and any unknown format is not readable
+    in the browser and yields ``None``.
 
     :param record: A decoded book record (its ``m`` media type is inspected).
     :returns: An ``async (kc, record, cache_dir) -> Manifest`` callable, or
@@ -199,6 +209,8 @@ def _reader_shelver(record: dict):
     fmt = format_of(record.get("m", ""))
     if fmt == "epub":
         return shelve_book
+    if fmt == "pdf":
+        return shelve_pdf_book
     if fmt in _READER_FORMATS:  # html / text
         return shelve_html_book
     return None
@@ -1093,8 +1105,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         key = book_key(rec.get("u", ""))
         is_fav = store(request).is_favorite(key)
 
-        # In-browser reader entry point (EPUB + HTML/text; PDFs keep their
-        # existing inline-viewer behaviour and get no reader button). [SS-05]
+        # In-browser reader entry point (EPUB + HTML/text + PDF text-reflow).
+        # PDF is a DUAL path: it gets this "Read here" button AND keeps its
+        # native "Open PDF" download button below (both are rendered). [pdf-reader]
         read_url = None
         read_label = None
         read_hint = False
@@ -1574,6 +1587,42 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             raise BadIdError("Malformed book id")
         return rec
 
+    def _pdf_open_url(request: Request, rec: dict) -> str:
+        """Mint the native ``/download`` URL for *rec*'s PDF (inline Open-PDF).
+
+        Builds the same per-format download id the book page uses so a
+        scanned-PDF fallback can offer the layout-preserving inline view /
+        Copy-to-Books path.
+
+        :param request: The incoming HTTP request (for the id codec).
+        :param rec: The decoded PDF book record.
+        :returns: A ``/download/{did}/{filename}`` path.
+        :rtype: str
+        """
+        fm = {"u": rec.get("u"), "m": rec.get("m")}
+        fid = _record_id(codec(request), _download_record(rec, fm))
+        fname = sanitize_filename(rec.get("t"), "pdf")
+        return f"/download/{fid}/{fname}"
+
+    def _pdf_no_text_response(request: Request, rec: dict) -> Response:
+        """Render the friendly "PDF has no readable text layer" page.
+
+        Shown when a PDF is structurally valid but carries no extractable text
+        (scanned / image-only), so text reflow has nothing to render. Offers
+        the native Open-PDF download instead of a generic reader error. Not a
+        500 and not the "use iBooks" row. [pdf-reader]
+
+        :param request: The incoming HTTP request.
+        :param rec: The decoded PDF book record.
+        :returns: A rendered ``reader_pdf_fallback.html`` response (200).
+        :rtype: Response
+        """
+        return templates.TemplateResponse(request, "reader_pdf_fallback.html", {
+            "title": rec.get("t") or "Untitled",
+            "pdf_url": _pdf_open_url(request, rec),
+            "back_url": _back_to(request),
+        })
+
     def _split_target(request: Request) -> int | None:
         """Return the target part size (in characters) for *request*.
 
@@ -1607,8 +1656,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
         :param request: The incoming HTTP request.
         :param bid: Opaque bridge id that encodes a JSON book record.
-        :returns: ``(record, book_key, manifest)`` on success, or a 404
-            :class:`Response` when the record is not an EPUB.
+        :returns: ``(record, book_key, manifest)`` on success, or a
+            ready-to-return :class:`Response` — a 404 for an unreadable format,
+            or the "no readable text layer" PDF fallback page.
         :rtype: tuple[dict, str, Manifest] or Response
         :raises BadIdError: If *bid* cannot be decoded.
         :raises ReaderError: If the book cannot be shelved.
@@ -1618,12 +1668,19 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if shelver is None:
             return _error_response(
                 request, "Not found",
-                "Only EPUB and HTML books can be read in the browser.", 404
+                "Only EPUB, HTML, and PDF books can be read in the browser.", 404
             )
         key = book_key(rec.get("u", ""))
         manifest = load_manifest(cfg.cache_dir, key)
         if manifest is None:
-            manifest = await shelver(kc(request), rec, cfg.cache_dir)
+            try:
+                manifest = await shelver(kc(request), rec, cfg.cache_dir)
+            except PdfNoTextError:
+                # A scanned / image-only PDF: there is nothing to reflow, but
+                # the native inline "Open PDF" path still works. Render a
+                # tailored page pointing at it rather than a generic reader
+                # error. [pdf-reader]
+                return _pdf_no_text_response(request, rec)
         return rec, key, manifest
 
     @app.get("/read/{bid}")
