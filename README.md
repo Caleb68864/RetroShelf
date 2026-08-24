@@ -81,6 +81,13 @@ every other upstream fetch — each image URL passes the same SSRF guard, so a
 page can never make the bridge reach a foreign host. HTML/text editions have
 no iBooks hand-off, so their book page shows only **Read here**.
 
+**Comics (CBZ) read here too** — Kavita's second-biggest content type. A CBZ is
+a zip of page images; RetroShelf unpacks it, downscales each page to an
+iPad-sized image, and shows one page per screen. Page-turning is the same
+**Prev / Next** as any book, your place is remembered per page, and bookmarks
+work. There's no iBooks hand-off (Books can't import a CBZ), so a comic's book
+page shows only **Read here**. (CBR — the RAR-based variant — is not supported.)
+
 **PDFs read here too, via text reflow** — a PDF's text layer is extracted and
 reflowed into the same reader (chapters come from the PDF's bookmarks/outline
 when it has one). PDF is the one **dual** format: its book page keeps the
@@ -102,10 +109,10 @@ theme switch above) and honors the Large-Print toggle.
 
 To keep the bridge safe against hostile or oversized files, the reader
 enforces hard caps: **80 MB** per EPUB or PDF (**16 MB** per HTML/text
-document), **500 chapters** per book, **5000 pages** per PDF, per-image size
-limits, and a **1 GB** total on-disk reader cache (pruned
-oldest-shelved-book-first). A book over any cap gets a friendly error and,
-where one exists, the iBooks download path instead.
+document, **300 MB** per CBZ comic), **500 chapters** per book, **5000 pages**
+per PDF, **800 pages** per comic, per-image size limits, and a **1 GB** total
+on-disk reader cache (pruned oldest-shelved-book-first). A book over any cap
+gets a friendly error and, where one exists, the iBooks download path instead.
 
 ---
 
