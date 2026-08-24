@@ -51,3 +51,46 @@ def test_unwritable_path_does_not_crash():
     s = Store("/nonexistent-dir-xyz/state.json")
     key = s.add_favorite({"u": "http://x/1.epub", "t": "InMemory"})
     assert s.is_favorite(key)  # still works in memory
+
+
+def test_bookmarks_add_list_dedupe_and_remove(tmp_path):
+    p = str(tmp_path / "s.json")
+    s = Store(p)
+    s.add_bookmark("bk", 2, 5, "Chapter Three")
+    s.add_bookmark("bk", 0, 1, "Chapter One")
+    # Re-bookmarking the same spot updates rather than duplicating.
+    s.add_bookmark("bk", 0, 1, "Chapter One (again)")
+    marks = s.bookmarks("bk")
+    assert [(m["chapter"], m["block"]) for m in marks] == [(0, 1), (2, 5)]  # reading order
+    assert marks[0]["label"] == "Chapter One (again)"
+    assert len(marks) == 2  # not 3
+
+    # Persists across reload.
+    assert [(m["chapter"], m["block"]) for m in Store(p).bookmarks("bk")] == [(0, 1), (2, 5)]
+
+    s.remove_bookmark("bk", 0, 1)
+    assert [(m["chapter"], m["block"]) for m in s.bookmarks("bk")] == [(2, 5)]
+    s.remove_bookmark("bk", 2, 5)  # last one → book entry dropped
+    assert s.bookmarks("bk") == []
+
+
+def test_bookmarks_reject_bad_positions_on_load(tmp_path):
+    import json
+    p = str(tmp_path / "s.json")
+    with open(p, "w") as f:
+        json.dump({"bookmarks": {"bk": [
+            {"chapter": 1, "block": 2, "label": "ok"},
+            {"chapter": -1, "block": 0},          # bad
+            "not a dict",                          # bad
+        ]}}, f)
+    s = Store(p)
+    assert [(m["chapter"], m["block"]) for m in s.bookmarks("bk")] == [(1, 2)]
+
+
+def test_bookmarks_wrong_shape_loads_empty(tmp_path):
+    import json
+    p = str(tmp_path / "s.json")
+    with open(p, "w") as f:
+        json.dump({"bookmarks": "not a dict"}, f)
+    s = Store(p)  # must not raise
+    assert s.bookmarks("anything") == []

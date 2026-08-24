@@ -499,3 +499,51 @@ def test_find_snippet_escapes_hostile_book_text(tmp_path):
         # and the results page carries no book-injected tags.
         assert "<script" not in r.text
         assert "<mark>danger</mark>" in r.text
+
+
+# -- bookmarks (findability) --------------------------------------------------
+
+
+def test_bookmark_add_list_and_remove_flow(tmp_path):
+    handler, _c = make_handler(make_epub(chapters=3))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        t = _token(client)
+        client.get(f"/read/{bid}", follow_redirects=False)  # shelve
+
+        # The reader page offers to bookmark the current page.
+        page = client.get(f"/read/{bid}/1/1")
+        assert "Bookmark this page" in page.text
+
+        # Save a bookmark (state-changing → 303 back to the page).
+        r = client.get(f"/read/{bid}/bookmark?chapter=1&block=0&part=1&t={t}",
+                       follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/read/{bid}/1/1"
+
+        # It now shows as bookmarked, with a count, and appears in the list.
+        page2 = client.get(f"/read/{bid}/1/1")
+        assert "Remove bookmark" in page2.text
+        assert "Bookmarks (1)" in page2.text
+        listing = client.get(f"/read/{bid}/bookmarks")
+        assert listing.status_code == 200
+        assert f"/read/{bid}/1/1" in listing.text
+        assert "remove" in listing.text
+
+        # Remove it from the list.
+        rm = client.get(f"/read/{bid}/unbookmark?chapter=1&block=0&to=list&t={t}",
+                        follow_redirects=False)
+        assert rm.status_code == 303
+        assert rm.headers["location"] == f"/read/{bid}/bookmarks"
+        empty = client.get(f"/read/{bid}/bookmarks")
+        assert "no bookmarks yet" in empty.text
+
+
+def test_bookmark_requires_site_token(tmp_path):
+    handler, _c = make_handler(make_epub(chapters=1))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        client.get(f"/read/{bid}", follow_redirects=False)
+        # No token → refused, and nothing is saved.
+        assert client.get(f"/read/{bid}/bookmark?chapter=0&block=0").status_code == 403
+        assert "no bookmarks yet" in client.get(f"/read/{bid}/bookmarks").text

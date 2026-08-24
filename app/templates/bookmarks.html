@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Bookmarks - {{ book_title }} - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; {{ book_title }} &mdash; Bookmarks</div>
+
+{% if not items %}
+  <p class="muted">[ no bookmarks yet ]</p>
+  <p class="muted">While reading, tap <strong>&#9734; Bookmark this page</strong> to save a spot.</p>
+{% else %}
+<ul class="list bookmarks">
+{% for b in items %}
+  <li class="item">
+    <a class="book" href="{{ b.url }}"><span class="bookmeta"><span class="booktitle">{{ b.label }}</span></span></a>
+    <a class="unstar" href="{{ b.remove_url }}">&#9733; remove</a>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
+<p><a class="back" href="/read/{{ bid }}/0/1">Back to reading</a></p>
+<p><a class="back" href="/book/{{ bid }}">Back to book</a></p>
+{% endblock %}

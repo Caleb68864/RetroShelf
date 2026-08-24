@@ -36,6 +36,11 @@ _MAX_FAVORITES = 2000
 # entries are dropped first.
 _MAX_READING = 100
 
+# Bookmarks: a per-book list of saved spots. Bounded per book and in total
+# against a runaway client. [bookmarks]
+_MAX_BOOKMARK_BOOKS = 200
+_MAX_BOOKMARKS_PER_BOOK = 50
+
 # The only keys a persisted record may carry, and how long each may be. ``u``
 # (the download URL) gets the most room; free text from an upstream summary
 # gets the least.
@@ -143,6 +148,28 @@ def _sanitize_position(entry: dict) -> dict | None:
     return rec
 
 
+def _sanitize_bookmark(entry: dict) -> dict | None:
+    """Validate a persisted bookmark entry (``chapter``/``block``/``label``).
+
+    Applied to both freshly-created and loaded-from-disk entries, so a
+    hand-edited state file can never surface a bad position to the reader.
+
+    :param entry: A raw bookmark value.
+    :returns: A cleaned dict, or ``None`` if the position is unusable.
+    :rtype: dict | None
+    """
+    out: dict = {}
+    for numeric in ("chapter", "block"):
+        value = entry.get(numeric)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+            return None
+        out[numeric] = int(value)
+    out["label"] = _clean_text(entry.get("label"), _FIELD_LIMITS["t"])
+    when = entry.get("when")
+    out["when"] = float(when) if isinstance(when, (int, float)) and not isinstance(when, bool) else 0.0
+    return out
+
+
 class Store:
     """JSON-backed store of favourites (Reading List) and download history."""
 
@@ -150,7 +177,7 @@ class Store:
         """:param path: Filesystem path to the JSON state file."""
         self._path = path
         self._lock = threading.RLock()
-        self._data: dict = {"favorites": {}, "history": [], "reading": {}}
+        self._data: dict = {"favorites": {}, "history": [], "reading": {}, "bookmarks": {}}
         self._load()
 
     # -- persistence ---------------------------------------------------------
@@ -197,6 +224,19 @@ class Store:
                 for k, v in list(reading.items())[:_MAX_READING]
                 if isinstance(v, dict) and (entry := _sanitize_position(v)) is not None
             }
+        bookmarks = data.get("bookmarks")
+        if isinstance(bookmarks, dict):
+            clean_marks: dict = {}
+            for k, v in list(bookmarks.items())[:_MAX_BOOKMARK_BOOKS]:
+                if not isinstance(v, list):
+                    continue
+                entries = [
+                    m for item in v[:_MAX_BOOKMARKS_PER_BOOK]
+                    if isinstance(item, dict) and (m := _sanitize_bookmark(item)) is not None
+                ]
+                if entries:
+                    clean_marks[str(k)] = entries
+            self._data["bookmarks"] = clean_marks
 
     def _quarantine(self, reason: object) -> None:
         """Move an unreadable state file aside so the operator can recover it.
@@ -360,3 +400,62 @@ class Store:
                 self._data["reading"].values(), key=lambda r: r.get("updated", 0), reverse=True
             )
             return ordered[:limit]
+
+    # -- Bookmarks -----------------------------------------------------------
+    def add_bookmark(self, book_key: str, chapter: int, block: int, label: str) -> None:
+        """Save a bookmark at (*chapter*, *block*) for *book_key*.
+
+        Re-bookmarking the same spot refreshes its label and timestamp rather
+        than duplicating it. Per-book and total counts are bounded; the
+        oldest bookmark in a full book is dropped first.
+
+        :param book_key: The book's cache key (:func:`book_key`).
+        :param chapter: 0-based spine chapter index.
+        :param block: 0-based block index within *chapter*.
+        :param label: A short human label (e.g. the chapter title).
+        """
+        with self._lock:
+            marks = self._data["bookmarks"].setdefault(book_key, [])
+            entry = _sanitize_bookmark(
+                {"chapter": chapter, "block": block, "label": label, "when": time.time()}
+            )
+            if entry is None:
+                return
+            marks[:] = [m for m in marks
+                        if not (m["chapter"] == entry["chapter"] and m["block"] == entry["block"])]
+            marks.append(entry)
+            if len(marks) > _MAX_BOOKMARKS_PER_BOOK:
+                marks.sort(key=lambda m: m.get("when", 0))
+                del marks[: len(marks) - _MAX_BOOKMARKS_PER_BOOK]
+            if len(self._data["bookmarks"]) > _MAX_BOOKMARK_BOOKS:
+                # Drop the book whose most-recent bookmark is oldest.
+                oldest = min(
+                    self._data["bookmarks"].items(),
+                    key=lambda kv: max((m.get("when", 0) for m in kv[1]), default=0),
+                )[0]
+                if oldest != book_key:
+                    self._data["bookmarks"].pop(oldest, None)
+            self._save()
+
+    def bookmarks(self, book_key: str) -> list[dict]:
+        """:returns: *book_key*'s bookmarks in reading order (chapter, block)."""
+        with self._lock:
+            marks = self._data["bookmarks"].get(book_key, [])
+            return sorted((dict(m) for m in marks),
+                          key=lambda m: (m["chapter"], m["block"]))
+
+    def remove_bookmark(self, book_key: str, chapter: int, block: int) -> None:
+        """Remove the bookmark at (*chapter*, *block*) for *book_key* (no-op if
+        absent). Drops the book's entry entirely once its last mark is gone."""
+        with self._lock:
+            marks = self._data["bookmarks"].get(book_key)
+            if not marks:
+                return
+            kept = [m for m in marks if not (m["chapter"] == chapter and m["block"] == block)]
+            if len(kept) == len(marks):
+                return
+            if kept:
+                self._data["bookmarks"][book_key] = kept
+            else:
+                self._data["bookmarks"].pop(book_key, None)
+            self._save()

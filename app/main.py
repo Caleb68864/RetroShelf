@@ -1658,6 +1658,89 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "results": results, "min_query": SEARCH_MIN_QUERY,
         })
 
+    @app.get("/read/{bid}/bookmark")
+    async def read_bookmark(request: Request, bid: str,
+                            chapter: int = 0, block: int = 0, part: int = 1) -> Response:
+        """GET ``/read/{bid}/bookmark`` — save a bookmark, then return to the page.
+
+        State-changing, so site-token gated exactly like ``/star`` and
+        ``/prefs``. The bookmark is labelled with the chapter title.
+
+        :param request: The incoming HTTP request.
+        :param bid: Opaque bridge id for the book.
+        :param chapter: 0-based chapter to bookmark.
+        :param block: 0-based first block of the bookmarked part.
+        :returns: A 303 redirect back to the reader, or a 403 without the token.
+        :rtype: Response
+        """
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
+        rec = _decode_book_record(request, bid)
+        if format_of(rec.get("m", "")) != "epub":
+            return _error_response(request, "Not found", "Not an EPUB.", 404)
+        key = book_key(rec.get("u", ""))
+        manifest = load_manifest(cfg.cache_dir, key)
+        if manifest is None:
+            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        chapter = max(0, min(chapter, len(manifest.chapters) - 1))
+        label = manifest.chapters[chapter].title if manifest.chapters else ""
+        store(request).add_bookmark(key, chapter, max(0, block), label)
+        return RedirectResponse(
+            _safe_path(f"/read/{bid}/{chapter}/{max(1, part)}"), status_code=303
+        )
+
+    @app.get("/read/{bid}/unbookmark")
+    async def read_unbookmark(request: Request, bid: str,
+                              chapter: int = 0, block: int = 0, part: int = 1,
+                              to: str = "read") -> Response:
+        """GET ``/read/{bid}/unbookmark`` — remove a bookmark (site-token gated).
+
+        :param to: ``"read"`` to return to the page, ``"list"`` to return to the
+            bookmarks list (used by the remove links there).
+        """
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
+        rec = _decode_book_record(request, bid)
+        key = book_key(rec.get("u", ""))
+        store(request).remove_bookmark(key, max(0, chapter), max(0, block))
+        target = (f"/read/{bid}/bookmarks" if to == "list"
+                  else f"/read/{bid}/{max(0, chapter)}/{max(1, part)}")
+        return RedirectResponse(_safe_path(target), status_code=303)
+
+    @app.get("/read/{bid}/bookmarks", response_class=HTMLResponse)
+    async def read_bookmarks(request: Request, bid: str) -> Response:
+        """GET ``/read/{bid}/bookmarks`` — list the book's saved bookmarks."""
+        rec = _decode_book_record(request, bid)
+        if format_of(rec.get("m", "")) != "epub":
+            return _error_response(
+                request, "Not found", "Only EPUB books can be read in the browser.", 404
+            )
+        key = book_key(rec.get("u", ""))
+        manifest = load_manifest(cfg.cache_dir, key)
+        if manifest is None:
+            manifest = await shelve_book(kc(request), rec, cfg.cache_dir)
+        target = _split_target(request)
+        token = codec(request).site_token
+        parts_cache: dict[int, list[tuple[int, int]]] = {}
+        items = []
+        for mark in store(request).bookmarks(key):
+            ch, blk = mark["chapter"], mark["block"]
+            if ch not in parts_cache:
+                lengths = [len(b) for b in load_chapter(cfg.cache_dir, key, ch)]
+                parts_cache[ch] = parts_for(lengths, target)
+            part = part_containing(blk, parts_cache[ch])
+            items.append({
+                "label": mark.get("label") or (
+                    manifest.chapters[ch].title if ch < len(manifest.chapters) else f"Chapter {ch + 1}"),
+                "url": f"/read/{bid}/{ch}/{part}",
+                "remove_url": f"/read/{bid}/unbookmark?chapter={ch}&block={blk}&to=list&t={token}",
+            })
+        return templates.TemplateResponse(request, "bookmarks.html", {
+            "book_title": manifest.title, "bid": bid, "items": items,
+        })
+
     # Registered before /read/{bid}/{chapter}/{part}: routing is match-order
     # sensitive, and "img" would otherwise be swallowed as a non-numeric
     # {chapter} segment (a 422, not the 404 the image route promises).
@@ -1747,12 +1830,25 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
 
         store(request).set_position(rec, chapter, start, percent_of(manifest, chapter, start))
 
+        marks = store(request).bookmarks(key)
+        already_bookmarked = any(
+            m["chapter"] == chapter and m["block"] == start for m in marks
+        )
+        token = codec(request).site_token
+        base = f"/read/{bid}"
+        mark_verb = "unbookmark" if already_bookmarked else "bookmark"
+        bookmark_url = (
+            f"{base}/{mark_verb}?chapter={chapter}&block={start}&part={part}&t={token}"
+        )
+
         return templates.TemplateResponse(request, "read.html", {
             "book_title": manifest.title, "bid": bid,
             "chapter": chapter, "part": part, "parts_count": len(parts),
             "chapter_title": manifest.chapters[chapter].title,
             "content_html": content_html,
             "prev_url": prev_url, "next_url": next_url,
+            "bookmark_url": bookmark_url, "already_bookmarked": already_bookmarked,
+            "bookmark_count": len(marks),
         })
 
 
