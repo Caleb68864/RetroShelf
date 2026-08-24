@@ -47,6 +47,23 @@
     <a href="/prefs?leading=normal&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Normal ]</a>
     <a href="/prefs?leading=roomy&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Roomy ]</a>
   </p>
+  <p class="readfont">
+    Font:
+    <a href="/prefs?font=serif&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Serif ]</a>
+    <a href="/prefs?font=sans&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Sans ]</a>
+    <a href="/prefs?font=mono&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Mono ]</a>
+  </p>
+  <p class="readalign">
+    Align:
+    <a href="/prefs?align=left&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Left ]</a>
+    <a href="/prefs?align=justify&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Justify ]</a>
+  </p>
+  <p class="readmarg">
+    Margins:
+    <a href="/prefs?margin=narrow&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Narrow ]</a>
+    <a href="/prefs?margin=normal&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Normal ]</a>
+    <a href="/prefs?margin=wide&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Wide ]</a>
+  </p>
   <p class="readmark">
     <a href="{{ bookmark_url }}">{% if already_bookmarked %}&#9733; Remove bookmark{% else %}&#9734; Bookmark this page{% endif %}</a>
     {% if bookmark_count %}<a href="/read/{{ bid }}/bookmarks">[ Bookmarks ({{ bookmark_count }}) ]</a>{% endif %}

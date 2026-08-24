@@ -592,6 +592,40 @@ def test_prefs_phosphor_color_theme():
         assert "color-white" in white
 
 
+def test_prefs_reader_font_sets_body_class():
+    with make_client(make_handler()) as client:
+        # Default (serif) sets no font class.
+        assert "read-font-" not in client.get("/").text
+        sans = client.get(f"/prefs?font=sans&next=/&t={_token(client)}").text
+        assert "read-font-sans" in sans
+        mono = client.get(f"/prefs?font=mono&next=/&t={_token(client)}").text
+        assert "read-font-mono" in mono
+        # A crafted value is rejected — the cookie is not changed, so the last
+        # good value (mono) still stands and no bogus class ever appears.
+        bogus = client.get(f"/prefs?font=comic-sans&next=/&t={_token(client)}").text
+        assert "read-font-mono" in bogus and "comic-sans" not in bogus
+
+
+def test_prefs_reader_align_sets_body_class():
+    with make_client(make_handler()) as client:
+        assert "read-align-" not in client.get("/").text  # default: left
+        just = client.get(f"/prefs?align=justify&next=/&t={_token(client)}").text
+        assert "read-align-justify" in just
+        bogus = client.get(f"/prefs?align=center&next=/&t={_token(client)}").text
+        assert "read-align-justify" in bogus and "read-align-center" not in bogus
+
+
+def test_prefs_reader_margin_sets_body_class():
+    with make_client(make_handler()) as client:
+        assert "read-marg-" not in client.get("/").text  # default: normal
+        narrow = client.get(f"/prefs?margin=narrow&next=/&t={_token(client)}").text
+        assert "read-marg-narrow" in narrow
+        wide = client.get(f"/prefs?margin=wide&next=/&t={_token(client)}").text
+        assert "read-marg-wide" in wide
+        bogus = client.get(f"/prefs?margin=huge&next=/&t={_token(client)}").text
+        assert "read-marg-wide" in bogus and "read-marg-huge" not in bogus
+
+
 def test_more_by_author_link_on_book_detail():
     import re
     with make_client(make_handler()) as client:

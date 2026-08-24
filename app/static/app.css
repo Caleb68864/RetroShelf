@@ -484,6 +484,18 @@ body.read-size-xl .readpage { font-size: 28px; }
 body.read-lead-tight .readpage { line-height: 1.4; }
 body.read-lead-roomy .readpage { line-height: 1.95; }
 
+/* Typography preferences — same cookie→body-class→rule mechanism as size and
+   leading above. Serif font, left alignment, and normal margins are the
+   defaults and carry no class, so an unset cookie is unchanged. Font stacks are
+   all system faces (no bundled asset), so they render on iOS 5/6 Safari too.
+   The reader-phosphor rule below wins on the font-family for that theme, so a
+   font choice applies in the Book theme and the Phosphor CRT look is preserved. */
+body.read-font-sans .readpage { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+body.read-font-mono .readpage { font-family: "Courier New", Courier, "Lucida Console", Monaco, monospace; }
+body.read-align-justify .readpage p { text-align: justify; -webkit-hyphens: auto; hyphens: auto; }
+body.read-marg-narrow .readpage { max-width: 30em; }
+body.read-marg-wide .readpage { max-width: 52em; }
+
 .readfoot { margin-top: 18px; }
 .readnav { margin: 0 0 10px; }
 .readpos { color: #8c8c8c; margin: 0 0 10px; }

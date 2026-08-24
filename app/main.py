@@ -135,6 +135,12 @@ _FORMAT_ORDER = {"EPUB": 0, "PDF": 1}
 # so a crafted ``?size=`` value can never reach the template. [reading-comfort]
 _READER_SIZES = ("s", "m", "l", "xl")
 _READER_LEADINGS = ("tight", "normal", "roomy")
+# Typography preferences (same cookie-driven, no-JS mechanism as size/leading).
+# The default in each set — serif font, left alignment, normal margins — needs
+# no body class, so an unset cookie renders byte-for-byte as before.
+_READER_FONTS = ("serif", "sans", "mono")
+_READER_ALIGNS = ("left", "justify")
+_READER_MARGINS = ("normal", "narrow", "wide")
 
 # Defence-in-depth headers applied to HTML pages only.
 #
@@ -1986,7 +1992,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     @app.get("/prefs")
     async def prefs(request: Request, big: str = "", covers: str = "",
                     color: str = "", split: str = "", reader: str = "",
-                    size: str = "", leading: str = "",
+                    size: str = "", leading: str = "", font: str = "",
+                    align: str = "", margin: str = "",
                     next: str = "/") -> Response:
         """GET ``/prefs`` — toggle display prefs via cookies (no JS, optional).
 
@@ -1996,7 +2003,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         ``split=small|medium|large|whole`` sets the reader's part size;
         ``reader=book|phosphor`` picks the reader's colour theme;
         ``size=s|m|l|xl`` sets the reader's text size;
-        ``leading=tight|normal|roomy`` sets the reader's line spacing.
+        ``leading=tight|normal|roomy`` sets the reader's line spacing;
+        ``font=serif|sans|mono`` sets the reader's typeface;
+        ``align=left|justify`` sets text alignment;
+        ``margin=normal|narrow|wide`` sets the reading column width.
         """
         refusal = _require_site_token(request)
         if refusal is not None:
@@ -2027,6 +2037,12 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             remember("rs_reader_size", size)
         if leading in _READER_LEADINGS:
             remember("rs_reader_leading", leading)
+        if font in _READER_FONTS:
+            remember("rs_reader_font", font)
+        if align in _READER_ALIGNS:
+            remember("rs_reader_align", align)
+        if margin in _READER_MARGINS:
+            remember("rs_reader_margin", margin)
         return resp
 
     @app.get("/health")
