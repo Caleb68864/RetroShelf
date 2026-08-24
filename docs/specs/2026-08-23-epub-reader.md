@@ -340,8 +340,8 @@ depends_on: ['SS-04', 'SS-05']
 - Pillow unavailable → text-only shelving; `img` placeholders dropped.
 - Non-EPUB record on `/read/{bid}` → friendly 404.
 - EPUB with zero readable chapters → `ReaderError` ("no readable content").
-- Stalled upstream during shelve → bounded 120s timeout → `KavitaError` page,
-  never an indefinite hang.
+- Stalled upstream during shelve → bounded 120s timeout → friendly
+  `ReaderError` page (a `RetroShelfError`), never an indefinite hang.
 - Concurrent shelving (two devices, same book) → tmp-dir + rename, last
   rename wins, no corruption; single-process lock as fast path.
 - Book text containing literal `{IMG:0}` → substitution values are benign

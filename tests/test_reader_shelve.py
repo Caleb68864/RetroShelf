@@ -6,6 +6,7 @@ for the fake upstream transport.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import struct
@@ -18,6 +19,7 @@ from PIL import Image
 from app import reader
 from app.errors import ReaderError
 from app.reader import Manifest, load_chapter, load_manifest, prune_reader_cache, shelve_book
+from app.store import book_key
 
 FIXTURE_URL = "https://library.example.test/download/9001/s3cr3t-token/book.epub"
 
@@ -476,3 +478,62 @@ async def test_shelve_invokes_reader_cache_prune(tmp_path, monkeypatch):
     await reader.shelve_book(FakeKC(make_epub(chapters=2)), _record(), cache_dir)
 
     assert seen == [(cache_dir, reader.MAX_READER_CACHE_BYTES)]
+
+
+class _StallingKC:
+    """A Kavita client whose download stalls forever — models a hung upstream."""
+
+    async def open_stream(self, url, *, range_header=None):
+        return _StallingUpstream()
+
+
+class _StallingUpstream:
+    status_code = 200
+    headers = httpx.Headers({})
+
+    async def aiter_raw(self):
+        await asyncio.sleep(30)  # longer than the (patched-tiny) shelve timeout
+        yield b""
+
+    async def aclose(self):
+        pass
+
+
+async def test_stalled_upstream_is_bounded_not_indefinite(tmp_path, monkeypatch):
+    """A hung upstream fails with a friendly, bounded error — never a hang.
+
+    Edge case: "Stalled upstream during shelve → bounded 120s timeout". The
+    timeout is shrunk here so the test is fast; it asserts ``shelve_book``
+    raises a ``RetroShelfError`` (the friendly-page base class) rather than
+    blocking forever.
+    """
+    import app.reader as reader
+    from app.errors import RetroShelfError
+
+    monkeypatch.setattr(reader, "SHELVE_TIMEOUT", 0.1)
+    with pytest.raises(RetroShelfError):
+        await reader.shelve_book(_StallingKC(), _record(), str(tmp_path))
+
+
+async def test_stale_final_dir_is_replaced_not_a_500(tmp_path):
+    """A crashed earlier attempt's leftover dir is recovered, not surfaced raw.
+
+    Edge case: the ``os.rename`` onto a non-empty ``{book_key}`` dir raises
+    ``OSError``; with no valid manifest there (a stale/corrupt leftover, not a
+    live race winner), ``shelve_book`` clears it and retries rather than
+    letting a bare ``OSError`` become a 500.
+    """
+    import app.reader as reader
+
+    cache_dir = str(tmp_path)
+    key = book_key(_record()["u"])
+    stale = os.path.join(cache_dir, "reader", key)
+    os.makedirs(stale)
+    with open(os.path.join(stale, "junk.txt"), "w") as f:
+        f.write("leftover from a crashed shelve")  # non-empty, no manifest.json
+
+    manifest = await reader.shelve_book(FakeKC(make_epub(chapters=2)), _record(), cache_dir)
+
+    assert manifest.chapters  # shelved successfully over the stale dir
+    assert reader.load_manifest(cache_dir, key) is not None
+    assert not os.path.exists(os.path.join(stale, "junk.txt"))  # leftover cleared
