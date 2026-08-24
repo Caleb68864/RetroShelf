@@ -17,6 +17,9 @@ Exception hierarchy
 
     :class:`BadIdError`
         An opaque bridge id was missing, malformed, tampered, or expired.
+
+    :class:`ReaderError`
+        The in-browser EPUB reader could not shelve or serve a book.
 """
 from __future__ import annotations
 
@@ -76,4 +79,16 @@ class BadIdError(RetroShelfError):
     Raised when the application cannot decode or verify an id that was
     previously issued as an opaque token (e.g. a signed download id).
     The client should treat this as a 400 or 404 condition.
+    """
+
+
+class ReaderError(RetroShelfError):
+    """The in-browser EPUB reader could not shelve or serve a book.
+
+    Raised for DRM-protected (``encryption.xml``) content, malformed or
+    oversized EPUBs, a spine that exceeds the item cap, a chapter that
+    exceeds the per-chapter size cap, a book with zero readable chapters,
+    or a stalled upstream during shelving.  The application layer maps
+    this to a friendly error page that steers the operator back to the
+    iBooks download path.
     """
