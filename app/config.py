@@ -288,8 +288,8 @@ def _parse_feeds(e: dict[str, str]) -> list[FeedSource]:
         if not chunk:
             continue
         if "|" in chunk:
-            name, _, url = chunk.partition("|")
-            entries.append((name.strip() or None, url.strip()))
+            label, _, chunk_url = chunk.partition("|")
+            entries.append((label.strip() or None, chunk_url.strip()))
         else:
             entries.append((None, chunk))
 
@@ -450,7 +450,7 @@ class Config:
         if not text:
             return text
         out = text
-        secrets = [f.api_key for f in self.feeds]
+        secrets: list[str | None] = [f.api_key for f in self.feeds]
         secrets += [self.api_key, self.bridge_access_key]
         for secret in secrets:
             if secret and len(secret) >= 8:
@@ -482,16 +482,21 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     function is pure — passing an explicit *env* mapping makes it fully
     testable without touching the process environment.
 
-    Recognised environment variables
-    (all optional unless noted):
+    Recognised environment variables (all optional unless noted; at least
+    one feed — ``KAVITA_OPDS_URL`` and/or ``OPDS_FEEDS`` — is **required**):
 
-    - ``KAVITA_OPDS_URL`` (**required**) — full user-specific OPDS URL.
-    - ``KAVITA_BASE_URL`` — Kavita web base URL; derived if absent.
+    - ``KAVITA_OPDS_URL`` — full user-specific OPDS URL; becomes the
+      primary feed.
+    - ``KAVITA_FEED_NAME`` — portal name for that feed; default ``Library``.
+    - ``OPDS_FEEDS`` — comma/newline-separated ``Name|URL`` (or bare URL)
+      entries for additional libraries in the portal menu.
+    - ``KAVITA_BASE_URL`` — Kavita web base URL; derived if absent, and must
+      share the primary feed's origin when given.
     - ``APP_PORT`` — bridge listen port (default ``8099``).
     - ``BRIDGE_PUBLIC_URL`` — public base URL of this bridge.
     - ``BRIDGE_ACCESS_KEY`` — shared secret for incoming requests.
     - ``BRIDGE_ID_SECRET`` — secret for opaque identifier signing.
-    - ``ALLOWED_IPS`` — comma-separated IP allow-list.
+    - ``ALLOWED_IPS`` — comma-separated IP/CIDR allow-list.
     - ``SHOW_COVERS`` — bool; default ``true``.
     - ``CACHE_FEEDS_SECONDS`` — int TTL; default ``300``.
     - ``CACHE_BOOKS`` — bool; default ``false``.
@@ -504,6 +509,11 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     - ``EXTRA_UPSTREAM_ORIGINS`` — comma-separated extra SSRF-allowed
       origins.
     - ``UPSTREAM_USER_AGENT`` — override User-Agent for upstream fetches.
+    - ``STATE_DIR`` — directory for the Reading List / history JSON;
+      default ``/config``.
+    - ``CACHE_DIR`` — cover disk-cache root; default ``/cache``.
+    - ``COVER_MAX_EDGE`` / ``COVER_JPEG_QUALITY`` — cover transcode bounds;
+      defaults ``320`` / ``80``.
 
     :param env: Explicit environment mapping to use instead of
         ``os.environ``. Pass a plain ``dict`` in tests to keep them

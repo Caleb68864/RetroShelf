@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import book_item with context %}
 {% block title %}RetroShelf{% endblock %}
 {% block content %}
 <h1>Main Menu</h1>
@@ -40,14 +41,7 @@
 <div class="sectionhead">&gt;&gt; Recently sent to iBooks</div>
 <ul class="list">
 {% for e in recent %}
-  <li class="item"><a class="book" href="{{ e.detail_url }}">
-    <span class="bookmeta">
-      <span class="booktitle">{{ e.title }}</span>
-      {% if e.author %}<span class="author">{{ e.author }}</span>{% endif %}
-      <span class="badge badge-{{ e.badge|lower }}">{{ e.badge }}</span>
-      <span class="done">sent</span>
-    </span>
-  </a></li>
+  <li class="item">{{ book_item(e) }}</li>
 {% endfor %}
 </ul>
 {% endif %}

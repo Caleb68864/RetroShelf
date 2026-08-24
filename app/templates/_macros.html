@@ -1,0 +1,27 @@
+{# Shared book/navigation row markup. One definition instead of four copies in
+   feed/home/list/search, so a change to how a book renders lands everywhere.
+   Imported "with context" because cover visibility reads the rs_covers cookie.
+   Plain <a> + <span> only — this must render on iOS 5 Safari. #}
+
+{% macro book_item(e) %}
+  <a class="book" href="{{ e.detail_url }}">
+    {% if e.cover_url and request.cookies.get('rs_covers') != '0' %}<img class="cover" src="{{ e.cover_url }}" alt="">{% endif %}
+    <span class="bookmeta">
+      <span class="booktitle">{{ e.title }}</span>
+      {% if e.author %}<span class="author">{{ e.author }}</span>{% endif %}
+      {% if e.badge %}<span class="badge badge-{{ e.badge|lower }}">{{ e.badge }}</span>{% endif %}
+      {% if e.feed_name %}<span class="from">{{ e.feed_name }}</span>{% endif %}
+      {% if e.downloaded %}<span class="done">sent</span>{% endif %}
+    </span>
+  </a>
+{%- endmacro %}
+
+{% macro entry_item(e) %}
+  <li class="item">
+    {% if e.is_nav %}
+      <a class="navlink" href="{{ e.href }}"><span class="prompt">&gt;&gt;</span>{{ e.title }}</a>
+    {% else %}
+      {{ book_item(e) }}
+    {% endif %}
+  </li>
+{%- endmacro %}

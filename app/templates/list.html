@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import book_item with context %}
 {% block title %}Reading List - RetroShelf{% endblock %}
 {% block content %}
 <div class="sectionhead">&gt;&gt; My Reading List</div>
@@ -11,15 +12,7 @@
 <ul class="list">
 {% for e in items %}
   <li class="item">
-    <a class="book" href="{{ e.detail_url }}">
-      {% if e.cover_url and request.cookies.get('rs_covers') != '0' %}<img class="cover" src="{{ e.cover_url }}" alt="">{% endif %}
-      <span class="bookmeta">
-        <span class="booktitle">{{ e.title }}</span>
-        {% if e.author %}<span class="author">{{ e.author }}</span>{% endif %}
-        <span class="badge badge-{{ e.badge|lower }}">{{ e.badge }}</span>
-        {% if e.feed_name %}<span class="from">{{ e.feed_name }}</span>{% endif %}
-      </span>
-    </a>
+    {{ book_item(e) }}
     <a class="unstar" href="{{ e.unstar_url }}?t={{ site_token(request) }}">&#9733; remove</a>
   </li>
 {% endfor %}

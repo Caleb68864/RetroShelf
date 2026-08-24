@@ -26,7 +26,6 @@ import httpx
 from .config import Config, ConfigError, origin_tuple, registrable_domain
 from .errors import KavitaError, SsrfError
 
-
 # A modern desktop-Safari User-Agent. Some public OPDS servers (e.g. ones behind
 # Cloudflare) reject requests without a browser-like UA; Kavita doesn't care.
 DEFAULT_USER_AGENT = (

@@ -1,14 +1,12 @@
 """Tests for app.render + templates + CSS — old-Safari safety + correct links."""
 import re
+from types import SimpleNamespace
 
 import pytest
 
-from app.render import templates, TEMPLATES_DIR, STATIC_DIR
+from app.render import STATIC_DIR, TEMPLATES_DIR, templates
 
 CSS = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-
-
-from types import SimpleNamespace
 
 # Templates read request.cookies / request.url.path; supply a minimal stand-in.
 _FAKE_REQUEST = SimpleNamespace(cookies={}, url=SimpleNamespace(path="/"))

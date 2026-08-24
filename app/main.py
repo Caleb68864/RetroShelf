@@ -15,19 +15,31 @@ import asyncio
 import gzip
 import json
 import logging
+import random
 import time
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 
-from . import opds
+from . import __version__, opds
 from .config import Config, ConfigError, load_config, origin_tuple
 from .download import (
-    EPUB_MIME, PDF_MIME, build_headers as build_download_headers,
-    format_of, stream_cover, stream_download,
+    EPUB_MIME,
+    PDF_MIME,
+    format_of,
+    stream_cover,
+    stream_download,
+)
+from .download import (
+    build_headers as build_download_headers,
 )
 from .errors import BadIdError, KavitaError, RetroShelfError, SsrfError
 from .ids import IdCodec
@@ -84,6 +96,44 @@ _HTML_SECURITY_HEADERS = {
 }
 
 
+# The metadata keys a book record carries through a bridge id. Projection onto
+# this set keeps tokens short: a stored record's bookkeeping fields (``key``,
+# ``added``, ``when``, ``feed_name``) never ride along in a URL.
+_RECORD_KEYS = ("u", "m", "t", "a", "s", "c")
+
+
+def _record_id(codec: IdCodec, record: dict) -> str:
+    """Encode a book record as the opaque id behind ``/book/{bid}``.
+
+    Includes per-format download info (``fmts``) when the record has it, so a
+    book opened from the Reading List or the "recently sent" shelf offers the
+    same download buttons as one opened from a feed.
+
+    :param codec: The application id codec.
+    :param record: A book view-record (from a feed or the store).
+    :returns: An opaque token safe for a URL path segment.
+    :rtype: str
+    """
+    slim: dict = {k: record.get(k) for k in _RECORD_KEYS}
+    if record.get("fmts"):
+        slim["fmts"] = record["fmts"]
+    return codec.encode(json.dumps(slim, separators=(",", ":")))
+
+
+def _download_record(record: dict, fm: dict) -> dict:
+    """Return the single-format record encoded into a ``/download/{did}`` id.
+
+    Combines one format's URL/MIME with the book's display metadata, so the
+    download history can show a title even for ids minted per-format.
+
+    :param record: The full book record.
+    :param fm: One entry of the record's ``fmts`` list.
+    :rtype: dict
+    """
+    return {"u": fm["u"], "m": fm.get("m"), "t": record.get("t"),
+            "a": record.get("a"), "s": record.get("s"), "c": record.get("c")}
+
+
 def _sorted_page(entries: list[dict], sort: str) -> list[dict]:
     """Return *entries* with book entries stably reordered by *sort*.
 
@@ -106,7 +156,7 @@ def _sorted_page(entries: list[dict], sort: str) -> list[dict]:
         books = sorted(books, key=lambda e: ((e.get("author") or "") == "",
                                              (e.get("author") or "").casefold()))
     else:  # "format" — group EPUB before PDF, then by title
-        books = sorted(books, key=lambda e: (_FORMAT_ORDER.get(e.get("badge"), 2),
+        books = sorted(books, key=lambda e: (_FORMAT_ORDER.get(e.get("badge") or "", 2),
                                              (e.get("title") or "").casefold()))
     return navs + books
 
@@ -273,7 +323,19 @@ async def lifespan(app: FastAPI):
     app.state.store = Store(cfg.state_path)  # Reading List + download history
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
     _install_mask_filter(cfg)
-    log.info("RetroShelf started; proxying %s", cfg.mask(cfg.kavita_origin))
+    # One triage line an operator can read at a glance: what is being fronted
+    # and which optional protections are actually active in this deployment.
+    log.info(
+        "RetroShelf %s started: %d feed(s) [%s]; access key %s; IP allowlist %s; "
+        "id secret %s; state=%s cache=%s",
+        __version__, len(cfg.feeds),
+        ", ".join(f"{f.name} @ {f.origin}" for f in cfg.feeds),
+        "on" if cfg.bridge_access_key else "off",
+        f"on ({len(cfg.allowed_ips)} rule{'s' if len(cfg.allowed_ips) != 1 else ''})"
+        if cfg.allowed_ips else "off",
+        "stable" if (cfg.bridge_id_secret or cfg.bridge_access_key) else "ephemeral",
+        cfg.state_dir, cfg.cache_dir,
+    )
     try:
         yield
     finally:
@@ -322,6 +384,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         if not any(path.startswith(p) for p in _OPEN_PREFIXES):
             client_ip = request.client.host if request.client else None
             if not ip_allowed(client_ip, cfg.allowed_ips):
+                log.info("denied %s from %s: not in ALLOWED_IPS", path, client_ip)
                 return _error_response(request, "Forbidden", "This bridge is restricted to the local network.", 403)
             query_key = request.query_params.get("key")
             # The key may arrive three ways: in the URL (how you first open the
@@ -334,6 +397,8 @@ def create_app(config: Config | None = None) -> FastAPI:
                         or request.headers.get("x-access-key")
                         or request.cookies.get(_KEY_COOKIE))
             if not access_key_ok(provided, cfg.bridge_access_key):
+                log.info("denied %s from %s: missing or wrong access key",
+                         path, client_ip)
                 return _error_response(
                     request, "Access key required",
                     "Append ?key=YOURKEY to the address once; "
@@ -432,22 +497,31 @@ def create_app(config: Config | None = None) -> FastAPI:
     return app
 
 
+# One row per failure mode: (exception type, HTTP status, page heading,
+# user-facing message). First match wins, so subclasses must precede their
+# bases. Every message is complete and secret-free on its own — this table is
+# the only place the two lookups below can drift apart, so they can't.
+_ERROR_TABLE: tuple[tuple[type[Exception], int, str, str], ...] = (
+    (BadIdError, 404, "Not found", "That link is not valid or has expired."),
+    (SsrfError, 400, "Bad request", "That request was refused for safety."),
+    (KavitaError, 502, "Library unavailable",
+     "Could not reach your Kavita library. Check that it is running."),
+    (OpdsParseError, 502, "Library unavailable", "Could not read the library feed."),
+)
+_ERROR_DEFAULT = (500, "Something went wrong", "Please try again.")
+
+
 def _status_for(exc: Exception) -> tuple[int, str]:
-    """Return the HTTP status code and a short human-readable heading for *exc*.
+    """Return the HTTP status code and page heading for *exc*.
 
     :param exc: The exception to classify.
-    :type exc: Exception
-    :returns: A 2-tuple of ``(status_code, heading)`` where *status_code* is
-        the integer HTTP status and *heading* is a brief title string.
+    :returns: ``(status_code, heading)``.
     :rtype: tuple[int, str]
     """
-    if isinstance(exc, BadIdError):
-        return 404, "Not found"
-    if isinstance(exc, SsrfError):
-        return 400, "Bad request"
-    if isinstance(exc, (KavitaError, OpdsParseError)):
-        return 502, "Library unavailable"
-    return 500, "Something went wrong"
+    for exc_type, status, heading, _message in _ERROR_TABLE:
+        if isinstance(exc, exc_type):
+            return status, heading
+    return _ERROR_DEFAULT[0], _ERROR_DEFAULT[1]
 
 
 def _friendly_message(exc: Exception) -> str:
@@ -457,19 +531,13 @@ def _friendly_message(exc: Exception) -> str:
     Used by :func:`create_app` exception handlers when debug mode is off.
 
     :param exc: The exception to describe.
-    :type exc: Exception
-    :returns: A short string suitable for display in the browser error page.
+    :returns: A short string suitable for the browser error page.
     :rtype: str
     """
-    if isinstance(exc, BadIdError):
-        return "That link is not valid or has expired."
-    if isinstance(exc, SsrfError):
-        return "That request was refused for safety."
-    if isinstance(exc, KavitaError):
-        return "Could not reach your Kavita library. Check that it is running."
-    if isinstance(exc, OpdsParseError):
-        return "Could not read the library feed."
-    return "Please try again."
+    for exc_type, _status, _heading, message in _ERROR_TABLE:
+        if isinstance(exc, exc_type):
+            return message
+    return _ERROR_DEFAULT[2]
 
 
 def _error_response(request: Request, heading: str, message: str, status: int) -> Response:
@@ -593,18 +661,18 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 except SsrfError:
                     continue
                 fmts.append({"u": furl, "m": a.media_type, "f": fmt, "len": a.length})
-            record = json.dumps({
+            bid = _record_id(ids, {
                 "u": acq_url, "m": acq.media_type, "t": e.title, "a": e.author,
                 "s": e.summary, "c": cover_abs, "fmts": fmts,
-            }, separators=(",", ":"))
+            })
             entries.append({
                 "is_nav": False,
                 "title": (e.title or "").strip() or "Untitled",
                 "author": e.author,
                 "badge": badge,
-                "detail_url": f"/book/{ids.encode(record)}",
+                "detail_url": f"/book/{bid}",
                 "cover_url": cover_bridge,
-                "downloaded": bool(downloaded) and book_key(acq_url) in downloaded,
+                "downloaded": downloaded is not None and book_key(acq_url) in downloaded,
             })
         return entries
 
@@ -675,6 +743,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if cache is None:
             cache = {}
             request.app.state.search_templates = cache
+        key: tuple[str, str, int] | str
         try:
             key = origin_tuple(feed_url)
         except Exception:  # noqa: BLE001
@@ -727,7 +796,6 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """GET ``/random`` — "Surprise Me": a budgeted random walk into the
         libraries that jumps to a random book. Tolerant of dead-ends/404s — it
         skips a failed branch and tries others rather than giving up."""
-        import random
         sources = list(cfg.feeds)
         random.shuffle(sources)
         visited: set[str] = set()
@@ -751,11 +819,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 books = [e for e in vm if not e["is_nav"]]
                 if books:
                     return RedirectResponse(random.choice(books)["detail_url"], status_code=303)
-                for nav in vm:
-                    if nav["is_nav"]:
+                # Grow the frontier from the parsed feed directly — encoding a
+                # nav href into a bridge id only to decode it again is wasted
+                # crypto on a hot loop.
+                for entry in parsed.entries:
+                    if entry.is_navigation and entry.nav_href:
                         try:
-                            frontier.append(kc(request).resolve_url(
-                                codec(request).decode(nav["href"].split("/feed/", 1)[1])))
+                            frontier.append(kc(request).resolve_url(entry.nav_href, base=url))
                         except RetroShelfError:
                             continue
         return _error_response(request, "No luck",
@@ -782,21 +852,21 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             await kc(request).fetch_feed(primary.url)
         except RetroShelfError as exc:
             kavita_ok, detail = False, _friendly_message(exc)
-        # Build the portal menu: one entry per configured feed.
-        menu = []
-        for f in cfg.feeds:
-            fid = codec(request).encode(kc(request).resolve_url(f.url))
-            menu.append({"name": f.name, "url": f"/feed/{fid}"})
-        primary_id = codec(request).encode(kc(request).resolve_url(primary.url))
+        # Build the portal menu: one entry per configured feed, each URL
+        # resolved and encoded exactly once.
+        feed_ids = [codec(request).encode(kc(request).resolve_url(f.url)) for f in cfg.feeds]
+        menu = [{"name": f.name, "url": f"/feed/{fid}"}
+                for f, fid in zip(cfg.feeds, feed_ids)]
+        primary_id = feed_ids[0]
         multi = len(cfg.feeds) > 1
         # "Recently sent to iBooks" shelf + Reading List count.
         recent = []
         for rec in store(request).recent_downloads(8):
-            bid = codec(request).encode(json.dumps(
-                {k: rec.get(k) for k in ("u", "m", "t", "a", "s", "c")}, separators=(",", ":")))
+            bid = _record_id(codec(request), rec)
             fmt = format_of(rec.get("m", "")) or "epub"
             recent.append({"title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
-                           "badge": "EPUB" if fmt == "epub" else "PDF", "detail_url": f"/book/{bid}"})
+                           "badge": "EPUB" if fmt == "epub" else "PDF",
+                           "detail_url": f"/book/{bid}", "downloaded": True})
         return templates.TemplateResponse(request, "home.html", {
             "kavita_ok": kavita_ok, "status_detail": detail,
             "feeds": menu, "multi": multi,
@@ -888,9 +958,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         downloads = []
         for fm in fmts:
             ext = "pdf" if fm.get("f") == "pdf" else "epub"
-            frec = {"u": fm["u"], "m": fm.get("m"), "t": rec.get("t"),
-                    "a": rec.get("a"), "s": rec.get("s"), "c": rec.get("c")}
-            fid = codec(request).encode(json.dumps(frec, separators=(",", ":")))
+            fid = _record_id(codec(request), _download_record(rec, fm))
             fname = sanitize_filename(rec.get("t"), ext)
             downloads.append({
                 "badge": ext.upper(),
@@ -940,6 +1008,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         multi = len(cfg.feeds) > 1
         # ``feed == "*"`` means fan out across every configured library.
         fan_out = feed == "*" and multi
+        # One history snapshot for the whole request; the fan-out groups run
+        # concurrently and must not each re-read (and re-lock) the store.
+        downloaded = store(request).downloaded_keys()
 
         async def _search_one(source) -> dict:
             """Search one library; never raises — failures become error groups."""
@@ -947,7 +1018,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 su = await _resolve_search_url(request, q, source.url)
                 body = await kc(request).fetch_feed(su)
                 ents = _to_view_model(opds.parse(body), codec(request), kc(request),
-                                      base_url=source.url, downloaded=store(request).downloaded_keys())
+                                      base_url=source.url, downloaded=downloaded)
                 return {"name": source.name, "entries": ents, "error": False}
             except RetroShelfError as exc:
                 log.info("search failed in %r for %r: %s", source.name, q, cfg.mask(str(exc)))
@@ -995,8 +1066,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """GET ``/list`` — the cross-library Reading List of starred books."""
         items = []
         for rec in store(request).favorites():
-            bid = codec(request).encode(json.dumps(
-                {k: rec.get(k) for k in ("u", "m", "t", "a", "s", "c")}, separators=(",", ":")))
+            bid = _record_id(codec(request), rec)
             fmt = format_of(rec.get("m", "")) or "epub"
             items.append({
                 "title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
@@ -1093,9 +1163,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 if not fm.get("u"):
                     continue
                 ext = "pdf" if fm.get("f") == "pdf" else "epub"
-                frec = {"u": fm["u"], "m": fm.get("m"), "t": rec.get("t"),
-                        "a": rec.get("a"), "s": rec.get("s"), "c": rec.get("c")}
-                did = codec(request).encode(json.dumps(frec, separators=(",", ":")))
+                did = _record_id(codec(request), _download_record(rec, fm))
                 fname = sanitize_filename(rec.get("t"), ext)
                 mime = fm.get("m") or ("application/epub+zip" if ext == "epub" else "application/pdf")
                 acqs.append({"type": mime, "href": f"{base}/download/{did}/{fname}{ks}"})
@@ -1338,7 +1406,6 @@ def _back_to(request: Request, default: str = "/") -> str:
     :returns: A relative path such as ``/feed/<id>`` or *default*.
     :rtype: str
     """
-    from urllib.parse import urlsplit
     ref = request.headers.get("referer", "")
     if ref:
         rp = urlsplit(ref)
@@ -1372,7 +1439,6 @@ def _basename(url: str) -> str:
         full path if it contains no ``/``.
     :rtype: str
     """
-    from urllib.parse import urlsplit
     path = urlsplit(url).path
     return path.rsplit("/", 1)[-1] if "/" in path else path
 

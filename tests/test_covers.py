@@ -14,7 +14,6 @@ import io
 import os
 
 import httpx
-import pytest
 
 from PIL import Image
 

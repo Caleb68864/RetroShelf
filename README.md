@@ -246,6 +246,26 @@ put it behind a reverse proxy with HTTPS and authentication, and/or set `BRIDGE_
 and `ALLOWED_IPS`. The IP allowlist uses the direct socket address and is **not** aware of
 `X-Forwarded-For`, so it only works for direct-LAN access, not behind a proxy.
 
+What the bridge does on its own, with nothing configured:
+
+- **SSRF guard** — every upstream URL (including ones decoded from bridge ids)
+  must match a configured feed origin, a same-site sibling of one, or
+  `EXTRA_UPSTREAM_ORIGINS`; non-HTTP schemes, credentials-in-URL, private-IP
+  literals via the sibling rule, and redirect hops are all checked.
+- **Opaque ids** — every URL the iPad sees is an authenticated, encrypted
+  token; the Kavita apiKey never appears in a page, link, log line, or cache
+  filename. Set `BRIDGE_ID_SECRET` so tokens survive restarts.
+- **Bounded everything** — feed size/time, cover size and decode pixels, OPDS
+  entry counts and field lengths, state-file fields, and the cover disk cache
+  all have hard caps, so one hostile or broken catalogue cannot take the
+  bridge down.
+- **State-change links** (`/star`, `/unstar`, `/prefs`) carry a same-site
+  token, so another page on your LAN cannot trigger them with an `<img>` tag.
+- **Secret-masking logs** — access keys and apiKeys are redacted from every
+  log record, including uvicorn's access log.
+- The Docker deployment runs read-only, as uid 1000, with all capabilities
+  dropped.
+
 ---
 
 ## Development

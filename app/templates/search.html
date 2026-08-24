@@ -1,23 +1,6 @@
 {% extends "base.html" %}
+{% from "_macros.html" import entry_item with context %}
 {% block title %}Search - RetroShelf{% endblock %}
-
-{% macro book_item(e) %}
-  <li class="item">
-    {% if e.is_nav %}
-      <a class="navlink" href="{{ e.href }}"><span class="prompt">&gt;&gt;</span>{{ e.title }}</a>
-    {% else %}
-      <a class="book" href="{{ e.detail_url }}">
-        {% if e.cover_url and request.cookies.get('rs_covers') != '0' %}<img class="cover" src="{{ e.cover_url }}" alt="">{% endif %}
-        <span class="bookmeta">
-          <span class="booktitle">{{ e.title }}</span>
-          {% if e.author %}<span class="author">{{ e.author }}</span>{% endif %}
-          {% if e.badge %}<span class="badge badge-{{ e.badge|lower }}">{{ e.badge }}</span>{% endif %}
-          {% if e.downloaded %}<span class="done">sent</span>{% endif %}
-        </span>
-      </a>
-    {% endif %}
-  </li>
-{% endmacro %}
 
 {% block content %}
 <h1>Search</h1>
@@ -42,7 +25,7 @@
       {% elif g.entries %}
         <div class="sectionhead">&gt;&gt; {{ g.name }} &mdash; {{ g.entries|length }} found</div>
         <ul class="list">
-        {% for e in g.entries %}{{ book_item(e) }}{% endfor %}
+        {% for e in g.entries %}{{ entry_item(e) }}{% endfor %}
         </ul>
       {% endif %}
     {% endfor %}
@@ -55,12 +38,14 @@
       <p class="muted">Search is unavailable right now. Try browsing the library instead.</p>
     {% elif g and g.entries %}
       <ul class="list">
-      {% for e in g.entries %}{{ book_item(e) }}{% endfor %}
+      {% for e in g.entries %}{{ entry_item(e) }}{% endfor %}
       </ul>
     {% else %}
       <p class="muted">No results for &ldquo;{{ query }}&rdquo;.</p>
     {% endif %}
   {% endif %}
+{% else %}
+  <p class="muted">Type a title or author and press Search.</p>
 {% endif %}
 
 <p><a class="back" href="/">Main Menu</a></p>

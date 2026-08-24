@@ -6,6 +6,14 @@ URLs (``/download/{id}/...``, ``/feed/{id}``, ``/cover/{id}``). The token is
 so a user who sees the id in their address bar cannot recover the apiKey it
 encodes, and a forged/tampered id is rejected.
 
+Two wire formats coexist:
+
+- **v2** (``2.<body>.<mac>``) — what :meth:`IdCodec.encode` issues: 12-byte
+  nonce, 128-bit truncated MAC, separate derived keys for encryption and
+  authentication, version marker bound into the MAC. [SS-11]
+- **v1** (``<body>.<mac>``) — legacy; still decoded so links bookmarked on an
+  iPad home screen before the upgrade keep working, never issued any more.
+
 Stdlib only (no ``cryptography`` dependency). The secret is stable across
 restarts when ``BRIDGE_ID_SECRET`` is set, so bookmarked links keep working.
 [M-2]

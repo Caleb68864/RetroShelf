@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import entry_item with context %}
 {% block title %}{{ feed_title }} - RetroShelf{% endblock %}
 {% block content %}
 <div class="sectionhead">&gt;&gt; {{ feed_title }}</div>
@@ -27,29 +28,16 @@
 {% endif %}
 
 <ul class="list">
-{% for e in entries %}
-  <li class="item">
-    {% if e.is_nav %}
-      <a class="navlink" href="{{ e.href }}"><span class="prompt">&gt;&gt;</span>{{ e.title }}</a>
-    {% else %}
-      <a class="book" href="{{ e.detail_url }}">
-        {% if e.cover_url and request.cookies.get('rs_covers') != '0' %}<img class="cover" src="{{ e.cover_url }}" alt="">{% endif %}
-        <span class="bookmeta">
-          <span class="booktitle">{{ e.title }}</span>
-          {% if e.author %}<span class="author">{{ e.author }}</span>{% endif %}
-          {% if e.badge %}<span class="badge badge-{{ e.badge|lower }}">{{ e.badge }}</span>{% endif %}
-          {% if e.downloaded %}<span class="done">sent</span>{% endif %}
-        </span>
-      </a>
-    {% endif %}
-  </li>
+{% for e in entries %}{{ entry_item(e) }}
 {% endfor %}
 </ul>
 
+{% if prev_url or next_url %}
 <div class="pager">
   {% if prev_url %}<a class="button small" href="{{ prev_url }}">&laquo; Prev</a>{% endif %}
   {% if next_url %}<a class="button small" href="{{ next_url }}">Next &raquo;</a>{% endif %}
 </div>
+{% endif %}
 
 <p><a class="back" href="/">Main Menu</a></p>
 {% endblock %}

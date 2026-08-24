@@ -24,7 +24,7 @@ def sanitize_filename(name: str | None, ext: str) -> str:
     ASCII via NFKD normalisation; collapses any remaining unsafe characters to
     ``_``; and guarantees a single correct extension. The result is truncated
     to 120 characters (before the extension) and is never empty or a
-    path-traversal sequence. [C-? / SS-04]
+    path-traversal sequence. [SS-04]
 
     :param name: Raw filename supplied by the caller (e.g. from a
         ``Content-Disposition`` header). ``None`` or an empty string falls

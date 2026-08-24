@@ -13,7 +13,7 @@ Exception hierarchy
         Non-2xx, timeout, or connection error from the upstream Kavita API.
 
     :class:`SsrfError`
-        A URL did not resolve to the configured Kavita origin.
+        A URL was refused by the SSRF guard (bad origin or hostile shape).
 
     :class:`BadIdError`
         An opaque bridge id was missing, malformed, tampered, or expired.
@@ -56,11 +56,13 @@ class KavitaError(RetroShelfError):
 
 
 class SsrfError(RetroShelfError):
-    """A URL did not resolve to the configured Kavita origin and was refused.
+    """A URL was refused by the SSRF guard.
 
-    Raised by the URL-validation layer when a supplied URL's scheme, host,
-    or port does not match the configured Kavita origin (``KAVITA_OPDS_URL``), preventing
-    server-side request forgery attacks.
+    Raised by the URL-validation layer when a supplied URL is not an allowed
+    origin (any configured feed, a same-site sibling of one, or an entry in
+    ``EXTRA_UPSTREAM_ORIGINS``) — or when its *shape* is hostile: a non-HTTP
+    scheme, embedded credentials, control characters, a protocol-relative or
+    backslash form, or an oversized href.
     """
 
 

@@ -5,4 +5,4 @@ library and streams EPUB/PDF to Safari with the exact headers iOS needs to hand
 a file to iBooks / Apple Books.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

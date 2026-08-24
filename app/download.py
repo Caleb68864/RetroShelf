@@ -373,7 +373,7 @@ async def stream_cover(
 
     if _PIL_AVAILABLE:
         try:
-            img = _PILImage.open(io.BytesIO(raw_bytes))
+            img: _PILImage.Image = _PILImage.open(io.BytesIO(raw_bytes))
             fmt = img.format or ""
             w, h = img.size
             if fmt in _PASSTHROUGH_FORMATS and max(w, h) <= cover_max_edge:
@@ -383,7 +383,7 @@ async def stream_cover(
                     ratio = cover_max_edge / max(w, h)
                     new_w = max(1, int(w * ratio))
                     new_h = max(1, int(h * ratio))
-                    img = img.resize((new_w, new_h), _PILImage.LANCZOS)
+                    img = img.resize((new_w, new_h), _PILImage.Resampling.LANCZOS)
                 if img.mode not in ("RGB", "L"):
                     img = img.convert("RGB")
                 buf = io.BytesIO()
