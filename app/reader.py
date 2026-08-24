@@ -536,6 +536,12 @@ class Manifest:
         ``(depth, title, chapter_index)`` triples in reading order. Empty when
         the book has no nav/NCX (the reader then falls back to the flat
         spine-chapter list). [book-fidelity]
+    :ivar kind: What the shelved item *is*, so the reader can tailor its chrome
+        without re-parsing anything: ``"book"`` (the default — EPUB/HTML/PDF
+        prose, page-turning by reading-length part) or ``"comic"`` (a CBZ, one
+        image page per chapter, page-turning by whole page). Additive and
+        back-compatible: a manifest written before this field existed loads as
+        ``"book"``. [cbz-reader]
     """
 
     version: int
@@ -547,6 +553,7 @@ class Manifest:
     total_chars: int
     created: float
     toc: list[tuple[int, str, int]] = field(default_factory=list)
+    kind: str = "book"
 
 
 class _UnpackBudget:
@@ -1105,6 +1112,7 @@ def _manifest_to_dict(manifest: Manifest) -> dict:
         "total_chars": manifest.total_chars,
         "created": manifest.created,
         "toc": [[d, t, i] for d, t, i in manifest.toc],
+        "kind": manifest.kind,
     }
 
 
@@ -1137,6 +1145,10 @@ def _manifest_from_dict(data: dict) -> Manifest:
             for row in data.get("toc", [])
             if isinstance(row, (list, tuple)) and len(row) == 3
         ],
+        # ``kind`` is additive: a manifest written before comics existed has no
+        # ``kind`` and MUST load as an ordinary book, so any missing/unknown
+        # value degrades to ``"book"`` rather than raising. [cbz-reader]
+        kind="comic" if data.get("kind") == "comic" else "book",
     )
 
 
@@ -2311,6 +2323,260 @@ async def shelve_pdf_book(kc: KavitaClient, record: dict, cache_dir: str) -> Man
     """
     return await _shelve_record(
         kc, record, cache_dir, spool_cap=MAX_PDF_BYTES, extract=_extract_pdf_shelf
+    )
+
+
+# ---------------------------------------------------------------------------
+# CBZ comic shelving
+# ---------------------------------------------------------------------------
+#
+# ``shelve_cbz_book`` turns a CBZ (a plain zip of page images) into the same
+# shelved layout an EPUB/HTML/PDF book produces, so every downstream reader
+# function (:func:`load_manifest`, :func:`load_chapter`, :func:`parts_for`,
+# positions, bookmarks, prune) works unchanged. The reading model is what makes
+# comics nearly free: each page image becomes ONE chapter whose single block is
+# exactly ``<img src="{IMG:n}"/>`` — our own integer-indexed markup, never any
+# comic-supplied text or markup. Page-turning is the existing chapter Prev/Next;
+# positions and bookmarks are per-page; ``percent`` tracks pages read. The only
+# things that differ from a prose book are ``Manifest.kind == "comic"`` and the
+# reader chrome the route selects on it. Pipeline: spool (capped) -> stdlib
+# ``zipfile`` open from the spool -> select + natural-sort image members ->
+# per-page transcode through the shared :func:`_transcode_reader_image` Pillow
+# path -> one chapter + one image per decodable page.
+
+# A comic is BIG — hundreds of full-bleed pages — so its spool cap is far larger
+# than a prose book's. This is safe: like every other format the body is spooled
+# straight to DISK in capped chunks, never buffered whole in RAM. [cbz-reader]
+MAX_CBZ_BYTES = 300 * 1024 * 1024
+
+# Ceiling on pages (== chapters == stored images) one comic yields. A real comic
+# issue is tens of pages; a fat omnibus a few hundred. Mirrors MAX_SPINE_ITEMS
+# bounding chapter work — a zip with thousands of image members cannot make
+# shelving build an unbounded number of chapter/image files. [cbz-reader]
+MAX_CBZ_PAGES = 800
+
+# Ceiling on total *decompressed* bytes read from the zip across every page,
+# enforced against actual bytes read off the decompression stream (see
+# :func:`_read_image_member`) — not the forgeable central-directory size — so it
+# also defeats a zip bomb. Comic page images barely compress, so a 300MB spool
+# decompresses to roughly the same; this leaves generous headroom above that
+# while still bounding a hostile archive. [cbz-reader]
+MAX_CBZ_UNPACKED_BYTES = 700 * 1024 * 1024
+
+# Image member extensions Pillow can decode into a comic page. ComicInfo.xml and
+# any other non-image member are ignored (ComicInfo is optionally parsed for a
+# title, below). WebP is listed for completeness — it will be transcoded to
+# baseline JPEG like everything else, so old Safari never sees WebP. [cbz-reader]
+_CBZ_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+
+_CBZ_DIGITS_RE = re.compile(r"(\d+)")
+
+
+def _natural_sort_key(path: str) -> list[object]:
+    """Return a natural-ordering sort key for a comic page member *path*.
+
+    Splits *path* into alternating non-digit / digit runs and converts each
+    digit run to an ``int``, so numeric segments compare by value rather than
+    lexicographically. This is why ``page2`` sorts before ``page10`` — plain
+    string ordering would put ``page10`` first, scrambling the whole comic. The
+    path is lower-cased first so ``Page`` and ``page`` interleave naturally.
+
+    :param path: A zip member path (e.g. ``"comic/page10.jpg"``).
+    :returns: A mixed ``list`` of ``str``/``int`` segments usable as a sort key.
+    :rtype: list[object]
+    """
+    return [
+        int(seg) if seg.isdigit() else seg
+        for seg in _CBZ_DIGITS_RE.split(path.lower())
+    ]
+
+
+def _cbz_title_from_comicinfo(zf: zipfile.ZipFile, names: set[str], budget: _UnpackBudget) -> str | None:
+    """Return a display title parsed from a CBZ's ``ComicInfo.xml``, if present.
+
+    ComicInfo.xml is the de-facto comic metadata sidecar. Only its ``<Series>``
+    (preferred) or ``<Title>`` text is read, via :mod:`defusedxml`, and it is
+    returned as plain text — the caller surfaces it through normal Jinja
+    auto-escaping, never the ``| safe`` seam, so no comic-supplied markup is
+    ever rendered. Any absence or parse failure returns ``None`` (the book's own
+    record title is used instead); this never fails the comic.
+
+    :param zf: The open archive.
+    :param names: The set of all member names in the archive.
+    :param budget: The shelving pass's running :class:`_UnpackBudget`.
+    :returns: A collapsed title string, or ``None``.
+    :rtype: str or None
+    """
+    member = next((n for n in names if n.lower().rsplit("/", 1)[-1] == "comicinfo.xml"), None)
+    if member is None or not _is_safe_member(member):
+        return None
+    try:
+        data = _read_member_capped(zf, member, MAX_METADATA_MEMBER_BYTES, budget)
+        root = fromstring(data)
+    except (ReaderError, ParseError, ValueError):
+        return None
+    series: str | None = None
+    title: str | None = None
+    for el in root.iter():
+        name = _local_name(el.tag)
+        if name == "series" and el.text and el.text.strip():
+            series = " ".join(el.text.split())
+        elif name == "title" and el.text and el.text.strip():
+            title = " ".join(el.text.split())
+    return series or title
+
+
+def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manifest:
+    """Parse the spooled CBZ at *spool_path* into *tmp_dir*'s shelved form.
+
+    Opens the zip with stdlib :mod:`zipfile`, selects the image members (by
+    extension, zip-slip-guarded exactly like EPUB), orders them by
+    :func:`_natural_sort_key`, and transcodes each through the shared
+    :func:`_transcode_reader_image` Pillow path into ``images/{n}`` (+ ``.ct``).
+    Every decodable page becomes one chapter (``chapters/{n}.json``) whose single
+    block is exactly ``<img src="{IMG:n}"/>`` — our own integer-indexed markup,
+    so no comic-supplied text or markup is ever rendered.
+
+    This function is deliberately **synchronous and CPU-heavy** (decoding and
+    re-encoding hundreds of images is tens of seconds of work); it is only ever
+    invoked off the event loop via :func:`asyncio.to_thread` in
+    :func:`_extract_cbz_shelf`, so shelving one large comic never freezes the
+    server for other requests.
+
+    An undecodable page is skipped (never fails the comic); a comic with zero
+    decodable pages, or none shelvable because Pillow is unavailable, raises a
+    friendly :class:`ReaderError`. Produces ``Manifest.kind == "comic"``.
+
+    :param spool_path: Path to the fully-downloaded CBZ file on disk.
+    :param key: The book's cache key (``Manifest.book_key``).
+    :param record: The caller's book record; only ``t``/``a`` are read.
+    :param tmp_dir: The in-progress shelving directory (with empty ``chapters/``
+        and ``images/`` subdirectories).
+    :returns: The completed :class:`Manifest` (also written to ``manifest.json``).
+    :raises ReaderError: On a malformed archive, one with no image pages, or
+        (with Pillow unavailable) no decodable pages.
+    """
+    if not _PIL_AVAILABLE:
+        raise ReaderError("This comic can't be read in the browser (no image support)")
+
+    budget = _UnpackBudget(MAX_CBZ_UNPACKED_BYTES)
+    try:
+        zf = zipfile.ZipFile(spool_path)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise ReaderError("This does not look like a valid CBZ comic") from exc
+
+    with zf:
+        names = set(zf.namelist())
+        pages = sorted(
+            (
+                n for n in names
+                if _is_safe_member(n) and n.lower().endswith(_CBZ_IMAGE_EXTS)
+            ),
+            key=_natural_sort_key,
+        )
+        if not pages:
+            raise ReaderError("This comic has no readable pages")
+        pages = pages[:MAX_CBZ_PAGES]
+
+        comic_title = _cbz_title_from_comicinfo(zf, names, budget)
+
+        images_dir = os.path.join(tmp_dir, "images")
+        chapters_dir = os.path.join(tmp_dir, "chapters")
+        chapters_meta: list[ChapterMeta] = []
+        toc: list[tuple[int, str, int]] = []
+        total_chars = 0
+        for member in pages:
+            raw = _read_image_member(zf, member, budget)
+            if raw is None:
+                continue  # oversized/unreadable page: skip, never fail the comic
+            transcoded = _transcode_reader_image(raw)
+            if transcoded is None:
+                continue  # undecodable page: skip
+            out_bytes, out_ct = transcoded
+            idx = len(chapters_meta)
+            with open(os.path.join(images_dir, str(idx)), "wb") as f:
+                f.write(out_bytes)
+            with open(os.path.join(images_dir, f"{idx}.ct"), "w", encoding="ascii") as f:
+                f.write(out_ct)
+            block = f'<img src="{{IMG:{idx}}}"/>'
+            with open(os.path.join(chapters_dir, f"{idx}.json"), "w", encoding="utf-8") as f:
+                json.dump({"blocks": [block], "anchors": {}}, f)
+            # A 300-entry per-page ToC is noise; surface every 10th page so the
+            # ToC is a usable "jump roughly here" index, not a wall of pages.
+            page_no = idx + 1
+            if idx == 0 or page_no % 10 == 0:
+                toc.append((0, f"Page {page_no}", idx))
+            chapters_meta.append(ChapterMeta(title=f"Page {page_no}", blocks=1, chars=len(block)))
+            total_chars += len(block)
+
+    if not chapters_meta:
+        raise ReaderError("This comic has no readable pages")
+
+    manifest = Manifest(
+        version=2,
+        book_key=key,
+        title=str(record.get("t") or "") or comic_title or "Untitled",
+        author=str(record.get("a") or ""),
+        chapters=chapters_meta,
+        images=len(chapters_meta),
+        total_chars=total_chars,
+        created=time.time(),
+        toc=toc,
+        kind="comic",
+    )
+    with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(_manifest_to_dict(manifest), f)
+    return manifest
+
+
+async def _extract_cbz_shelf(
+    kc: KavitaClient, spool_path: str, key: str, record: dict, tmp_dir: str,
+) -> Manifest:
+    """Awaitable adapter making the synchronous CBZ extractor a
+    :data:`_ShelfExtractor`, run **off the event loop**.
+
+    Unlike the EPUB/PDF adapters (whose local work is light and inline), comic
+    extraction decodes and re-encodes hundreds of images — tens of seconds of
+    CPU. Running that inline would freeze the whole single-threaded server for
+    every other request for the duration, so it is dispatched to a worker thread
+    via :func:`asyncio.to_thread`; *kc* is unused (a CBZ's pages come from the
+    spooled archive, so there is no network I/O).
+
+    :param kc: Unused (CBZ images come from the spooled archive).
+    :param spool_path: Path to the fully-downloaded CBZ on disk.
+    :param key: The book's cache key.
+    :param record: The caller's book record.
+    :param tmp_dir: The in-progress shelving directory.
+    :returns: The completed :class:`Manifest`.
+    """
+    return await asyncio.to_thread(_extract_cbz, spool_path, key, record, tmp_dir)
+
+
+async def shelve_cbz_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifest:
+    """Shelve *record*'s CBZ comic into the reader cache (text-free, page-image).
+
+    The comic counterpart to :func:`shelve_book`: it produces the identical
+    :class:`Manifest` + ``chapters/*.json`` + ``images/*`` layout, so every
+    downstream reader function works unchanged — the difference is only
+    ``Manifest.kind == "comic"`` and one image page per chapter. Each page image
+    is transcoded (downscaled to an iPad-sized baseline JPEG) exactly like an
+    EPUB image; the sole rendered "content" is our own ``<img src="{IMG:n}"/>``
+    blocks, never any comic-supplied text or markup. The heavy per-page decode
+    work runs off the event loop (see :func:`_extract_cbz_shelf`).
+
+    :param kc: Kavita client used to spool the upstream CBZ. Every fetch goes
+        through its SSRF guard.
+    :param record: A book record with at least a ``u`` (acquisition URL) key;
+        ``t`` (title) and ``a`` (author) are used for the manifest when present.
+    :param cache_dir: The application cache root; the comic is shelved under
+        ``{cache_dir}/reader/``.
+    :returns: The comic's :class:`Manifest`.
+    :raises ReaderError: On a malformed/oversized archive, one with no readable
+        pages, or a shelving timeout.
+    :raises KavitaError: If the upstream fetch fails outright.
+    """
+    return await _shelve_record(
+        kc, record, cache_dir, spool_cap=MAX_CBZ_BYTES, extract=_extract_cbz_shelf
     )
 
 
