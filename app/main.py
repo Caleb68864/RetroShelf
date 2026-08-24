@@ -18,11 +18,12 @@ import logging
 import os
 import random
 import re
+import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import (
@@ -33,7 +34,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, opds
+from . import __version__, accounts, opds
 from .config import Config, ConfigError, FeedSource, load_config, origin_tuple
 from .download import (
     EPUB_MIME,
@@ -79,7 +80,7 @@ from .reader import (
 )
 from .render import STATIC_DIR, templates
 from .security import access_key_ok, ip_allowed, sanitize_filename
-from .store import Store, book_key
+from .store import PROFILE_COLORS, Store, book_key
 
 log = logging.getLogger("retroshelf")
 
@@ -92,6 +93,23 @@ _OPEN_PREFIXES = ("/health", "/static")
 # both attributes are simply ignored by iOS 5/6 Safari, which has no JavaScript
 # running here to protect against anyway. [SS-16]
 _KEY_COOKIE = "rs_key"
+
+# Paths reachable without a session when accounts are enabled (in addition to
+# the always-open _OPEN_PREFIXES). The login/setup pages ARE the gate, so they
+# must render for an unauthenticated visitor; ALLOWED_IPS still fronts them.
+_ACCOUNTS_OPEN_PREFIXES = ("/login", "/setup")
+
+# Absolute lifetime of a session cookie (30 days). Baked into the signed token
+# as an absolute expiry and mirrored as the cookie Max-Age.
+_SESSION_TTL = 30 * 24 * 3600
+
+# The fixed sentinel profile id used when accounts are disabled — its reading
+# state is the global, single-tenant state. Mirrors app.store's sentinel.
+_SENTINEL_PROFILE = "_"
+
+# Minimum password length accepted at setup / password-change. A LAN tool, so
+# this is a floor against fat-finger blanks, not a strength policy.
+_MIN_PASSWORD_LEN = 6
 
 # Current-page sort keys for /feed (SS-03). Sorting only reorders the books on
 # the page already fetched — pagination is upstream-driven, so we never hold the
@@ -377,6 +395,49 @@ def _install_mask_filter(cfg: Config) -> None:
             handler.addFilter(mask_filter)
 
 
+def _account_gate(request: Request, path: str) -> Response | None:
+    """Decide whether an accounts-enabled request may proceed, else redirect.
+
+    Returns a 303 redirect to ``/setup`` (no accounts yet), ``/login`` (no valid
+    session), or ``/profiles`` (signed in but no profile selected), or ``None``
+    to let the request through. The login/setup pages themselves are always let
+    through so an unauthenticated visitor can reach the gate.
+
+    The session cookie is decoded and MAC-verified by
+    :func:`app.accounts.decode_session`; a tampered, malformed, or expired
+    cookie decodes to ``None`` (→ ``/login``). A still-unexpired cookie is
+    additionally rejected when the account is gone or its ``token_version`` was
+    bumped (password change / sign-out-everywhere), so old cookies cannot
+    outlive a revocation.
+
+    :param request: The incoming request (its ``app.state`` holds the store and
+        session secret).
+    :param path: The request path already extracted by the middleware.
+    :returns: A redirect :class:`~fastapi.responses.Response`, or ``None``.
+    :rtype: Response | None
+    """
+    if any(path.startswith(p) for p in _ACCOUNTS_OPEN_PREFIXES):
+        return None
+    store: Store = request.app.state.store
+    if not store.has_accounts():
+        return RedirectResponse("/setup", status_code=303)
+    secret: str = request.app.state.session_secret
+    data = accounts.decode_session(secret, request.cookies.get(accounts.SESSION_COOKIE))
+    if data is None:
+        return RedirectResponse("/login", status_code=303)
+    acct = store.get_account(data["account_id"])
+    if acct is None or acct["token_version"] != data["token_version"]:
+        return RedirectResponse("/login", status_code=303)
+    # The session is valid. Picking a profile and signing out must work before a
+    # profile is selected, so they are exempt from the profile requirement
+    # (and ``/profiles`` redirecting to itself would loop).
+    if path == "/profiles" or path == "/logout":
+        return None
+    if not data["profile_id"] or data["profile_id"] not in acct["profiles"]:
+        return RedirectResponse("/profiles", status_code=303)
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """AsyncContextManager that wires shared state onto *app* at startup and
@@ -406,6 +467,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.http = client
     app.state.kavita = KavitaClient(cfg, client)
     app.state.ids = IdCodec(cfg.bridge_id_secret or cfg.bridge_access_key)
+    # Secret that signs session cookies + derives CSRF tokens. The same
+    # configured secret that stabilises IdCodec keeps sessions valid across
+    # restarts; with neither secret set we fall back to a per-process random
+    # one, so sessions (like bookmarked bridge ids) reset on restart.
+    app.state.session_secret = (
+        cfg.bridge_id_secret or cfg.bridge_access_key or secrets.token_hex(32)
+    )
+    if cfg.accounts_enabled and not (cfg.bridge_id_secret or cfg.bridge_access_key):
+        log.warning(
+            "ACCOUNTS_ENABLED but no BRIDGE_ID_SECRET — using a per-process "
+            "session secret; everyone is signed out on restart."
+        )
     app.state.cache = FeedCache(cfg.cache_feeds_seconds)
     app.state.search_templates = {}  # per-feed-origin OpenSearch templates, cached
     app.state.store = Store(cfg.state_path)  # Reading List + download history
@@ -474,24 +547,32 @@ def create_app(config: Config | None = None) -> FastAPI:
             if not ip_allowed(client_ip, cfg.allowed_ips):
                 log.info("denied %s from %s: not in ALLOWED_IPS", path, client_ip)
                 return _error_response(request, "Forbidden", "This bridge is restricted to the local network.", 403)
-            query_key = request.query_params.get("key")
-            # The key may arrive three ways: in the URL (how you first open the
-            # bridge on the iPad), as a header (scripts, OPDS readers), or in
-            # the cookie set on the first successful visit. Without the cookie,
-            # every internal link would have to carry the secret — which
-            # 403'd real navigation, and put the key in the address bar, the
-            # Referer of every request, and every access-log line. [SS-16]
-            provided = (query_key
-                        or request.headers.get("x-access-key")
-                        or request.cookies.get(_KEY_COOKIE))
-            if not access_key_ok(provided, cfg.bridge_access_key):
-                log.info("denied %s from %s: missing or wrong access key",
-                         path, client_ip)
-                return _error_response(
-                    request, "Access key required",
-                    "Append ?key=YOURKEY to the address once; "
-                    "this browser will remember it.", 403)
-            from_query = bool(query_key) and cfg.bridge_access_key is not None
+            if cfg.accounts_enabled:
+                # The login page supersedes BRIDGE_ACCESS_KEY: a valid session
+                # (with a selected profile) is the gate. ALLOWED_IPS above still
+                # fronts everything. [accounts]
+                redirect = _account_gate(request, path)
+                if redirect is not None:
+                    return redirect
+            else:
+                query_key = request.query_params.get("key")
+                # The key may arrive three ways: in the URL (how you first open the
+                # bridge on the iPad), as a header (scripts, OPDS readers), or in
+                # the cookie set on the first successful visit. Without the cookie,
+                # every internal link would have to carry the secret — which
+                # 403'd real navigation, and put the key in the address bar, the
+                # Referer of every request, and every access-log line. [SS-16]
+                provided = (query_key
+                            or request.headers.get("x-access-key")
+                            or request.cookies.get(_KEY_COOKIE))
+                if not access_key_ok(provided, cfg.bridge_access_key):
+                    log.info("denied %s from %s: missing or wrong access key",
+                             path, client_ip)
+                    return _error_response(
+                        request, "Access key required",
+                        "Append ?key=YOURKEY to the address once; "
+                        "this browser will remember it.", 403)
+                from_query = bool(query_key) and cfg.bridge_access_key is not None
         response = await call_next(request)
         if from_query:
             # Remember it so the rest of the visit needs no ?key= at all.
@@ -734,6 +815,419 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     def store(request: Request) -> Store:
         """Return the :class:`~app.store.Store` (Reading List + history)."""
         return request.app.state.store
+
+    # -- accounts: sessions, CSRF, and the auth routes -----------------------
+    def session_secret(request: Request) -> str:
+        """Return the process's session-signing secret from ``app.state``."""
+        return request.app.state.session_secret
+
+    def current_session(request: Request) -> dict | None:
+        """Return the caller's live session, or ``None`` when not signed in.
+
+        Decodes and MAC-verifies the session cookie, then re-checks it against
+        the store: the account must still exist and its ``token_version`` must
+        match, so a password change or sign-out-everywhere invalidates the
+        cookie even before it expires. Returns ``None`` (never raises) when
+        accounts are off or the cookie is absent/tampered/expired/revoked.
+
+        :param request: The incoming request.
+        :returns: ``{"account_id", "profile_id", "token_version", "expiry",
+            "account"}`` (the public account view) or ``None``.
+        :rtype: dict | None
+        """
+        if not cfg.accounts_enabled:
+            return None
+        data = accounts.decode_session(
+            session_secret(request), request.cookies.get(accounts.SESSION_COOKIE)
+        )
+        if data is None:
+            return None
+        acct = store(request).get_account(data["account_id"])
+        if acct is None or acct["token_version"] != data["token_version"]:
+            return None
+        return {**data, "account": acct}
+
+    def current_profile_id(request: Request) -> str:
+        """Return the reading-state profile id for this request.
+
+        Accounts off → the fixed sentinel (global, single-tenant state). Accounts
+        on → the session's selected profile, validated to belong to the session
+        account. The gated reader routes always run behind
+        :func:`_account_gate`, which guarantees a selected profile, so the
+        sentinel fallback here is only a safety net off the gated path and never
+        crosses one account's state into another's.
+
+        :param request: The incoming request.
+        :returns: A profile id, or the sentinel.
+        :rtype: str
+        """
+        if not cfg.accounts_enabled:
+            return _SENTINEL_PROFILE
+        sess = current_session(request)
+        if sess and sess["profile_id"] and sess["profile_id"] in sess["account"]["profiles"]:
+            return sess["profile_id"]
+        return _SENTINEL_PROFILE
+
+    async def _form(request: Request) -> dict[str, str]:
+        """Parse an ``application/x-www-form-urlencoded`` POST body.
+
+        Parsed by hand with :func:`urllib.parse.parse_qs` rather than
+        ``request.form()`` so the app needs no ``python-multipart`` dependency —
+        the no-JS ``<form method="post">`` used throughout always url-encodes.
+        The first value is kept for each field.
+
+        :param request: The incoming request.
+        :returns: A flat ``{field: value}`` mapping.
+        :rtype: dict[str, str]
+        """
+        raw = await request.body()
+        parsed = parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True)
+        return {k: v[0] for k, v in parsed.items()}
+
+    def _csrf_binding(request: Request) -> str:
+        """Return the CSRF binding (the current session cookie value, or ``""``)."""
+        return request.cookies.get(accounts.SESSION_COOKIE) or ""
+
+    def _csrf_field(request: Request) -> str:
+        """Return the CSRF token a form on this request must echo back."""
+        return accounts.csrf_token(session_secret(request), _csrf_binding(request))
+
+    def _csrf_ok(request: Request, form: dict[str, str]) -> bool:
+        """Constant-time check of a submitted ``_csrf`` field for this request."""
+        return accounts.csrf_ok(
+            session_secret(request), _csrf_binding(request), form.get("_csrf")
+        )
+
+    def _csrf_refused(request: Request) -> Response:
+        """Return the uniform 403 for a missing/wrong CSRF token."""
+        log.info("rejected POST without a valid CSRF token on %s", request.url.path)
+        return _error_response(
+            request, "Refused",
+            "That form could not be verified. Go back to a RetroShelf page and "
+            "try again.", 403,
+        )
+
+    def _mint_session(request: Request, resp: Response, account_id: str,
+                      profile_id: str, token_version: int) -> None:
+        """Set the HttpOnly, SameSite=Lax session cookie on *resp*.
+
+        The absolute expiry is baked into the signed token and mirrored as the
+        cookie ``Max-Age``.
+
+        :param request: The incoming request (for the session secret).
+        :param resp: The response to set the cookie on.
+        :param account_id: The signed-in account.
+        :param profile_id: The selected profile id, or ``""`` before selection.
+        :param token_version: The account's current token version.
+        """
+        expiry = int(time.time()) + _SESSION_TTL
+        token = accounts.encode_session(
+            session_secret(request), account_id, profile_id, token_version, expiry
+        )
+        resp.set_cookie(accounts.SESSION_COOKIE, token, max_age=_SESSION_TTL,
+                        httponly=True, samesite="lax", path="/")
+
+    def _clear_session(resp: Response) -> None:
+        """Clear the session cookie on *resp*."""
+        resp.delete_cookie(accounts.SESSION_COOKIE, path="/")
+
+    def _accounts_off_404(request: Request) -> Response:
+        """The 404 shown for an auth route when accounts are disabled."""
+        return _error_response(request, "Not found", "That page is not available.", 404)
+
+    def _password_error(password: str, confirm: str) -> str | None:
+        """Return a user-facing error for a new password, or ``None`` if valid."""
+        if len(password) < _MIN_PASSWORD_LEN:
+            return f"Password must be at least {_MIN_PASSWORD_LEN} characters."
+        if password != confirm:
+            return "The two passwords do not match."
+        return None
+
+    @app.get("/setup", response_class=HTMLResponse)
+    async def setup_get(request: Request) -> Response:
+        """GET ``/setup`` — first-run form to create the admin account."""
+        if not cfg.accounts_enabled:
+            return _accounts_off_404(request)
+        if store(request).has_accounts():
+            return RedirectResponse("/login", status_code=303)
+        return templates.TemplateResponse(
+            request, "setup.html", {"csrf": _csrf_field(request), "error": None})
+
+    @app.post("/setup")
+    async def setup_post(request: Request) -> Response:
+        """POST ``/setup`` — create the admin, adopt any global state, sign in."""
+        if not cfg.accounts_enabled:
+            return _accounts_off_404(request)
+        if store(request).has_accounts():
+            return RedirectResponse("/login", status_code=303)
+        form = await _form(request)
+        if not _csrf_ok(request, form):
+            return _csrf_refused(request)
+        username = (form.get("username") or "").strip()
+        password = form.get("password") or ""
+        confirm = form.get("confirm") or ""
+
+        def _fail(msg: str) -> Response:
+            return templates.TemplateResponse(
+                request, "setup.html", {"csrf": _csrf_field(request), "error": msg},
+                status_code=400)
+
+        if not username:
+            return _fail("Enter a username.")
+        pw_err = _password_error(password, confirm)
+        if pw_err:
+            return _fail(pw_err)
+        try:
+            account_id = store(request).create_account(username, password)
+        except ValueError as exc:
+            return _fail(str(exc))
+        profile_id = store(request).add_profile(account_id, username, PROFILE_COLORS[0])
+        # Adopt any reading state accumulated before accounts were enabled.
+        store(request).migrate_global_state_into(profile_id)
+        acct = store(request).get_account(account_id)
+        assert acct is not None  # just created
+        resp: Response = RedirectResponse("/", status_code=303)
+        _mint_session(request, resp, account_id, profile_id, acct["token_version"])
+        return resp
+
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_get(request: Request) -> Response:
+        """GET ``/login`` — the username/password gate."""
+        if not cfg.accounts_enabled:
+            return _accounts_off_404(request)
+        if not store(request).has_accounts():
+            return RedirectResponse("/setup", status_code=303)
+        sess = current_session(request)
+        if sess is not None and sess["profile_id"] in sess["account"]["profiles"]:
+            return RedirectResponse("/", status_code=303)
+        return templates.TemplateResponse(
+            request, "login.html", {"csrf": _csrf_field(request), "error": None})
+
+    @app.post("/login")
+    async def login_post(request: Request) -> Response:
+        """POST ``/login`` — verify credentials, mint a session, pick a profile."""
+        if not cfg.accounts_enabled:
+            return _accounts_off_404(request)
+        if not store(request).has_accounts():
+            return RedirectResponse("/setup", status_code=303)
+        form = await _form(request)
+        if not _csrf_ok(request, form):
+            return _csrf_refused(request)
+        username = (form.get("username") or "").strip()
+        password = form.get("password") or ""
+        account_id = store(request).verify_login(username, password)
+        if account_id is None:
+            # One uniform error for unknown-user and wrong-password alike; the
+            # store already burned equal PBKDF2 work either way. [no-enumeration]
+            return templates.TemplateResponse(
+                request, "login.html",
+                {"csrf": _csrf_field(request), "error": "Wrong username or password."},
+                status_code=401)
+        acct = store(request).get_account(account_id)
+        assert acct is not None  # just verified
+        resp: Response = RedirectResponse("/profiles", status_code=303)
+        _mint_session(request, resp, account_id, "", acct["token_version"])
+        return resp
+
+    @app.post("/logout")
+    async def logout(request: Request) -> Response:
+        """POST ``/logout`` — clear the session cookie and return to login."""
+        if not cfg.accounts_enabled:
+            return _accounts_off_404(request)
+        form = await _form(request)
+        if not _csrf_ok(request, form):
+            return _csrf_refused(request)
+        resp: Response = RedirectResponse("/login", status_code=303)
+        _clear_session(resp)
+        return resp
+
+    @app.get("/profiles", response_class=HTMLResponse)
+    async def profiles_get(request: Request) -> Response:
+        """GET ``/profiles`` — list this account's profiles and offer to add one."""
+        if not cfg.accounts_enabled:
+            return _accounts_off_404(request)
+        sess = current_session(request)
+        if sess is None:
+            return RedirectResponse("/login", status_code=303)
+        acct = sess["account"]
+        profiles = [{"id": pid, "name": p["name"], "color": p["color"]}
+                    for pid, p in acct["profiles"].items()]
+        return templates.TemplateResponse(request, "profiles.html", {
+            "csrf": _csrf_field(request), "profiles": profiles,
+            "colors": PROFILE_COLORS, "username": acct["username"], "error": None,
+        })
+
+    @app.post("/profiles")
+    async def profiles_post(request: Request) -> Response:
+        """POST ``/profiles`` — add a profile, or select one (re-minting the
+        session with that profile). Selecting is guarded by the cross-account
+        isolation check, so only the session account's own profiles are ever
+        reachable."""
+        if not cfg.accounts_enabled:
+            return _accounts_off_404(request)
+        sess = current_session(request)
+        if sess is None:
+            return RedirectResponse("/login", status_code=303)
+        form = await _form(request)
+        if not _csrf_ok(request, form):
+            return _csrf_refused(request)
+        acct = sess["account"]
+        account_id = acct["account_id"]
+
+        def _fail(msg: str) -> Response:
+            # No successful mutation reaches _fail, so the session's account
+            # snapshot is an accurate profile list to re-render.
+            profiles = [{"id": pid, "name": p["name"], "color": p["color"]}
+                        for pid, p in acct["profiles"].items()]
+            return templates.TemplateResponse(request, "profiles.html", {
+                "csrf": _csrf_field(request), "profiles": profiles,
+                "colors": PROFILE_COLORS, "username": acct["username"], "error": msg,
+            }, status_code=400)
+
+        if form.get("action") == "add":
+            name = (form.get("name") or "").strip()
+            if not name:
+                return _fail("Enter a name for the profile.")
+            color = form.get("color") or ""
+            try:
+                store(request).add_profile(account_id, name, color)
+            except (ValueError, KeyError) as exc:
+                return _fail(str(exc) or "Could not add that profile.")
+            return RedirectResponse("/profiles", status_code=303)
+        # Select a profile: it MUST belong to the session account. [isolation]
+        profile_id = form.get("profile_id") or ""
+        if not store(request).profile_belongs(account_id, profile_id):
+            return _fail("That profile is not available.")
+        resp: Response = RedirectResponse("/", status_code=303)
+        _mint_session(request, resp, account_id, profile_id, acct["token_version"])
+        return resp
+
+    def _account_context(request: Request, account: dict, *,
+                         error: str | None = None, message: str | None = None) -> dict:
+        """Build the ``account.html`` template context for *account*."""
+        current_pid = current_profile_id(request)
+        profiles = [{"id": pid, "name": p["name"], "color": p["color"],
+                     "current": pid == current_pid}
+                    for pid, p in account["profiles"].items()]
+        return {
+            "csrf": _csrf_field(request), "profiles": profiles,
+            "colors": PROFILE_COLORS, "username": account["username"],
+            "is_admin": account["is_admin"], "can_delete": len(profiles) > 1,
+            "error": error, "message": message,
+        }
+
+    @app.get("/account", response_class=HTMLResponse)
+    async def account_get(request: Request) -> Response:
+        """GET ``/account`` — manage profiles, change password, (admin) add users."""
+        if not cfg.accounts_enabled:
+            return _accounts_off_404(request)
+        sess = current_session(request)
+        if sess is None:
+            return RedirectResponse("/login", status_code=303)
+        return templates.TemplateResponse(
+            request, "account.html", _account_context(request, sess["account"]))
+
+    @app.post("/account")
+    async def account_post(request: Request) -> Response:
+        """POST ``/account`` — profile CRUD, own-password change, admin add-account.
+
+        Every branch is scoped to the session account (``account_id`` from the
+        signed session, never from the form), so profile edits can only ever
+        touch the caller's own profiles. Creating another account is admin-only.
+        """
+        if not cfg.accounts_enabled:
+            return _accounts_off_404(request)
+        sess = current_session(request)
+        if sess is None:
+            return RedirectResponse("/login", status_code=303)
+        form = await _form(request)
+        if not _csrf_ok(request, form):
+            return _csrf_refused(request)
+        acct = sess["account"]
+        account_id = acct["account_id"]
+        action = form.get("action")
+
+        def _render(*, error: str | None = None, message: str | None = None,
+                    status: int = 200) -> Response:
+            fresh = store(request).get_account(account_id) or acct
+            return templates.TemplateResponse(
+                request, "account.html",
+                _account_context(request, fresh, error=error, message=message),
+                status_code=status)
+
+        if action == "add_profile":
+            name = (form.get("name") or "").strip()
+            if not name:
+                return _render(error="Enter a name for the profile.", status=400)
+            try:
+                store(request).add_profile(account_id, name, form.get("color") or "")
+            except (ValueError, KeyError) as exc:
+                return _render(error=str(exc) or "Could not add that profile.", status=400)
+            return _render(message="Profile added.")
+
+        if action == "rename_profile":
+            profile_id = form.get("profile_id") or ""
+            name = (form.get("name") or "").strip()
+            if not name:
+                return _render(error="Enter a new name.", status=400)
+            if not store(request).rename_profile(account_id, profile_id, name):
+                return _render(error="That profile is not available.", status=400)
+            return _render(message="Profile renamed.")
+
+        if action == "delete_profile":
+            profile_id = form.get("profile_id") or ""
+            if not store(request).profile_belongs(account_id, profile_id):
+                return _render(error="That profile is not available.", status=400)
+            try:
+                store(request).delete_profile(account_id, profile_id)
+            except ValueError as exc:
+                return _render(error=str(exc), status=400)
+            # Deleting the profile the session is on: send them to re-pick.
+            if profile_id == sess["profile_id"]:
+                return RedirectResponse("/profiles", status_code=303)
+            return _render(message="Profile deleted.")
+
+        if action == "password":
+            current = form.get("current") or ""
+            new = form.get("new") or ""
+            confirm = form.get("confirm") or ""
+            if store(request).verify_login(acct["username"], current) != account_id:
+                return _render(error="Your current password is wrong.", status=400)
+            pw_err = _password_error(new, confirm)
+            if pw_err:
+                return _render(error=pw_err, status=400)
+            store(request).set_password(account_id, new)
+            # set_password bumped token_version, invalidating THIS cookie too —
+            # re-mint so the operator stays signed in on this device.
+            fresh = store(request).get_account(account_id)
+            assert fresh is not None
+            resp = _render(message="Password changed.")
+            _mint_session(request, resp, account_id, sess["profile_id"],
+                          fresh["token_version"])
+            return resp
+
+        if action == "create_account":
+            if not acct["is_admin"]:
+                log.info("non-admin %s attempted to create an account", account_id)
+                return _error_response(
+                    request, "Refused", "Only the admin account can add accounts.", 403)
+            new_user = (form.get("new_username") or "").strip()
+            new_pw = form.get("new_password") or ""
+            confirm = form.get("new_confirm") or ""
+            if not new_user:
+                return _render(error="Enter a username for the new account.", status=400)
+            pw_err = _password_error(new_pw, confirm)
+            if pw_err:
+                return _render(error=pw_err, status=400)
+            try:
+                new_id = store(request).create_account(new_user, new_pw)
+            except ValueError as exc:
+                return _render(error=str(exc), status=400)
+            # A brand-new account needs at least one profile to sign in to.
+            store(request).add_profile(new_id, new_user, PROFILE_COLORS[0])
+            return _render(message=f"Account '{new_user}' created.")
+
+        return RedirectResponse("/account", status_code=303)
 
     # -- view-model seam: encode every upstream href as a bridge id [H-2] ----
     def _to_view_model(feed: opds.Feed, ids: IdCodec, kavita: KavitaClient,
@@ -1008,9 +1502,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 for f, fid in zip(cfg.feeds, feed_ids)]
         primary_id = feed_ids[0]
         multi = len(cfg.feeds) > 1
+        pid = current_profile_id(request)
         # "Recently sent to iBooks" shelf + Reading List count.
         recent = []
-        for rec in store(request).recent_downloads(8):
+        for rec in store(request).recent_downloads(8, profile_id=pid):
             bid = _record_id(codec(request), rec)
             fmt = format_of(rec.get("m", "")) or "epub"
             recent.append({"title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
@@ -1018,7 +1513,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                            "detail_url": f"/book/{bid}", "downloaded": True})
         # "Currently Reading" shelf: up to 4 most-recently-read positions. [SS-05]
         reading = []
-        for pos in store(request).reading_list(4):
+        for pos in store(request).reading_list(4, profile_id=pid):
             rbid = _record_id(codec(request), pos)
             pct = int(pos.get("percent", 0))
             reading.append({
@@ -1032,7 +1527,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "root_feed_url": menu[0]["url"],   # back-compat for single-feed
             # From home, search every library at once; a single feed searches itself.
             "search_feed": "*" if multi else primary_id,
-            "reading_count": len(store(request).favorite_keys()),
+            "reading_count": len(store(request).favorite_keys(profile_id=pid)),
             "recent": recent,
             "reading": reading,
         })
@@ -1065,8 +1560,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """
         url = kc(request).resolve_url(codec(request).decode(fid))  # decode + re-validate SSRF
         parsed = await _load_feed(request, url, fid)
-        entries = _to_view_model(parsed, codec(request), kc(request), base_url=url,
-                                 downloaded=store(request).downloaded_keys())
+        entries = _to_view_model(
+            parsed, codec(request), kc(request), base_url=url,
+            downloaded=store(request).downloaded_keys(profile_id=current_profile_id(request)))
         sort = sort if sort in _SORT_KEYS else ""   # normalize unknown → upstream order
         entries = _sorted_page(entries, sort)
         suffix = f"?sort={sort}" if sort else ""    # carry the sort across pages
@@ -1110,7 +1606,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if rec.get("c"):
             cover_url = f"/cover/{codec(request).encode(rec['c'])}"
         key = book_key(rec.get("u", ""))
-        is_fav = store(request).is_favorite(key)
+        pid = current_profile_id(request)
+        is_fav = store(request).is_favorite(key, profile_id=pid)
 
         # In-browser reader entry point (EPUB + HTML/text + PDF text-reflow).
         # PDF is a DUAL path: it gets this "Read here" button AND keeps its
@@ -1120,7 +1617,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         read_hint = False
         if fmt in _READER_FORMATS:
             read_url = f"/read/{bid}"
-            pos = store(request).get_position(key)
+            pos = store(request).get_position(key, profile_id=pid)
             if pos is None:
                 read_label = "Read here"
                 read_hint = True
@@ -1139,7 +1636,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if not fmts and fmt in ("epub", "pdf"):
             fmts = [{"u": rec.get("u"), "m": rec.get("m"), "f": fmt, "len": None}]
         fmts = fmts or []
-        dlkeys = store(request).downloaded_keys()
+        dlkeys = store(request).downloaded_keys(profile_id=pid)
         downloads = []
         for fm in fmts:
             ext = "pdf" if fm.get("f") == "pdf" else "epub"
@@ -1196,7 +1693,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         fan_out = feed == "*" and multi
         # One history snapshot for the whole request; the fan-out groups run
         # concurrently and must not each re-read (and re-lock) the store.
-        downloaded = store(request).downloaded_keys()
+        downloaded = store(request).downloaded_keys(profile_id=current_profile_id(request))
 
         async def _search_one(source: FeedSource) -> dict:
             """Search one library; never raises — failures become error groups."""
@@ -1251,7 +1748,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
     async def reading_list(request: Request) -> HTMLResponse:
         """GET ``/list`` — the cross-library Reading List of starred books."""
         items = []
-        for rec in store(request).favorites():
+        for rec in store(request).favorites(profile_id=current_profile_id(request)):
             bid = _record_id(codec(request), rec)
             fmt = format_of(rec.get("m", "")) or "epub"
             items.append({
@@ -1302,7 +1799,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         except (ValueError, TypeError) as exc:
             raise BadIdError("Malformed book id") from exc
         rec["feed_name"] = _feed_for_url(kc(request).resolve_url(rec["u"])).name
-        store(request).add_favorite(rec)
+        store(request).add_favorite(rec, profile_id=current_profile_id(request))
         return RedirectResponse(_back_to(request, default="/list"), status_code=303)
 
     @app.get("/unstar/{key}")
@@ -1311,7 +1808,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         refusal = _require_site_token(request)
         if refusal is not None:
             return refusal
-        store(request).remove_favorite(key)
+        store(request).remove_favorite(key, profile_id=current_profile_id(request))
         return RedirectResponse(_back_to(request, default="/list"), status_code=303)
 
     # -- OPDS publisher: re-publish the Reading List as a real OPDS feed ------
@@ -1357,7 +1854,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         feed, so any OPDS reader can subscribe to your curated shelf."""
         base, ks = _public_base(request), _key_suffix()
         entries = []
-        for rec in store(request).favorites():
+        for rec in store(request).favorites(profile_id=current_profile_id(request)):
             fmts = rec.get("fmts") or [{"u": rec.get("u"), "m": rec.get("m"), "f": "epub"}]
             acqs = []
             for fm in fmts:
@@ -1482,7 +1979,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         media_type, disposition, ext = _media_for_url(url, cfg)
         filename = sanitize_filename(name_hint or (record or {}).get("t") or _basename(url), ext)
         if request.method == "GET" and record is not None:
-            store(request).record_download({**record, "feed_name": _feed_for_url(url).name})
+            store(request).record_download(
+                {**record, "feed_name": _feed_for_url(url).name},
+                profile_id=current_profile_id(request))
         if request.method == "HEAD":
             # Answer header probes (e.g. `curl -I`, Safari) without fetching the
             # body. Same headers a GET would produce.
@@ -1712,7 +2211,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if isinstance(opened, Response):
             return opened
         rec, key, manifest = opened
-        pos = store(request).get_position(key)
+        pos = store(request).get_position(key, profile_id=current_profile_id(request))
         if pos is not None and 0 <= int(pos.get("chapter", 0)) < len(manifest.chapters):
             chapter = int(pos["chapter"])
             # A corrupt resume-chapter cache file must not make the book
@@ -1747,7 +2246,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if isinstance(opened, Response):
             return opened
         rec, key, manifest = opened
-        pos = store(request).get_position(key)
+        pos = store(request).get_position(key, profile_id=current_profile_id(request))
         current_chapter = int(pos["chapter"]) if pos is not None else None
         # Prefer the book's hierarchical nav/NCX ToC (indented by depth);
         # fall back to the flat spine-chapter list for books without one
@@ -1842,7 +2341,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             manifest = await shelver(kc(request), rec, cfg.cache_dir)
         chapter = max(0, min(chapter, len(manifest.chapters) - 1))
         label = manifest.chapters[chapter].title if manifest.chapters else ""
-        store(request).add_bookmark(key, chapter, max(0, block), label)
+        store(request).add_bookmark(key, chapter, max(0, block), label,
+                                    profile_id=current_profile_id(request))
         return RedirectResponse(
             _safe_path(f"/read/{bid}/{chapter}/{max(1, part)}"), status_code=303
         )
@@ -1861,7 +2361,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             return refusal
         rec = _decode_book_record(request, bid)
         key = book_key(rec.get("u", ""))
-        store(request).remove_bookmark(key, max(0, chapter), max(0, block))
+        store(request).remove_bookmark(key, max(0, chapter), max(0, block),
+                                       profile_id=current_profile_id(request))
         target = (f"/read/{bid}/bookmarks" if to == "list"
                   else f"/read/{bid}/{max(0, chapter)}/{max(1, part)}")
         return RedirectResponse(_safe_path(target), status_code=303)
@@ -1877,7 +2378,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         token = codec(request).site_token
         parts_cache: dict[int, list[tuple[int, int]]] = {}
         items = []
-        for mark in store(request).bookmarks(key):
+        for mark in store(request).bookmarks(key, profile_id=current_profile_id(request)):
             ch, blk = mark["chapter"], mark["block"]
             if ch not in parts_cache:
                 # One unreadable chapter must not blank the whole bookmarks
@@ -2016,9 +2517,11 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             if next_chapter is not None:
                 next_url = f"/read/{bid}/{next_chapter}/1"
 
-        store(request).set_position(rec, chapter, start, percent_of(manifest, chapter, start))
+        pid = current_profile_id(request)
+        store(request).set_position(rec, chapter, start, percent_of(manifest, chapter, start),
+                                    profile_id=pid)
 
-        marks = store(request).bookmarks(key)
+        marks = store(request).bookmarks(key, profile_id=pid)
         already_bookmarked = any(
             m["chapter"] == chapter and m["block"] == start for m in marks
         )

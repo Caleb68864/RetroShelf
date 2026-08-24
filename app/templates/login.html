@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Sign in - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; Sign in</div>
+<p class="lead">Enter your account to reach the library.</p>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form class="authform" method="post" action="/login">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <p><label>Username<br>
+    <input type="text" name="username" maxlength="64" autocomplete="username"></label></p>
+  <p><label>Password<br>
+    <input type="password" name="password" autocomplete="current-password"></label></p>
+  <p><button class="button big" type="submit">Sign in</button></p>
+</form>
+{% endblock %}

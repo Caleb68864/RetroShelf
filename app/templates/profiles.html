@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Choose a profile - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; Who&rsquo;s reading?</div>
+<p class="lead">Pick a profile to continue.</p>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+{% if profiles %}
+<ul class="list">
+{% for p in profiles %}
+  <li class="item">
+    <form class="pick" method="post" action="/profiles">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="select">
+      <input type="hidden" name="profile_id" value="{{ p.id }}">
+      <button class="button big" type="submit">{{ p.name }}</button>
+    </form>
+  </li>
+{% endfor %}
+</ul>
+{% else %}
+<p class="muted">[ no profiles yet &mdash; add one below ]</p>
+{% endif %}
+
+<div class="sectionhead">&gt;&gt; Add a profile</div>
+<form class="authform" method="post" action="/profiles">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="action" value="add">
+  <p><label>Name<br>
+    <input type="text" name="name" maxlength="40"></label></p>
+  <p><label>Colour<br>
+    <select name="color">
+    {% for c in colors %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+    </select></label></p>
+  <p><button class="button" type="submit">Add profile</button></p>
+</form>
+
+<p><a class="back" href="/account">Manage account</a></p>
+{% endblock %}

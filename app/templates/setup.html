@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}First-time setup - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; First-time setup</div>
+<p class="lead">Create the administrator account for this library terminal.</p>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form class="authform" method="post" action="/setup">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <p><label>Username<br>
+    <input type="text" name="username" maxlength="64" autocomplete="username"></label></p>
+  <p><label>Password<br>
+    <input type="password" name="password" autocomplete="new-password"></label></p>
+  <p><label>Repeat password<br>
+    <input type="password" name="confirm" autocomplete="new-password"></label></p>
+  <p><button class="button big" type="submit">Create admin account</button></p>
+</form>
+<p class="muted">This is the only account that can add more accounts later.</p>
+{% endblock %}

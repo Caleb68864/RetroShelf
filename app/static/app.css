@@ -520,3 +520,43 @@ body.reader-phosphor .readpage h5, body.reader-phosphor .readpage h6 { color: #f
 body.reader-phosphor .readpage a { color: #4ee44e; }
 body.reader-phosphor .readpage blockquote { border-left-color: #6e5410; color: #b8b8a0; }
 body.reader-phosphor .readpage td, body.reader-phosphor .readpage th { border-color: #3a2a08; }
+
+/* ---- Accounts: setup / login / profiles / account forms ------------------ */
+/* No grid, no flexbox — block-level labels and inputs stack naturally and work
+   on iOS 5/6 Safari. Styling mirrors the search field's amber-on-black look. */
+.authform { display: block; margin: 10px 0 22px; }
+.authform p { margin: 0 0 14px; }
+.authform label { display: block; color: #ffb000; line-height: 1.9; }
+.authform input[type=text],
+.authform input[type=password],
+.authform select {
+  display: block;
+  width: 92%;
+  max-width: 360px;
+  padding: 14px 12px;
+  font-size: 18px;
+  font-family: inherit;
+  color: #ffe24a;
+  background-color: #000;
+  border: 1px solid #6e5410;
+}
+.authform input[type=text]:focus,
+.authform input[type=password]:focus,
+.authform select:focus { outline: none; border-color: #ffb000; }
+.authform .button { margin-top: 4px; }
+
+/* Signed-in line in the top chrome + its plain sign-out button. */
+.whoami { margin: 8px 0 2px; color: #8c8c8c; line-height: 2; }
+.whoami a { color: #ffb000; }
+.whoami .signout { display: inline; margin: 0; }
+.linkbtn {
+  font-family: inherit;
+  font-size: inherit;
+  color: #ffb000;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.linkbtn:active { color: #ffe24a; }

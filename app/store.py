@@ -69,6 +69,8 @@ _MAX_PROFILE_NAME = 40
 # Netflix-style profile accent choices. Purely cosmetic; validated on the way
 # in so a crafted value can never reach a template or a CSS class.
 _PROFILE_COLORS = ("amber", "green", "cyan", "white", "magenta", "blue")
+#: Public, ordered tuple of the selectable profile accent colours (for forms).
+PROFILE_COLORS = _PROFILE_COLORS
 _KDF_NAME = "pbkdf2_sha256"
 
 # The fixed profile id used when accounts are disabled (and for any state that

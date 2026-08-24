@@ -28,6 +28,19 @@
     <div class="menubar">
       <a href="/">[ Library ]</a><a href="/list">[ List ]</a><a href="/search?q=">[ Search ]</a><a href="/help">[ Guide ]</a>
     </div>
+    {% set acct = account_chrome(request) %}
+    {% if acct.enabled and acct.signed_in %}
+    <div class="whoami">
+      {% if acct.has_profile %}Signed in as <strong>{{ acct.profile_name }}</strong>{% else %}Signed in{% endif %}
+      &middot; <a href="/profiles">Switch</a>
+      &middot; <a href="/account">Account</a>
+      &middot;
+      <form class="signout" method="post" action="/logout">
+        <input type="hidden" name="_csrf" value="{{ acct.csrf }}">
+        <button class="linkbtn" type="submit">Sign out</button>
+      </form>
+    </div>
+    {% endif %}
   </div>
   {% block content %}{% endblock %}
   <div class="footer">

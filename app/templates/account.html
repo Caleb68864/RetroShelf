@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Account - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; Account: {{ username }}{% if is_admin %} (admin){% endif %}</div>
+{% if message %}<p class="done">{{ message }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<div class="sectionhead">&gt;&gt; Profiles</div>
+<ul class="list">
+{% for p in profiles %}
+  <li class="item">
+    <p><strong>{{ p.name }}</strong>{% if p.current %} &mdash; current{% endif %}</p>
+    <form class="authform" method="post" action="/account">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="rename_profile">
+      <input type="hidden" name="profile_id" value="{{ p.id }}">
+      <input type="text" name="name" maxlength="40" value="{{ p.name }}">
+      <button class="button small" type="submit">Rename</button>
+    </form>
+    {% if can_delete %}
+    <form class="authform" method="post" action="/account">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="delete_profile">
+      <input type="hidden" name="profile_id" value="{{ p.id }}">
+      <button class="button small" type="submit">Delete</button>
+    </form>
+    {% endif %}
+  </li>
+{% endfor %}
+</ul>
+
+<div class="sectionhead">&gt;&gt; Add a profile</div>
+<form class="authform" method="post" action="/account">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="action" value="add_profile">
+  <p><label>Name<br>
+    <input type="text" name="name" maxlength="40"></label></p>
+  <p><label>Colour<br>
+    <select name="color">
+    {% for c in colors %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+    </select></label></p>
+  <p><button class="button" type="submit">Add profile</button></p>
+</form>
+
+<div class="sectionhead">&gt;&gt; Change your password</div>
+<form class="authform" method="post" action="/account">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="action" value="password">
+  <p><label>Current password<br>
+    <input type="password" name="current" autocomplete="current-password"></label></p>
+  <p><label>New password<br>
+    <input type="password" name="new" autocomplete="new-password"></label></p>
+  <p><label>Repeat new password<br>
+    <input type="password" name="confirm" autocomplete="new-password"></label></p>
+  <p><button class="button" type="submit">Change password</button></p>
+</form>
+
+{% if is_admin %}
+<div class="sectionhead">&gt;&gt; Add an account (admin)</div>
+<form class="authform" method="post" action="/account">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="action" value="create_account">
+  <p><label>New username<br>
+    <input type="text" name="new_username" maxlength="64" autocomplete="off"></label></p>
+  <p><label>Password<br>
+    <input type="password" name="new_password" autocomplete="new-password"></label></p>
+  <p><label>Repeat password<br>
+    <input type="password" name="new_confirm" autocomplete="new-password"></label></p>
+  <p><button class="button" type="submit">Create account</button></p>
+</form>
+{% endif %}
+
+<p><a class="back" href="/">Main Menu</a></p>
+{% endblock %}
