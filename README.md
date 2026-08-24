@@ -306,10 +306,33 @@ the first visit creates an admin account at `/setup`, then `/login` is the gate
 (superseding `BRIDGE_ACCESS_KEY`; `ALLOWED_IPS` still fronts it). Each account has
 Netflix-style profiles (no per-profile PIN) and its own reading state — positions,
 bookmarks, Reading List, history. Passwords are salted PBKDF2-SHA256 (stdlib, no new
-dependency); sessions are HMAC-signed, expiring, HttpOnly+SameSite=Lax cookies revocable
-by password change; every mutating form carries a server-checked CSRF token. Set a stable
-`BRIDGE_ID_SECRET` so sessions survive restarts. Note: with accounts on, external OPDS
-readers can't authenticate to `/opds` (browser login only) — a v1 limitation.
+dependency); sessions are HMAC-signed, expiring, HttpOnly+SameSite=Lax cookies. Every
+mutating form carries a server-checked CSRF token. Set a stable `BRIDGE_ID_SECRET` so
+sessions survive restarts. Note: with accounts on, external OPDS readers can't
+authenticate to `/opds` (browser login only) — a v1 limitation.
+
+Login hardening (all automatic, no configuration):
+
+- **Brute-force throttle.** Failed logins are rate-limited in-process (no new
+  dependency; counters reset on restart, which only the operator can trigger).
+  A per-**device** hard lockout stops guessing after too many failures from one
+  address, and a per-**username** escalating delay slows each attempt. The
+  lockout keys on the *attacker's* address, never a username, so it can't be
+  used to lock a victim out; the response is the same whether the username
+  exists or not (no user enumeration). A correct login clears the counters.
+  *If you front RetroShelf with a reverse proxy, all clients share the proxy's
+  address as far as the throttle is concerned — let the proxy do auth in that
+  setup (the IP-allowlist has the same direct-socket limitation).*
+- **Password bounds.** A minimum length, and a 256-char maximum plus a 64 KB
+  cap on any auth form body, so a giant password can't be used as a hashing DoS.
+- **Revocation.** Changing your password, or the **“Sign out all other devices”**
+  button on the Account page, invalidates every outstanding session cookie for
+  that account (a lost or copied cookie included) while keeping the device you
+  clicked from signed in. Plain **Sign out** only clears the local cookie, so one
+  family device signing off doesn't sign the whole household out.
+- **Secure cookie over HTTPS.** When `BRIDGE_PUBLIC_URL` is an `https://` URL the
+  session cookie is marked `Secure`; on a plain-HTTP LAN it is not (a `Secure`
+  cookie would never be sent over `http://`).
 
 What the bridge does on its own, with nothing configured:
 
@@ -326,8 +349,9 @@ What the bridge does on its own, with nothing configured:
   bridge down.
 - **State-change links** (`/star`, `/unstar`, `/prefs`) carry a same-site
   token, so another page on your LAN cannot trigger them with an `<img>` tag.
-- **Secret-masking logs** — access keys and apiKeys are redacted from every
-  log record, including uvicorn's access log.
+- **Secret-masking logs** — access keys, apiKeys, and the session-signing
+  `BRIDGE_ID_SECRET` are redacted from every log record, including uvicorn's
+  access log. Passwords and session/CSRF tokens never enter a URL or log line.
 - The Docker deployment runs read-only, as uid 1000, with all capabilities
   dropped.
 
