@@ -174,6 +174,18 @@ class Entry:
         """
         return not self.acquisitions and self.nav_href is not None
 
+    def _epub_then_pdf(self) -> Acquisition | None:
+        """Return this entry's first EPUB link, else its first PDF, else ``None``.
+
+        The EPUB-preferred-over-PDF ordering that both :attr:`primary_acquisition`
+        and :attr:`supported_acquisition` build on — the two formats old iPads
+        import into iBooks.
+
+        :rtype: Acquisition | None
+        """
+        return (next((a for a in self.acquisitions if a.is_epub), None)
+                or next((a for a in self.acquisitions if a.is_pdf), None))
+
     @property
     def primary_acquisition(self) -> Acquisition | None:
         """Return the most relevant acquisition link for this entry.
@@ -185,15 +197,7 @@ class Entry:
             has no acquisition links.
         :rtype: Acquisition | None
         """
-        if not self.acquisitions:
-            return None
-        for a in self.acquisitions:
-            if a.is_epub:
-                return a
-        for a in self.acquisitions:
-            if a.is_pdf:
-                return a
-        return self.acquisitions[0]
+        return self._epub_then_pdf() or (self.acquisitions[0] if self.acquisitions else None)
 
     @property
     def supported_acquisition(self) -> Acquisition | None:
@@ -207,13 +211,7 @@ class Entry:
         :returns: A supported :class:`Acquisition`, or ``None``.
         :rtype: Acquisition | None
         """
-        for a in self.acquisitions:
-            if a.is_epub:
-                return a
-        for a in self.acquisitions:
-            if a.is_pdf:
-                return a
-        return None
+        return self._epub_then_pdf()
 
 
 @dataclass
