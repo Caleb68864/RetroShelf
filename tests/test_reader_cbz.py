@@ -205,6 +205,16 @@ async def test_comicinfo_title_used_when_record_has_none(tmp_path):
     assert manifest.title == "The Great Comic"
 
 
+async def test_comicinfo_title_used_when_no_series(tmp_path):
+    # With no <Series>, the <Title> element is the fallback source.
+    cache_dir = str(tmp_path / "cache")
+    ci = b"<?xml version='1.0'?><ComicInfo><Title>Issue One</Title></ComicInfo>"
+    kc = FakeKC(make_cbz(comicinfo=ci))
+    rec = {"u": CBZ_URL, "m": CBZ_MEDIA}  # no title in record
+    manifest = await shelve_cbz_book(kc, rec, cache_dir)
+    assert manifest.title == "Issue One"
+
+
 # -- off-event-loop extraction ------------------------------------------------
 
 
