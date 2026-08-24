@@ -467,18 +467,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.http = client
     app.state.kavita = KavitaClient(cfg, client)
     app.state.ids = IdCodec(cfg.bridge_id_secret or cfg.bridge_access_key)
-    # Secret that signs session cookies + derives CSRF tokens. The same
-    # configured secret that stabilises IdCodec keeps sessions valid across
-    # restarts; with neither secret set we fall back to a per-process random
-    # one, so sessions (like bookmarked bridge ids) reset on restart.
+    # Secret that signs session cookies + derives CSRF tokens. When accounts are
+    # enabled, load_config guarantees a stable BRIDGE_ID_SECRET/BRIDGE_ACCESS_KEY
+    # so sessions survive restarts; the per-process random fallback only applies
+    # when accounts are off (where nothing durable is signed anyway).
     app.state.session_secret = (
         cfg.bridge_id_secret or cfg.bridge_access_key or secrets.token_hex(32)
     )
-    if cfg.accounts_enabled and not (cfg.bridge_id_secret or cfg.bridge_access_key):
-        log.warning(
-            "ACCOUNTS_ENABLED but no BRIDGE_ID_SECRET — using a per-process "
-            "session secret; everyone is signed out on restart."
-        )
     app.state.cache = FeedCache(cfg.cache_feeds_seconds)
     app.state.search_templates = {}  # per-feed-origin OpenSearch templates, cached
     app.state.store = Store(cfg.state_path)  # Reading List + download history

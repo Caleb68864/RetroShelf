@@ -104,3 +104,17 @@ def test_debug_flag():
     cfg = load_config({**BASE_ENV, "LOG_LEVEL": "debug"})
     assert cfg.debug is True
     assert load_config(BASE_ENV).debug is False
+
+
+def test_accounts_enabled_requires_a_stable_secret():
+    # A per-process random session secret would sign everyone out on every
+    # restart — so enabling accounts without a stable secret is a hard error.
+    with pytest.raises(ConfigError):
+        load_config({**BASE_ENV, "ACCOUNTS_ENABLED": "1"})
+    # A stable secret (either one) satisfies the requirement.
+    assert load_config({**BASE_ENV, "ACCOUNTS_ENABLED": "1",
+                        "BRIDGE_ID_SECRET": "fixed-secret"}).accounts_enabled is True
+    assert load_config({**BASE_ENV, "ACCOUNTS_ENABLED": "1",
+                        "BRIDGE_ACCESS_KEY": "fixed-key"}).accounts_enabled is True
+    # Accounts off needs no secret.
+    assert load_config(BASE_ENV).accounts_enabled is False

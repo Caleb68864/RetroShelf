@@ -596,6 +596,21 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         if s.strip()
     )
 
+    # Accounts sign session cookies with a stable secret so logins survive a
+    # restart. Without one, every session would silently reset on each restart
+    # — a confusing footgun for a household setup — so require a stable secret
+    # rather than fall back to a per-process random one. (BRIDGE_ID_SECRET is
+    # already recommended for durable bookmarked links, so this asks nothing new.)
+    if _as_bool(e.get("ACCOUNTS_ENABLED"), False) and not (
+        (e.get("BRIDGE_ID_SECRET") or "").strip()
+        or (e.get("BRIDGE_ACCESS_KEY") or "").strip()
+    ):
+        raise ConfigError(
+            "ACCOUNTS_ENABLED requires a stable BRIDGE_ID_SECRET (or "
+            "BRIDGE_ACCESS_KEY) so sessions survive restarts. Set "
+            "BRIDGE_ID_SECRET to a fixed random string."
+        )
+
     return Config(
         feeds=tuple(feeds),
         state_dir=(e.get("STATE_DIR") or "/config").strip(),
