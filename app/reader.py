@@ -93,12 +93,17 @@ _INT_RE = re.compile(r"^[0-9]+$")
 # both realistic document nesting and Python's default recursion limit.
 MAX_NESTING_DEPTH = 100
 
-# Sentinel prefixes this module emits (``{IMG:n}`` / ``{CH:i}``). Book text
-# or an ``alt`` value that happens to contain one of these literally must
-# never be indistinguishable from a real, module-generated placeholder once
-# it reaches SS-02/03's substitution step — so any occurrence coming from
-# untrusted content is neutralized with an invisible break.
-_PLACEHOLDER_PREFIXES = ("{IMG:", "{CH:")
+# Sentinel prefixes this module emits (``{IMG:n}`` / ``{CH:i}`` / ``{FRAG:id}``).
+# Book text or an ``alt`` value that happens to contain one of these literally
+# must never be indistinguishable from a real, module-generated placeholder
+# once it reaches the serve-time substitution step (``_substitute_placeholders``
+# rewrites every one of these three forms) — so any occurrence coming from
+# untrusted content is neutralized with an invisible break. ``{FRAG:`` belongs
+# here for the same reason as the other two: a literal ``{FRAG:x}`` in book
+# prose would otherwise be rewritten into a spurious in-book link URL at serve
+# time (the charset guard keeps it from ever being an injection, but forging a
+# placeholder is exactly what this defense exists to prevent).
+_PLACEHOLDER_PREFIXES = ("{IMG:", "{CH:", "{FRAG:")
 _ZERO_WIDTH_BREAK = "​"
 
 

@@ -241,7 +241,7 @@ def test_placeholder_forgery_neutralized_in_text_and_alt() -> None:
     xhtml = (
         '<?xml version="1.0"?>'
         '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
-        '<p>fake {IMG:0} and {CH:1} sentinels</p>'
+        '<p>fake {IMG:0} and {CH:1} and {FRAG:evil} sentinels</p>'
         '<img src="a.png" alt="fake {IMG:0} alt"/>'
         "</body></html>"
     )
@@ -255,6 +255,10 @@ def test_placeholder_forgery_neutralized_in_text_and_alt() -> None:
     joined = "\n".join(blocks)
     assert "{IMG:0}" not in joined
     assert "{CH:1}" not in joined
+    # {FRAG:...} is rewritten at serve time exactly like {IMG:}/{CH:}, so a
+    # forged one in book prose must be broken up too (else it becomes a
+    # spurious in-book link URL).
+    assert "{FRAG:evil}" not in joined
     # The real, module-generated placeholder must still be intact.
     assert "{IMG:9}" in joined
 
