@@ -39,6 +39,15 @@ _BIG_CHAPTER = (
     + "</body></html>\n"
 ).encode("utf-8")
 
+# A chapter that sanitizes to exactly one block, so viewing its only part
+# lands on the manifest's true final block (percent_of's 100% condition).
+_ONE_BLOCK_CHAPTER = (
+    '<?xml version="1.0"?>\n'
+    '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+    "<p>The only block in this chapter.</p>"
+    "</body></html>\n"
+).encode("utf-8")
+
 
 def _test_store() -> Store:
     """A fresh, isolated Store backed by a unique temp file (no cross-test bleed)."""
@@ -130,7 +139,13 @@ def test_part_page_has_text_prev_next_and_no_script_or_inline_handlers(tmp_path)
         text = r.text
         assert "Body text for chapter 0" in text
         assert "<script" not in text
-        assert " on" not in text.lower() or "onclick=" not in text.lower()
+        # No event-handler attributes survived the sanitizer into the page.
+        # (The old `" on" ... or "onclick=" ...` form was a tautology — the
+        # right operand was always true, so it could never fail. [SS-04 review])
+        low = text.lower()
+        assert "onclick=" not in low
+        assert "onerror=" not in low
+        assert "onload=" not in low
         assert 'style="' not in text
         # single-part chapter: no Prev (chapter 0), Next -> chapter 1
         assert "/read/{}/1/1".format(bid) in text
@@ -294,3 +309,81 @@ def test_prefs_split_requires_site_token(tmp_path):
     with make_client(handler, str(tmp_path / "cache")) as client:
         r = client.get("/prefs?split=large&next=/")
         assert r.status_code == 403
+
+
+# -- UI integration: book/home pages + reader themes (SS-05) -----------------
+
+
+def test_book_page_epub_has_read_link_and_first_open_hint(tmp_path):
+    handler, _calls = make_handler(make_epub(chapters=1))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        r = client.get(f"/book/{bid}")
+        assert r.status_code == 200
+        assert f"/read/{bid}" in r.text
+        assert "Read here" in r.text
+        assert "first open takes a moment" in r.text
+
+
+def test_book_page_pdf_has_no_read_link(tmp_path):
+    handler, _calls = make_handler(make_epub(chapters=1))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client, url=PDF_URL, media="application/pdf")
+        r = client.get(f"/book/{bid}")
+        assert r.status_code == 200
+        assert "/read/" not in r.text
+
+
+def test_book_and_home_show_continue_reading_after_a_part_view(tmp_path):
+    handler, _calls = make_handler(make_epub(chapters=3))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        client.get(f"/read/{bid}", follow_redirects=True)  # shelves + reads Ch1/Part1
+
+        book_page = client.get(f"/book/{bid}")
+        assert "Continue reading" in book_page.text
+        assert "Ch. 1" in book_page.text
+
+        home_page = client.get("/")
+        assert "Currently Reading" in home_page.text
+        assert "Test Book" in home_page.text
+
+
+def test_book_page_shows_finished_after_last_part(tmp_path):
+    handler, _calls = make_handler(
+        make_epub(chapters=1, image=False, chapter_bytes={0: _ONE_BLOCK_CHAPTER})
+    )
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        # Single chapter with a single block: its only part is both the last
+        # part of the chapter and the manifest's final block, so it records
+        # 100% ("finished").
+        client.get(f"/read/{bid}", follow_redirects=True)
+        r = client.get(f"/book/{bid}")
+        assert "Read again" in r.text
+        assert "finished" in r.text
+
+
+def test_reader_theme_phosphor_cookie_sets_body_class(tmp_path):
+    handler, _calls = make_handler(make_epub(chapters=1))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        client.get(f"/read/{bid}", follow_redirects=False)
+
+        default_page = client.get(f"/read/{bid}/0/1")
+        assert "reader-phosphor" not in default_page.text
+
+        client.cookies.set("rs_reader_theme", "phosphor")
+        phosphor_page = client.get(f"/read/{bid}/0/1")
+        assert "reader-phosphor" in phosphor_page.text
+
+
+def test_reader_honors_large_print_cookie(tmp_path):
+    handler, _calls = make_handler(make_epub(chapters=1))
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client)
+        client.get(f"/read/{bid}", follow_redirects=False)
+        client.cookies.set("rs_big", "1")
+        r = client.get(f"/read/{bid}/0/1")
+        assert '<body class="' in r.text
+        assert " big" in r.text

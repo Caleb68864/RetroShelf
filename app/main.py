@@ -934,6 +934,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             recent.append({"title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
                            "badge": "EPUB" if fmt == "epub" else "PDF",
                            "detail_url": f"/book/{bid}", "downloaded": True})
+        # "Currently Reading" shelf: up to 4 most-recently-read positions. [SS-05]
+        reading = []
+        for pos in store(request).reading_list(4):
+            rbid = _record_id(codec(request), pos)
+            pct = int(pos.get("percent", 0))
+            reading.append({
+                "title": pos.get("t") or "Untitled", "author": pos.get("a") or "",
+                "detail_url": f"/read/{rbid}",
+                "progress": "finished" if pct >= 100 else f"{pct}%",
+            })
         return templates.TemplateResponse(request, "home.html", {
             "kavita_ok": kavita_ok, "status_detail": detail,
             "feeds": menu, "multi": multi,
@@ -942,6 +952,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "search_feed": "*" if multi else primary_id,
             "reading_count": len(store(request).favorite_keys()),
             "recent": recent,
+            "reading": reading,
         })
 
     @app.get("/feed/{fid}", response_class=HTMLResponse)
@@ -1019,6 +1030,25 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         key = book_key(rec.get("u", ""))
         is_fav = store(request).is_favorite(key)
 
+        # In-browser reader entry point (EPUB only; PDFs keep their existing
+        # inline-viewer behaviour and get no reader button). [SS-05]
+        read_url = None
+        read_label = None
+        read_hint = False
+        if fmt == "epub":
+            read_url = f"/read/{bid}"
+            pos = store(request).get_position(key)
+            if pos is None:
+                read_label = "Read here"
+                read_hint = True
+            elif int(pos.get("percent", 0)) >= 100:
+                read_label = "Read again — finished"
+            else:
+                read_label = (
+                    f"Continue reading (Ch. {int(pos.get('chapter', 0)) + 1} · "
+                    f"{int(pos.get('percent', 0))}%)"
+                )
+
         # One download button per available format (EPUB/PDF), with size.
         fmts = rec.get("fmts") or [{"u": rec.get("u"), "m": rec.get("m"), "f": fmt, "len": None}]
         dlkeys = store(request).downloaded_keys()
@@ -1053,6 +1083,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "is_fav": is_fav,
             "star_url": f"/unstar/{key}" if is_fav else f"/star/{bid}",
             "star_label": "Remove from Reading List" if is_fav else "Add to Reading List",
+            "read_url": read_url, "read_label": read_label, "read_hint": read_hint,
             "back_url": _back_to(request),
         })
 

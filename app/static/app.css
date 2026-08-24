@@ -414,3 +414,67 @@ body.color-white .brand:active { color: #ffffff; }
 .statusrow { display: block; padding: 14px 4px; }
 .statusrow .booktitle { display: inline; }
 .statusrow .booktitle:before { content: ""; }
+
+/* ---- In-browser reader (SS-05) --------------------------------------------
+   Book theme (sepia) is the default reading page; a phosphor variant reuses
+   the terminal palette via the rs_reader_theme=phosphor cookie -> body class
+   set in base.html. Block layout only: no grid, no flex, no web fonts. */
+.readbar { border-bottom: 1px dashed #6e5410; padding-bottom: 10px; margin-bottom: 14px; }
+.readtitle { color: #ffb000; font-weight: bold; }
+.chaptertitle { color: #ffe24a; font-size: 20px; margin: 0 0 14px; }
+.readhint { display: block; margin-top: 6px; font-size: 14px; color: #8c8c8c; }
+
+/* The reading page: a sepia "book" look, independent of the surrounding DOS
+   terminal chrome (honors the existing large-print .big mode below). */
+.readpage {
+  background-color: #f4ecd8;
+  color: #33291f;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 19px;
+  line-height: 1.6;
+  max-width: 40em;
+  margin: 0 auto 20px;
+  padding: 20px 22px;
+  border: 1px solid #cdbd97;
+}
+.readpage p { margin: 0 0 1em; }
+.readpage img { max-width: 100%; height: auto; }
+.readpage h1, .readpage h2, .readpage h3,
+.readpage h4, .readpage h5, .readpage h6 { color: #241d14; }
+.readpage a { color: #6b4a1f; text-decoration: underline; }
+.readpage blockquote {
+  margin: 0 0 1em;
+  padding-left: 14px;
+  border-left: 3px solid #cdbd97;
+  color: #4a3d2b;
+}
+.readpage table { border-collapse: collapse; margin: 0 0 1em; }
+.readpage td, .readpage th { border: 1px solid #cdbd97; padding: 4px 8px; }
+
+body.big .readpage { font-size: 24px; }
+body.big .chaptertitle { font-size: 26px; }
+
+.readfoot { margin-top: 18px; }
+.readnav { margin: 0 0 10px; }
+.readpos { color: #8c8c8c; margin: 0 0 10px; }
+.readsplit, .readtheme { margin: 0 0 8px; font-size: 15px; }
+.readsplit a, .readtheme a { margin-right: 4px; }
+
+/* Table of contents */
+.toc .current { color: #ffb000; }
+.toc .marker { display: block; color: #8c8c8c; font-size: 14px; }
+
+/* Phosphor reader theme: swaps the sepia "book" look for the site's own
+   terminal palette (amber/green/white chrome stays as chosen elsewhere). */
+body.reader-phosphor .readpage {
+  background-color: #0a0a0a;
+  color: #d6d6d6;
+  font-family: "Courier New", Courier, "Lucida Console", Monaco, monospace;
+  border-color: #3a2a08;
+}
+body.reader-phosphor .readpage h1, body.reader-phosphor .readpage h2,
+body.reader-phosphor .readpage h3, body.reader-phosphor .readpage h4,
+body.reader-phosphor .readpage h5, body.reader-phosphor .readpage h6 { color: #ffe24a; }
+body.reader-phosphor .readpage a { color: #4ee44e; }
+body.reader-phosphor .readpage blockquote { border-left-color: #6e5410; color: #b8b8a0; }
+body.reader-phosphor .readpage td, body.reader-phosphor .readpage th { border-color: #3a2a08; }

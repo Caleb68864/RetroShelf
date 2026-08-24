@@ -12,7 +12,7 @@
 <link rel="icon" type="image/png" href="/static/icons/apple-touch-icon-180.png">
 <link rel="alternate" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="/opds" title="RetroShelf OPDS">
 </head>
-<body class="color-{{ request.cookies.get('rs_color') or 'amber' }}{{ ' big' if request.cookies.get('rs_big') == '1' else '' }}">
+<body class="color-{{ request.cookies.get('rs_color') or 'amber' }}{{ ' big' if request.cookies.get('rs_big') == '1' else '' }}{{ ' reader-phosphor' if request.cookies.get('rs_reader_theme') == 'phosphor' else '' }}">
 <div class="page">
 <div class="wrap">
   <div class="topbar">

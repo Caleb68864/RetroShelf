@@ -37,6 +37,17 @@
   {% if multi %}<a href="/status">[ Library Status ]</a>{% endif %}
 </p>
 
+{% if reading %}
+<div class="sectionhead">&gt;&gt; Currently Reading</div>
+<ul class="list">
+{% for r in reading %}
+  <li class="item">
+    <a class="navlink" href="{{ r.detail_url }}"><span class="prompt">&gt;&gt;</span>{{ r.title }}{% if r.author %} &middot; {{ r.author }}{% endif %} &middot; {{ r.progress }}</a>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
 {% if recent %}
 <div class="sectionhead">&gt;&gt; Recently sent to iBooks</div>
 <ul class="list">
