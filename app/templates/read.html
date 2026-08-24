@@ -10,13 +10,16 @@
 {# Trusted seam: content_html is sanitize_chapter's own output (SS-01), with
    every {IMG:n}/{CH:i} placeholder already resolved to a plain /read/{bid}/...
    URL by _substitute_placeholders. This is the only "safe" filter on this page. #}
-<div class="readpage">{{ content_html | safe }}</div>
+<div class="readpage{% if is_comic %} comic{% endif %}">{{ content_html | safe }}</div>
 
 <div class="readfoot">
   <p class="readnav">
     {% if prev_url %}<a class="button small" href="{{ prev_url }}">&laquo; Prev</a>{% endif %}
     {% if next_url %}<a class="button small" href="{{ next_url }}">Next &raquo;</a>{% endif %}
   </p>
+  {% if is_comic %}
+  <p class="readpos">Page {{ chapter + 1 }} of {{ page_count }}</p>
+  {% else %}
   <p class="readpos">Ch {{ chapter + 1 }} &middot; part {{ part }} of {{ parts_count }}</p>
   <p class="readsplit">
     Part size:
@@ -25,6 +28,7 @@
     <a href="/prefs?split=large&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Large ]</a>
     <a href="/prefs?split=whole&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Whole chapter ]</a>
   </p>
+  {% endif %}
   <p class="readtheme">
     Theme:
     <a href="/prefs?reader=book&amp;next={{ request.url.path|urlencode }}&amp;t={{ site_token(request) }}">[ Book ]</a>
@@ -47,7 +51,9 @@
     <a href="{{ bookmark_url }}">{% if already_bookmarked %}&#9733; Remove bookmark{% else %}&#9734; Bookmark this page{% endif %}</a>
     {% if bookmark_count %}<a href="/read/{{ bid }}/bookmarks">[ Bookmarks ({{ bookmark_count }}) ]</a>{% endif %}
   </p>
+  {% if not is_comic %}
   <p class="readfind"><a href="/read/{{ bid }}/find">[ Find in book ]</a></p>
+  {% endif %}
   <p><a class="back" href="/book/{{ bid }}">Back to book</a></p>
 </div>
 {% endblock %}

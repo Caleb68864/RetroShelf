@@ -451,6 +451,26 @@ body.color-white .brand:active { color: #ffffff; }
 .readpage table { border-collapse: collapse; margin: 0 0 1em; }
 .readpage td, .readpage th { border: 1px solid #cdbd97; padding: 4px 8px; }
 
+/* Comic (CBZ) page: the chapter is a single page image, so drop the sepia
+   "book" chrome and let the image fill the reading column on a neutral dark
+   ground. Block layout only (no grid/flex) so old Safari renders it. The
+   image is downscaled server-side to <=1024px; capping its displayed width
+   keeps a wide page from overflowing a small iPad screen. [cbz-reader] */
+.readpage.comic {
+  max-width: 100%;
+  padding: 0;
+  background-color: #111;
+  border-color: #000;
+  text-align: center;
+}
+.readpage.comic img {
+  display: block;
+  width: 100%;
+  max-width: 900px;
+  height: auto;
+  margin: 0 auto;
+}
+
 body.big .readpage { font-size: 24px; }
 body.big .chaptertitle { font-size: 26px; }
 

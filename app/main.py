@@ -73,6 +73,7 @@ from .reader import (
     percent_of,
     search_book,
     shelve_book,
+    shelve_cbz_book,
     shelve_html_book,
     shelve_pdf_book,
 )
@@ -172,14 +173,15 @@ def _download_record(record: dict, fm: dict) -> dict:
 
 
 # Format token (from :func:`app.download.format_of`) -> display badge. EPUB/PDF
-# are the iBooks formats; HTML/TEXT are read-in-browser only.
-_BADGES = {"epub": "EPUB", "pdf": "PDF", "html": "HTML", "text": "TEXT"}
+# are the iBooks formats; HTML/TEXT/CBZ are read-in-browser only.
+_BADGES = {"epub": "EPUB", "pdf": "PDF", "html": "HTML", "text": "TEXT", "cbz": "CBZ"}
 
 # Formats the in-browser reader can open. EPUB shelves via ``shelve_book``;
 # HTML and plain text shelve via ``shelve_html_book``; PDF (text reflow) shelves
-# via ``shelve_pdf_book``. PDF is a DUAL path — unlike EPUB/HTML it ALSO keeps
-# its native "Open PDF" inline / Copy-to-Books download button on the book page.
-_READER_FORMATS = frozenset({"epub", "html", "text", "pdf"})
+# via ``shelve_pdf_book``; CBZ comics shelve via ``shelve_cbz_book`` (one image
+# page per chapter). PDF is a DUAL path — unlike the others it ALSO keeps its
+# native "Open PDF" inline / Copy-to-Books download button on the book page.
+_READER_FORMATS = frozenset({"epub", "html", "text", "pdf", "cbz"})
 
 
 def _badge_for(fmt: str | None) -> str:
@@ -199,7 +201,8 @@ def _reader_shelver(record: dict):
     Dispatches on :func:`app.download.format_of`: EPUB shelves via
     :func:`app.reader.shelve_book`, HTML/text via
     :func:`app.reader.shelve_html_book`, PDF (text reflow) via
-    :func:`app.reader.shelve_pdf_book`, and any unknown format is not readable
+    :func:`app.reader.shelve_pdf_book`, CBZ comics via
+    :func:`app.reader.shelve_cbz_book`, and any unknown format is not readable
     in the browser and yields ``None``.
 
     :param record: A decoded book record (its ``m`` media type is inspected).
@@ -211,6 +214,8 @@ def _reader_shelver(record: dict):
         return shelve_book
     if fmt == "pdf":
         return shelve_pdf_book
+    if fmt == "cbz":
+        return shelve_cbz_book
     if fmt in _READER_FORMATS:  # html / text
         return shelve_html_book
     return None
@@ -768,8 +773,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 entries.append({"is_nav": True, "title": (e.title or "").strip() or "Untitled",
                                 "href": f"/feed/{ids.encode(nav_url)}"})
                 continue
-            # Only surface EPUB/PDF — the formats old iPads import into iBooks.
-            # Entries offering only mobi/Kindle/CBZ are skipped, not mislabeled.
+            # Surface the best readable acquisition: EPUB/PDF (imported into
+            # iBooks) first, then the read-in-browser-only formats (HTML/text/
+            # CBZ). Entries offering only mobi/Kindle or a CBR (RAR) comic are
+            # skipped, not mislabeled.
             acq = e.supported_acquisition
             if acq is None:
                 continue
@@ -1668,7 +1675,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if shelver is None:
             return _error_response(
                 request, "Not found",
-                "Only EPUB, HTML, and PDF books can be read in the browser.", 404
+                "Only EPUB, HTML, PDF, and CBZ comics can be read in the browser.", 404
             )
         key = book_key(rec.get("u", ""))
         manifest = load_manifest(cfg.cache_dir, key)
@@ -2022,6 +2029,12 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             f"{base}/{mark_verb}?chapter={chapter}&block={start}&part={part}&t={token}"
         )
 
+        # Comic ergonomics (gated on the manifest kind): the position line reads
+        # "Page N of M" instead of "Ch N · part P of Q", and the split-size and
+        # "Find in book" controls are hidden (a comic page is one image block —
+        # split size is meaningless and there is no text to search). Bookmarks,
+        # themes, and the ToC link stay useful and are kept. [cbz-reader]
+        is_comic = manifest.kind == "comic"
         return templates.TemplateResponse(request, "read.html", {
             "book_title": manifest.title, "bid": bid,
             "chapter": chapter, "part": part, "parts_count": len(parts),
@@ -2030,6 +2043,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "prev_url": prev_url, "next_url": next_url,
             "bookmark_url": bookmark_url, "already_bookmarked": already_bookmarked,
             "bookmark_count": len(marks),
+            "is_comic": is_comic,
+            "page_count": len(manifest.chapters),
         })
 
 
