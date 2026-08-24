@@ -1573,10 +1573,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         pos = store(request).get_position(key)
         if pos is not None and 0 <= int(pos.get("chapter", 0)) < len(manifest.chapters):
             chapter = int(pos["chapter"])
-            blocks = load_chapter(cfg.cache_dir, key, chapter)
-            parts = parts_for([len(b) for b in blocks], _split_target(request))
-            part = part_containing(int(pos.get("block", 0)), parts)
-            return RedirectResponse(f"/read/{bid}/{chapter}/{part}", status_code=303)
+            # A corrupt resume-chapter cache file must not make the book
+            # un-openable; fall through to the first-content redirect below.
+            try:
+                blocks = load_chapter(cfg.cache_dir, key, chapter)
+            except ReaderError:
+                blocks = None
+            if blocks is not None:
+                parts = parts_for([len(b) for b in blocks], _split_target(request))
+                part = part_containing(int(pos.get("block", 0)), parts)
+                return RedirectResponse(f"/read/{bid}/{chapter}/{part}", status_code=303)
         # Open at the first chapter that actually has content: a leading
         # spine item that sanitized to zero blocks (e.g. a cover-only page
         # shelved without Pillow) would 404 the very first page otherwise.

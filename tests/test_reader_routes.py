@@ -661,3 +661,19 @@ def test_next_and_prev_skip_an_empty_middle_chapter(tmp_path):
         page2 = client.get(f"/read/{bid}/2/1")
         assert page2.status_code == 200
         assert f"/read/{bid}/0/1" in page2.text     # Prev skipped empty ch.1
+
+
+def test_corrupt_resume_chapter_still_opens_the_book(tmp_path):
+    # A stored resume position in a chapter whose cache later becomes
+    # unreadable must not 502 the /read/{bid} entry point; it falls back to
+    # the first content chapter instead of failing to open.
+    cache_dir = str(tmp_path / "cache")
+    handler, _calls = make_handler(make_epub(chapters=3, image=False, ncx=False))
+    with make_client(handler, cache_dir) as client:
+        bid = _bid(client)
+        client.get(f"/read/{bid}", follow_redirects=False)  # shelve
+        client.get(f"/read/{bid}/2/1")                       # record position in ch.2
+        _corrupt_chapter(cache_dir, BOOK_URL, 2)
+        r = client.get(f"/read/{bid}", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/read/{bid}/0/1"   # degraded to start
