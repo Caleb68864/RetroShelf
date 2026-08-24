@@ -81,6 +81,7 @@ from .reader import (
 from .render import STATIC_DIR, templates
 from .security import access_key_ok, ip_allowed, sanitize_filename
 from .store import PROFILE_COLORS, Store, book_key
+from .throttle import LoginThrottle
 
 log = logging.getLogger("retroshelf")
 
@@ -110,6 +111,15 @@ _SENTINEL_PROFILE = "_"
 # Minimum password length accepted at setup / password-change. A LAN tool, so
 # this is a floor against fat-finger blanks, not a strength policy.
 _MIN_PASSWORD_LEN = 6
+# Upper bound on any submitted password. PBKDF2-HMAC-SHA256 pre-hashes an
+# over-long key, so a huge password is not a KDF-iteration amplifier, but hashing
+# a multi-megabyte body still burns CPU/memory on every guess; bound it so login
+# and password-change stay constant-cost. Comfortably above any real passphrase.
+_MAX_PASSWORD_LEN = 256
+# Hard ceiling on an auth POST body. Every no-JS auth form is a few hundred bytes;
+# anything past this is junk or abuse and is dropped before it can be parsed or
+# hashed. Enforced in :func:`_form`, so it fronts every POST route uniformly.
+_MAX_FORM_BYTES = 64 * 1024
 
 # Current-page sort keys for /feed (SS-03). Sorting only reorders the books on
 # the page already fetched — pagination is upstream-driven, so we never hold the
@@ -477,6 +487,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.cache = FeedCache(cfg.cache_feeds_seconds)
     app.state.search_templates = {}  # per-feed-origin OpenSearch templates, cached
     app.state.store = Store(cfg.state_path)  # Reading List + download history
+    # In-process brute-force throttle for /login (single-worker, no dependency,
+    # resets on restart). Only consulted when accounts are enabled.
+    app.state.throttle = LoginThrottle()
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
     _install_mask_filter(cfg)
     # One triage line an operator can read at a glance: what is being fronted
@@ -876,6 +889,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :rtype: dict[str, str]
         """
         raw = await request.body()
+        # An auth form is tiny; an oversized body is junk or abuse. Drop it before
+        # parsing so no route hashes or otherwise processes a multi-MB payload. An
+        # empty dict fails the CSRF check downstream → the uniform refusal. [dos]
+        if len(raw) > _MAX_FORM_BYTES:
+            log.info("dropped oversized POST body (%d bytes) on %s",
+                     len(raw), request.url.path)
+            return {}
         parsed = parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True)
         return {k: v[0] for k, v in parsed.items()}
 
@@ -934,9 +954,28 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """Return a user-facing error for a new password, or ``None`` if valid."""
         if len(password) < _MIN_PASSWORD_LEN:
             return f"Password must be at least {_MIN_PASSWORD_LEN} characters."
+        if len(password) > _MAX_PASSWORD_LEN:
+            return f"Password must be at most {_MAX_PASSWORD_LEN} characters."
         if password != confirm:
             return "The two passwords do not match."
         return None
+
+    def _client_ip(request: Request) -> str | None:
+        """Return the direct socket address of the caller, or ``None``.
+
+        Deliberately the raw peer address, not any ``X-Forwarded-For`` header —
+        the throttle must key on something the caller cannot spoof, matching the
+        IP-allowlist's direct-socket stance. [throttle]
+        """
+        return request.client.host if request.client else None
+
+    def login_throttle(request: Request) -> LoginThrottle | None:
+        """Return the shared login throttle, or ``None`` when unavailable.
+
+        Absent only in tests that build ``app.state`` by hand and opt out of
+        throttling; production always attaches one in :func:`lifespan`.
+        """
+        return getattr(request.app.state, "throttle", None)
 
     @app.get("/setup", response_class=HTMLResponse)
     async def setup_get(request: Request) -> Response:
@@ -1010,14 +1049,47 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             return _csrf_refused(request)
         username = (form.get("username") or "").strip()
         password = form.get("password") or ""
-        account_id = store(request).verify_login(username, password)
-        if account_id is None:
+        ip = _client_ip(request)
+        throttle = login_throttle(request)
+
+        def _wrong() -> Response:
             # One uniform error for unknown-user and wrong-password alike; the
             # store already burned equal PBKDF2 work either way. [no-enumeration]
             return templates.TemplateResponse(
                 request, "login.html",
                 {"csrf": _csrf_field(request), "error": "Wrong username or password."},
                 status_code=401)
+
+        # Hard IP lockout: refuse before any hashing. The message is keyed on the
+        # device, never the username, so it cannot reveal whether a username
+        # exists — the no-enumeration property is preserved. [brute-force]
+        if throttle is not None and throttle.locked(ip):
+            log.info("login refused: address %s is rate-limited", ip)
+            return templates.TemplateResponse(
+                request, "login.html",
+                {"csrf": _csrf_field(request),
+                 "error": "Too many sign-in attempts from this device. "
+                          "Wait a few minutes and try again."},
+                status_code=429)
+        # An over-long password is bounded before it can reach the KDF, so a
+        # crafted giant password cannot make a single guess expensive. [dos]
+        if len(password) > _MAX_PASSWORD_LEN:
+            if throttle is not None:
+                throttle.record_failure(username, ip)
+            log.info("failed login for %r from %s (over-long password)",
+                     username[:64], ip)
+            return _wrong()
+        account_id = store(request).verify_login(username, password)
+        if account_id is None:
+            if throttle is not None:
+                throttle.record_failure(username, ip)
+                # Escalating, non-blocking tarpit; slows guessing without ever
+                # locking a real user out (a correct password still gets in).
+                await asyncio.sleep(throttle.tarpit_delay(username))
+            log.info("failed login for %r from %s", username[:64], ip)
+            return _wrong()
+        if throttle is not None:
+            throttle.record_success(username, ip)
         acct = store(request).get_account(account_id)
         assert acct is not None  # just verified
         resp: Response = RedirectResponse("/profiles", status_code=303)
