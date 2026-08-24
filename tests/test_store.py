@@ -94,3 +94,104 @@ def test_bookmarks_wrong_shape_loads_empty(tmp_path):
         json.dump({"bookmarks": "not a dict"}, f)
     s = Store(p)  # must not raise
     assert s.bookmarks("anything") == []
+
+
+# -- accounts + profiles (opt-in) -------------------------------------------
+def test_first_account_is_admin_and_username_is_unique(tmp_path):
+    s = Store(str(tmp_path / "s.json"))
+    assert s.has_accounts() is False
+    admin_id = s.create_account("Admin", "hunter2000")
+    assert s.has_accounts() and s.account_count() == 1
+    admin = s.get_account(admin_id)
+    assert admin["is_admin"] is True
+    # The public view never leaks the password hash.
+    assert "pw_hash" not in admin and "pw_salt" not in admin
+    # Second account is not admin.
+    second_id = s.create_account("bob", "password1")
+    assert s.get_account(second_id)["is_admin"] is False
+    # Usernames are unique, case-insensitively.
+    import pytest
+    with pytest.raises(ValueError):
+        s.create_account("admin", "whatever9")
+
+
+def test_verify_login_and_password_change_revokes(tmp_path):
+    s = Store(str(tmp_path / "s.json"))
+    acct_id = s.create_account("alice", "correct-horse")
+    assert s.verify_login("alice", "correct-horse") == acct_id
+    assert s.verify_login("alice", "wrong") is None
+    assert s.verify_login("nobody", "correct-horse") is None
+    v0 = s.get_account(acct_id)["token_version"]
+    assert s.set_password(acct_id, "new-passphrase") is True
+    # token_version bumped (revokes old sessions) and the new password works.
+    assert s.get_account(acct_id)["token_version"] == v0 + 1
+    assert s.verify_login("alice", "new-passphrase") == acct_id
+    assert s.verify_login("alice", "correct-horse") is None
+
+
+def test_profiles_add_rename_delete_and_isolation(tmp_path):
+    import pytest
+    s = Store(str(tmp_path / "s.json"))
+    a = s.create_account("a", "passworda")
+    b = s.create_account("b", "passwordb")
+    pa = s.add_profile(a, "Ann", "amber")
+    pb = s.add_profile(b, "Bob", "green")
+    # A profile only belongs to its own account (cross-account isolation check).
+    assert s.profile_belongs(a, pa) is True
+    assert s.profile_belongs(a, pb) is False
+    assert s.profile_belongs(b, pa) is False
+    # Rename is scoped to the owning account; a cross-account rename is refused.
+    assert s.rename_profile(a, pa, "Annie") is True
+    assert s.rename_profile(b, pa, "Hijack") is False
+    assert s.get_account(a)["profiles"][pa]["name"] == "Annie"
+    # An account must keep at least one profile.
+    with pytest.raises(ValueError):
+        s.delete_profile(a, pa)
+    pa2 = s.add_profile(a, "Second", "cyan")
+    assert s.delete_profile(a, pa2) is True
+    # A cross-account delete is refused.
+    assert s.delete_profile(b, pa) is False
+
+
+def test_two_profiles_have_independent_reading_state(tmp_path):
+    s = Store(str(tmp_path / "s.json"))
+    s.add_favorite({"u": "http://x/1.epub", "t": "For P1"}, profile_id="p1")
+    s.set_position({"u": "http://x/1.epub", "t": "For P1"}, 3, 2, 40, profile_id="p1")
+    s.add_bookmark("bk1", 1, 1, "P1 mark", profile_id="p1")
+    # p2 sees none of p1's state.
+    assert [f["t"] for f in s.favorites(profile_id="p1")] == ["For P1"]
+    assert s.favorites(profile_id="p2") == []
+    assert s.get_position(book_key("http://x/1.epub"), profile_id="p2") is None
+    assert s.bookmarks("bk1", profile_id="p2") == []
+    # And the sentinel (accounts-off) profile is independent of both.
+    assert s.favorites() == []
+
+
+def test_migrate_global_state_into_first_profile(tmp_path):
+    p = str(tmp_path / "s.json")
+    s = Store(p)
+    # Simulate pre-accounts (global/sentinel) reading state.
+    s.add_favorite({"u": "http://x/1.epub", "t": "Old Global"})
+    s.set_position({"u": "http://x/1.epub", "t": "Old Global"}, 2, 1, 33)
+    acct = s.create_account("admin", "hunter2000")
+    prof = s.add_profile(acct, "admin", "amber")
+    s.migrate_global_state_into(prof)
+    # State moved into the profile; the sentinel is now empty.
+    assert [f["t"] for f in s.favorites(profile_id=prof)] == ["Old Global"]
+    assert s.get_position(book_key("http://x/1.epub"), profile_id=prof) is not None
+    assert s.favorites() == []
+    assert s.reading_list() == []
+    # Persists across reload.
+    assert [f["t"] for f in Store(p).favorites(profile_id=prof)] == ["Old Global"]
+
+
+def test_accounts_off_file_stays_pre_accounts_shape(tmp_path):
+    import json
+    p = str(tmp_path / "s.json")
+    s = Store(p)
+    s.add_favorite({"u": "http://x/1.epub", "t": "A"})
+    with open(p, encoding="utf-8") as f:
+        raw = json.load(f)
+    # No accounts were created → the accounts/profile_state keys are never
+    # written, so the file is byte-shape-identical to the pre-accounts format.
+    assert set(raw) == {"favorites", "history", "reading", "bookmarks"}
