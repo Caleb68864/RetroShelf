@@ -825,6 +825,14 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return request.app.state.store
 
     # -- accounts: sessions, CSRF, and the auth routes -----------------------
+    # Mark the session cookie Secure only when the bridge is fronted by HTTPS, so
+    # a TLS deployment never leaks the cookie in cleartext while the default
+    # plain-HTTP LAN deployment (where a Secure cookie would simply never be sent)
+    # keeps working. [cookie-hardening]
+    _cookie_secure = bool(
+        cfg.bridge_public_url and cfg.bridge_public_url.lower().startswith("https://")
+    )
+
     def session_secret(request: Request) -> str:
         """Return the process's session-signing secret from ``app.state``."""
         return request.app.state.session_secret
@@ -927,7 +935,11 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """Set the HttpOnly, SameSite=Lax session cookie on *resp*.
 
         The absolute expiry is baked into the signed token and mirrored as the
-        cookie ``Max-Age``.
+        cookie ``Max-Age``. The ``Secure`` attribute is set only when the bridge
+        is fronted by HTTPS (``BRIDGE_PUBLIC_URL`` is an ``https://`` URL), so the
+        session cookie is never sent in cleartext on a TLS deployment — while a
+        plain-HTTP LAN deployment (the default) is unaffected, since a ``Secure``
+        cookie would never be sent over its ``http://`` links.
 
         :param request: The incoming request (for the session secret).
         :param resp: The response to set the cookie on.
@@ -940,7 +952,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             session_secret(request), account_id, profile_id, token_version, expiry
         )
         resp.set_cookie(accounts.SESSION_COOKIE, token, max_age=_SESSION_TTL,
-                        httponly=True, samesite="lax", path="/")
+                        httponly=True, samesite="lax", path="/",
+                        secure=_cookie_secure)
 
     def _clear_session(resp: Response) -> None:
         """Clear the session cookie on *resp*."""
@@ -1269,6 +1282,21 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             fresh = store(request).get_account(account_id)
             assert fresh is not None
             resp = _render(message="Password changed.")
+            _mint_session(request, resp, account_id, sess["profile_id"],
+                          fresh["token_version"])
+            return resp
+
+        if action == "signout_all":
+            # Kill every outstanding cookie for this account (a lost or stolen
+            # one included) by bumping token_version, then re-mint THIS device so
+            # the operator who asked for it stays signed in here. This is the
+            # explicit, user-intended revocation path — logout only clears the
+            # local cookie, on purpose, so one family device signing off does not
+            # sign the whole household out. [revocation]
+            store(request).bump_token_version(account_id)
+            fresh = store(request).get_account(account_id)
+            assert fresh is not None
+            resp = _render(message="Signed out on all other devices.")
             _mint_session(request, resp, account_id, sess["profile_id"],
                           fresh["token_version"])
             return resp

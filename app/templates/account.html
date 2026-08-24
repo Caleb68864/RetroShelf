@@ -55,6 +55,15 @@
   <p><button class="button" type="submit">Change password</button></p>
 </form>
 
+<div class="sectionhead">&gt;&gt; Sign out everywhere</div>
+<form class="authform" method="post" action="/account">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="action" value="signout_all">
+  <p class="muted">Sign this account out on every other device &mdash; use it if a
+    device was lost or a session may have been copied. You stay signed in here.</p>
+  <p><button class="button" type="submit">Sign out all other devices</button></p>
+</form>
+
 {% if is_admin %}
 <div class="sectionhead">&gt;&gt; Add an account (admin)</div>
 <form class="authform" method="post" action="/account">
