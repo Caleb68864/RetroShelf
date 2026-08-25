@@ -1718,6 +1718,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         key = book_key(rec.get("u", ""))
         pid = current_profile_id(request)
         is_fav = store(request).is_favorite(key, profile_id=pid)
+        # Custom shelves: one plain add/remove link per shelf (no dropdown, no JS).
+        on_shelves = store(request).shelf_ids_containing(key, profile_id=pid)
+        shelf_links = [{
+            "name": s["name"], "on": s["id"] in on_shelves,
+            "url": (f"/shelf/{s['id']}/remove/{key}" if s["id"] in on_shelves
+                    else f"/shelf/{s['id']}/add/{bid}"),
+        } for s in store(request).list_shelves(profile_id=pid)]
 
         # In-browser reader entry point (EPUB + HTML/text + PDF text-reflow).
         # PDF is a DUAL path: it gets this "Read here" button AND keeps its
@@ -1778,6 +1785,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "is_fav": is_fav,
             "star_url": f"/unstar/{key}" if is_fav else f"/star/{bid}",
             "star_label": "Remove from Reading List" if is_fav else "Add to Reading List",
+            "shelf_links": shelf_links,
             "read_url": read_url, "read_label": read_label, "read_hint": read_hint,
             "back_url": _back_to(request),
         })
@@ -1920,6 +1928,90 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             return refusal
         store(request).remove_favorite(key, profile_id=current_profile_id(request))
         return RedirectResponse(_back_to(request, default="/list"), status_code=303)
+
+    # -- Custom shelves (named per-profile collections) ----------------------
+    @app.get("/shelves", response_class=HTMLResponse)
+    async def shelves_page(request: Request) -> HTMLResponse:
+        """GET ``/shelves`` — manage this profile's named shelves."""
+        shelves = store(request).list_shelves(profile_id=current_profile_id(request))
+        return templates.TemplateResponse(request, "shelves.html", {
+            "shelves": shelves, "error": request.query_params.get("err") or None,
+        })
+
+    @app.get("/shelves/create")
+    async def shelf_create(request: Request, name: str = "") -> Response:
+        """GET ``/shelves/create?name=&t=`` — create a shelf, then back to the
+        manage page (carrying a message when the name is rejected)."""
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
+        try:
+            store(request).create_shelf(name, profile_id=current_profile_id(request))
+        except ValueError as exc:
+            return RedirectResponse(f"/shelves?err={quote(str(exc))}", status_code=303)
+        return RedirectResponse("/shelves", status_code=303)
+
+    @app.get("/shelves/rename/{shelf_id}")
+    async def shelf_rename(request: Request, shelf_id: str, name: str = "") -> Response:
+        """GET ``/shelves/rename/{shelf_id}?name=&t=`` — rename a shelf."""
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
+        store(request).rename_shelf(shelf_id, name, profile_id=current_profile_id(request))
+        return RedirectResponse("/shelves", status_code=303)
+
+    @app.get("/shelves/delete/{shelf_id}")
+    async def shelf_delete(request: Request, shelf_id: str) -> Response:
+        """GET ``/shelves/delete/{shelf_id}?t=`` — delete a shelf and its items."""
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
+        store(request).delete_shelf(shelf_id, profile_id=current_profile_id(request))
+        return RedirectResponse("/shelves", status_code=303)
+
+    @app.get("/shelf/{shelf_id}", response_class=HTMLResponse)
+    async def shelf_view(request: Request, shelf_id: str) -> Response:
+        """GET ``/shelf/{shelf_id}`` — the books saved on one shelf."""
+        pid = current_profile_id(request)
+        view = store(request).shelf(shelf_id, profile_id=pid)
+        if view is None:  # deleted, or a foreign/unknown id → back to the list
+            return RedirectResponse("/shelves", status_code=303)
+        items = []
+        for rec in view["items"]:
+            bid = _record_id(codec(request), rec)
+            fmt = format_of(rec.get("m", "")) or "epub"
+            items.append({
+                "title": rec.get("t") or "Untitled", "author": rec.get("a") or "",
+                "badge": _badge_for(fmt), "detail_url": f"/book/{bid}",
+                "remove_url": f"/shelf/{shelf_id}/remove/{rec.get('key')}",
+                "cover_url": f"/cover/{codec(request).encode(rec['c'])}" if rec.get("c") else None,
+            })
+        return templates.TemplateResponse(request, "shelf.html", {
+            "shelf_name": view["name"], "shelf_id": shelf_id, "items": items,
+        })
+
+    @app.get("/shelf/{shelf_id}/add/{bid}")
+    async def shelf_add(request: Request, shelf_id: str, bid: str) -> Response:
+        """GET ``/shelf/{shelf_id}/add/{bid}?t=`` — add a book to a shelf."""
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
+        try:
+            rec = json.loads(codec(request).decode(bid))
+        except (ValueError, TypeError) as exc:
+            raise BadIdError("Malformed book id") from exc
+        rec["feed_name"] = _feed_for_url(kc(request).resolve_url(rec["u"])).name
+        store(request).add_to_shelf(shelf_id, rec, profile_id=current_profile_id(request))
+        return RedirectResponse(_back_to(request, default="/shelves"), status_code=303)
+
+    @app.get("/shelf/{shelf_id}/remove/{key}")
+    async def shelf_remove(request: Request, shelf_id: str, key: str) -> Response:
+        """GET ``/shelf/{shelf_id}/remove/{key}?t=`` — remove a book from a shelf."""
+        refusal = _require_site_token(request)
+        if refusal is not None:
+            return refusal
+        store(request).remove_from_shelf(shelf_id, key, profile_id=current_profile_id(request))
+        return RedirectResponse(_back_to(request, default="/shelves"), status_code=303)
 
     # -- OPDS publisher: re-publish the Reading List as a real OPDS feed ------
     def _public_base(request: Request) -> str:

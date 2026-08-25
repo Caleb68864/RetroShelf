@@ -315,6 +315,10 @@ h2:before { content: ">> "; color: #6e5410; }
 .from:before { content: "from "; color: #6e7a7a; }
 .unstar { display: inline-block; padding: 12px 8px; font-size: 14px; color: #ff5a4a; }
 .unstar:active { color: #0a0a0a; background-color: #ff5a4a; }
+
+/* Custom-shelves add/remove links on the book page. */
+.shelfbox { margin: 10px 0; line-height: 2.4; }
+.shelflabel { color: #8c8c8c; margin-right: 6px; }
 /* Starred state of the Reading-List button. */
 .button.on { background-color: #4ee44e; color: #0a0a0a; border: 1px solid #7af07a; }
 .button.on:before { content: ""; }

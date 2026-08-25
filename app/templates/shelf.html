@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "_macros.html" import book_item with context %}
+{% block title %}{{ shelf_name }} - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; {{ shelf_name }}</div>
+
+{% if not items %}
+  <p class="muted">[ this shelf is empty ]</p>
+  <p class="muted">Open a book and add it to <strong>{{ shelf_name }}</strong>.</p>
+{% else %}
+<ul class="list">
+{% for e in items %}
+  <li class="item">
+    {{ book_item(e) }}
+    <a class="unstar" href="{{ e.remove_url }}?t={{ site_token(request) }}">&times; remove</a>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
+<p><a class="back" href="/shelves">All shelves</a> &middot; <a class="back" href="/">Main Menu</a></p>
+{% endblock %}

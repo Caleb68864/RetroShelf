@@ -35,6 +35,14 @@
   </a>
 </p>
 
+<div class="shelfbox">
+  <span class="shelflabel">Shelves:</span>
+{% for s in shelf_links %}
+  <a class="button small {{ 'on' if s.on else '' }}" href="{{ s.url }}?t={{ site_token(request) }}">{% if s.on %}&#10003; {{ s.name }}{% else %}+ {{ s.name }}{% endif %}</a>
+{% endfor %}
+  <a class="button small" href="/shelves">{% if shelf_links %}Manage&hellip;{% else %}Create a shelf&hellip;{% endif %}</a>
+</div>
+
 {% if downloads %}
 <div class="hint">
 {% if badge == 'EPUB' %}

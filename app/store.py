@@ -59,6 +59,12 @@ _MAX_READING = 100
 _MAX_BOOKMARK_BOOKS = 200
 _MAX_BOOKMARKS_PER_BOOK = 50
 
+# Custom shelves: named, per-profile collections of book records (the Reading
+# List generalised). Bounded per profile and per shelf against a runaway client.
+_MAX_SHELVES = 50
+_MAX_SHELF_ITEMS = 500
+_MAX_SHELF_NAME = 40
+
 # -- accounts + profiles bounds ----------------------------------------------
 # Ceilings so a runaway or hostile client cannot grow the accounts section
 # without bound; all are far above any real household's needs.
@@ -243,10 +249,12 @@ def _sanitize_bookmark(entry: dict) -> dict | None:
 def _empty_state() -> dict:
     """Return a fresh, empty per-profile reading-state dict.
 
-    :returns: ``{"favorites": {}, "history": [], "reading": {}, "bookmarks": {}}``.
+    :returns: ``{"favorites": {}, "history": [], "reading": {}, "bookmarks": {},
+        "shelves": {}}``.
     :rtype: dict
     """
-    return {"favorites": {}, "history": [], "reading": {}, "bookmarks": {}}
+    return {"favorites": {}, "history": [], "reading": {}, "bookmarks": {},
+            "shelves": {}}
 
 
 def _clean_state(data: dict) -> dict:
@@ -297,6 +305,24 @@ def _clean_state(data: dict) -> dict:
             if entries:
                 clean_marks[str(k)] = entries
         state["bookmarks"] = clean_marks
+    shelves = data.get("shelves")
+    if isinstance(shelves, dict):
+        clean_shelves: dict = {}
+        for sid, sv in list(shelves.items())[:_MAX_SHELVES]:
+            if not isinstance(sv, dict):
+                continue
+            raw_items = sv.get("items")
+            items = {
+                str(k): sanitize_record(v)
+                for k, v in list(raw_items.items())[:_MAX_SHELF_ITEMS]
+                if isinstance(v, dict)
+            } if isinstance(raw_items, dict) else {}
+            clean_shelves[str(sid)] = {
+                "name": _clean_text(sv.get("name"), _MAX_SHELF_NAME) or "Shelf",
+                "created": _as_real_number(sv.get("created")) or 0,
+                "items": items,
+            }
+        state["shelves"] = clean_shelves
     return state
 
 
@@ -392,7 +418,7 @@ class Store:
         # accounts-off file is byte-identical to the pre-accounts format.
         self._data: dict = {
             "favorites": {}, "history": [], "reading": {}, "bookmarks": {},
-            "accounts": {}, _PROFILE_STATE_KEY: {},
+            "shelves": {}, "accounts": {}, _PROFILE_STATE_KEY: {},
         }
         self._load()
 
@@ -424,7 +450,7 @@ class Store:
 
         # Sentinel profile: the four reading sections at the top level.
         sentinel = _clean_state(data)
-        for name in ("favorites", "history", "reading", "bookmarks"):
+        for name in ("favorites", "history", "reading", "bookmarks", "shelves"):
             self._data[name] = sentinel[name]
 
         # Accounts (each with its profile metadata). Malformed accounts dropped.
@@ -474,6 +500,10 @@ class Store:
             "reading": self._data["reading"],
             "bookmarks": self._data["bookmarks"],
         }
+        # ``shelves`` is written only when non-empty, so a deployment that never
+        # creates a shelf keeps exactly the pre-shelves sentinel file shape.
+        if self._data["shelves"]:
+            payload["shelves"] = self._data["shelves"]
         if self._data["accounts"]:
             payload["accounts"] = self._data["accounts"]
         if self._data[_PROFILE_STATE_KEY]:
@@ -594,6 +624,133 @@ class Store:
         with self._lock:
             return sorted(self._pstate_ro(profile_id)["favorites"].values(),
                           key=lambda r: r.get("added", 0), reverse=True)
+
+    # -- Custom shelves (named per-profile collections) ----------------------
+    def create_shelf(self, name: str, profile_id: str = _SENTINEL_PROFILE) -> str:
+        """Create a named shelf for *profile_id* and return its new id.
+
+        :param name: The shelf's display name (cleaned and length-capped).
+        :param profile_id: The owning profile.
+        :returns: The new shelf's opaque id.
+        :rtype: str
+        :raises ValueError: If *name* is empty/blank or the profile already has
+            :data:`_MAX_SHELVES` shelves.
+        """
+        clean = _clean_text(name, _MAX_SHELF_NAME).strip()
+        if not clean:
+            raise ValueError("Shelf name must not be empty.")
+        with self._lock:
+            shelves = self._pstate(profile_id)["shelves"]
+            if len(shelves) >= _MAX_SHELVES:
+                raise ValueError("Too many shelves.")
+            sid = _new_id()
+            while sid in shelves:
+                sid = _new_id()
+            shelves[sid] = {"name": clean, "created": time.time(), "items": {}}
+            self._save()
+            return sid
+
+    def rename_shelf(self, shelf_id: str, name: str,
+                     profile_id: str = _SENTINEL_PROFILE) -> bool:
+        """Rename one of *profile_id*'s shelves.
+
+        :returns: ``True`` when the shelf existed under this profile.
+        :rtype: bool
+        """
+        clean = _clean_text(name, _MAX_SHELF_NAME).strip()
+        if not clean:
+            return False
+        with self._lock:
+            shelf = self._pstate_ro(profile_id)["shelves"].get(shelf_id)
+            if shelf is None:
+                return False
+            shelf["name"] = clean
+            self._save()
+            return True
+
+    def delete_shelf(self, shelf_id: str, profile_id: str = _SENTINEL_PROFILE) -> bool:
+        """Delete one of *profile_id*'s shelves and all its items.
+
+        :returns: ``True`` when a shelf was removed.
+        :rtype: bool
+        """
+        with self._lock:
+            if self._pstate_ro(profile_id)["shelves"].pop(shelf_id, None) is not None:
+                self._save()
+                return True
+            return False
+
+    def list_shelves(self, profile_id: str = _SENTINEL_PROFILE) -> list[dict]:
+        """:returns: This profile's shelves as ``{id, name, count, created}``,
+        ordered by name (case-insensitively).
+        """
+        with self._lock:
+            shelves = self._pstate_ro(profile_id)["shelves"]
+            rows = [{"id": sid, "name": s["name"], "count": len(s["items"]),
+                     "created": s.get("created", 0)}
+                    for sid, s in shelves.items()]
+        return sorted(rows, key=lambda r: r["name"].casefold())
+
+    def add_to_shelf(self, shelf_id: str, record: dict,
+                     profile_id: str = _SENTINEL_PROFILE) -> str | None:
+        """Add *record* to one of *profile_id*'s shelves.
+
+        :param shelf_id: The target shelf.
+        :param record: A book view-record with a ``u`` URL.
+        :param profile_id: The owning profile.
+        :returns: The book key on success, or ``None`` if the shelf is unknown.
+        :rtype: str | None
+        """
+        with self._lock:
+            shelf = self._pstate(profile_id)["shelves"].get(shelf_id)
+            if shelf is None:
+                return None
+            key = book_key(record.get("u", ""))
+            rec = sanitize_record(record)
+            rec["key"] = key
+            rec["added"] = time.time()
+            shelf["items"][key] = rec
+            self._trim_mapping(shelf["items"], _MAX_SHELF_ITEMS, "added")
+            self._save()
+            return key
+
+    def remove_from_shelf(self, shelf_id: str, key: str,
+                          profile_id: str = _SENTINEL_PROFILE) -> bool:
+        """Remove the book *key* from one of *profile_id*'s shelves.
+
+        :returns: ``True`` when an item was removed.
+        :rtype: bool
+        """
+        with self._lock:
+            shelf = self._pstate_ro(profile_id)["shelves"].get(shelf_id)
+            if shelf is not None and shelf["items"].pop(key, None) is not None:
+                self._save()
+                return True
+            return False
+
+    def shelf(self, shelf_id: str,
+              profile_id: str = _SENTINEL_PROFILE) -> dict | None:
+        """:returns: ``{id, name, created, items}`` for one of *profile_id*'s
+        shelves (items most-recently-added first), or ``None`` if it is unknown.
+        :rtype: dict | None
+        """
+        with self._lock:
+            shelf = self._pstate_ro(profile_id)["shelves"].get(shelf_id)
+            if shelf is None:
+                return None
+            items = sorted(shelf["items"].values(),
+                           key=lambda r: r.get("added", 0), reverse=True)
+            return {"id": shelf_id, "name": shelf["name"],
+                    "created": shelf.get("created", 0), "items": items}
+
+    def shelf_ids_containing(self, key: str,
+                             profile_id: str = _SENTINEL_PROFILE) -> set[str]:
+        """:returns: The ids of *profile_id*'s shelves that contain book *key*.
+        :rtype: set[str]
+        """
+        with self._lock:
+            return {sid for sid, s in self._pstate_ro(profile_id)["shelves"].items()
+                    if key in s["items"]}
 
     # -- Download history ----------------------------------------------------
     def record_download(self, record: dict, profile_id: str = _SENTINEL_PROFILE) -> None:
