@@ -672,3 +672,37 @@ def test_static_css_served():
         r = client.get("/static/app.css")
         assert r.status_code == 200
         assert "RetroShelf" in r.text
+
+
+def test_book_page_series_row_and_cleaned_summary():
+    import json as _json
+    with make_client(make_handler()) as client:
+        rec = {
+            "u": "http://kavita:5000/x/princess.epub", "m": "application/epub+zip",
+            "t": "A princess of Mars", "a": "Edgar Rice Burroughs",
+            "s": ("This edition had all images removed. Title: A princess of Mars "
+                  "Series Title: Barsoom series, 1 Note: Wikipedia page about this "
+                  "book: https://en.wikipedia.org/wiki/A_Princess_of_Mars Summary: "
+                  "John Carter is mysteriously transported to Mars. "
+                  "Reading Level: Reading ease score: 59.1."),
+        }
+        bid = client.app.state.ids.encode(_json.dumps(rec))
+        page = client.get(f"/book/{bid}").text
+        # The series row with position and a find-the-rest search link.
+        assert "Barsoom series" in page and "book 1" in page
+        assert "/search?q=Barsoom%20series&amp;feed=" in page
+        # The displayed summary is the real description, not the label soup.
+        assert "John Carter is mysteriously transported" in page
+        assert "Reading Level" not in page
+        assert "Series Title:" not in page
+
+
+def test_book_page_without_series_shows_no_row():
+    import json as _json
+    with make_client(make_handler()) as client:
+        rec = {"u": "http://kavita:5000/x/plain.epub", "m": "application/epub+zip",
+               "t": "Plain Book", "a": "Someone", "s": "Just a normal blurb."}
+        bid = client.app.state.ids.encode(_json.dumps(rec))
+        page = client.get(f"/book/{bid}").text
+        assert "Series:" not in page
+        assert "Just a normal blurb." in page

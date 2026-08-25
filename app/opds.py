@@ -485,3 +485,57 @@ def _parse_entry(entry_el: Element) -> Entry:
     if not entry.acquisitions:
         entry.nav_href = nav_candidate
     return entry
+
+
+# -- Gutenberg series conventions ---------------------------------------------
+# Project Gutenberg's per-book OPDS pages flatten a labelled description into
+# ``atom:content`` — "Title: … Series Title: {name}, {n} Note: … Summary: {real
+# description} Reading Level: …". These helpers recover the two useful parts
+# from that convention. Both degrade to nothing when the labels are absent, so
+# non-Gutenberg summaries pass through untouched (a presentation convention,
+# not a schema — absence must never be an error).
+_SERIES_RE = re.compile(r"Series Title:\s*(.+?),\s*(\d{1,4})(?=\s|$)")
+_SUMMARY_LABEL_RE = re.compile(
+    r"\bSummary:\s*(.+?)(?=\s*(?:Reading Level:|Author:|Credits:|Language:)|$)",
+    re.S,
+)
+
+
+def series_of(summary: str) -> tuple[str, int] | None:
+    """Extract ``(series name, position)`` from a Gutenberg-style summary.
+
+    Matches the flattened ``Series Title: {name}, {n}`` label Project
+    Gutenberg embeds in a book's OPDS content. The position is bounded to four
+    digits so a stray number is never mistaken for a series index.
+
+    :param summary: A book record's summary text (may be empty).
+    :returns: ``(name, position)`` when the convention is present and sane,
+        else ``None``.
+    :rtype: tuple[str, int] | None
+    """
+    m = _SERIES_RE.search(summary or "")
+    if not m:
+        return None
+    name = m.group(1).strip()
+    if not name:
+        return None
+    return name, int(m.group(2))
+
+
+def clean_summary(summary: str) -> str:
+    """Return the real description from a Gutenberg label-boilerplate summary.
+
+    When the flattened text carries a ``Summary:`` label, only the text between
+    it and the next known label (``Reading Level:`` etc.) is the actual
+    description — the rest is repeated metadata that reads as noise on a book
+    page. Summaries without the label are returned unchanged.
+
+    :param summary: A book record's summary text (may be empty).
+    :rtype: str
+    """
+    m = _SUMMARY_LABEL_RE.search(summary or "")
+    if m:
+        text = m.group(1).strip()
+        if text:
+            return text
+    return summary or ""

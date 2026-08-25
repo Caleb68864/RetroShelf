@@ -1767,19 +1767,34 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             })
         downloaded = any(book_key(fm["u"]) in dlkeys for fm in fmts)
         author = rec.get("a") or ""
+        # Discovery links search every library (fan-out) when more than one is
+        # configured, else the book's own feed.
+        def _search_scope() -> str:
+            if len(cfg.feeds) > 1:
+                return "*"
+            owner = _feed_for_url(rec.get("u", ""))
+            return codec(request).encode(kc(request).resolve_url(owner.url))
+
         # Cross-library author discovery: search every library (fan-out) for more.
         author_search = None
         if author:
-            if len(cfg.feeds) > 1:
-                scope = "*"
-            else:
-                owner = _feed_for_url(rec.get("u", ""))
-                scope = codec(request).encode(kc(request).resolve_url(owner.url))
-            author_search = f"/search?q={quote(author)}&feed={scope}"
+            author_search = f"/search?q={quote(author)}&feed={_search_scope()}"
+        # Series row (Gutenberg convention): name + position are parsed from the
+        # summary the record already carries — no extra upstream fetch, and a
+        # summary without the convention simply shows no series row. [series]
+        series = opds.series_of(rec.get("s") or "")
+        series_name = series_search = None
+        series_index = 0
+        if series is not None:
+            series_name, series_index = series
+            series_search = f"/search?q={quote(series_name)}&feed={_search_scope()}"
         return templates.TemplateResponse(request, "book.html", {
             "title": rec.get("t") or "Untitled", "author": author,
-            "summary": rec.get("s") or "", "badge": badge, "cover_url": cover_url,
+            "summary": opds.clean_summary(rec.get("s") or ""),
+            "badge": badge, "cover_url": cover_url,
             "author_search": author_search,
+            "series_name": series_name, "series_index": series_index,
+            "series_search": series_search,
             "downloads": downloads,
             "downloaded": downloaded,
             "is_fav": is_fav,

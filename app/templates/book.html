@@ -3,6 +3,7 @@
 {% block content %}
 <h1>{{ title }}</h1>
 {% if author %}<p class="author big">{{ author }}{% if author_search %} &mdash; <a class="from-link" href="{{ author_search }}">more by this author &raquo;</a>{% endif %}</p>{% endif %}
+{% if series_name %}<p class="series">Series: {{ series_name }}{% if series_index %} &middot; book {{ series_index }}{% endif %} &mdash; <a class="from-link" href="{{ series_search }}">find the rest &raquo;</a></p>{% endif %}
 
 {% if cover_url and request.cookies.get('rs_covers') != '0' %}<p><img class="cover big" src="{{ cover_url }}" alt=""></p>{% endif %}
 

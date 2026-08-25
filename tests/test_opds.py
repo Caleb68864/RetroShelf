@@ -165,3 +165,48 @@ def test_normal_length_attribute_still_parsed():
     )
     feed = parse(xml)
     assert feed.entries[0].primary_acquisition.length == 123456
+
+
+# -- Gutenberg series-convention helpers -------------------------------------
+from app.opds import clean_summary, series_of  # noqa: E402
+
+GUT_SUMMARY = (
+    "This edition had all images removed. Title: A princess of Mars "
+    "Series Title: Barsoom series, 1 Note: Wikipedia page about this book: "
+    "https://en.wikipedia.org/wiki/A_Princess_of_Mars Summary: \"A Princess of "
+    "Mars\" by Edgar Rice Burroughs is a science fantasy novel first serialized "
+    "in 1912. Reading Level: Reading ease score: 59.1 (10th to 12th grade)."
+)
+
+
+def test_series_of_extracts_name_and_position():
+    assert series_of(GUT_SUMMARY) == ("Barsoom series", 1)
+
+
+def test_series_of_handles_comma_in_name():
+    assert series_of("x Series Title: Oz, the famous forty, 3 Note: y") == (
+        "Oz, the famous forty", 3)
+
+
+def test_series_of_absent_or_malformed_is_none():
+    assert series_of("An ordinary description with no labels.") is None
+    assert series_of("") is None
+    assert series_of("Series Title: Nameless") is None          # no position
+    assert series_of("Series Title: , 5 Note:") is None          # empty name
+
+
+def test_series_of_bounds_the_index():
+    # A silly huge "index" is not treated as a series position.
+    assert series_of("Series Title: X, 99999999999 Note:") is None
+
+
+def test_clean_summary_extracts_the_real_description():
+    got = clean_summary(GUT_SUMMARY)
+    assert got.startswith('"A Princess of Mars" by Edgar Rice Burroughs')
+    assert "Reading Level" not in got
+    assert "Series Title" not in got
+
+
+def test_clean_summary_passthrough_without_labels():
+    assert clean_summary("Just a normal blurb.") == "Just a normal blurb."
+    assert clean_summary("") == ""
