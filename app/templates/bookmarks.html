@@ -17,6 +17,8 @@
 </ul>
 {% endif %}
 
-<p><a class="back" href="/read/{{ bid }}/0/1">Back to reading</a></p>
+{# /read/{bid} 303s to the resume position (or the first non-empty chapter),
+   so this never dead-ends on a book whose chapter 0 has zero blocks. #}
+<p><a class="back" href="/read/{{ bid }}">Back to reading</a></p>
 <p><a class="back" href="/book/{{ bid }}">Back to book</a></p>
 {% endblock %}

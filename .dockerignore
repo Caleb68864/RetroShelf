@@ -17,3 +17,16 @@ task-evidence/
 README.md
 forge-project.json
 CLAUDE.md
+# Secrets / local dev files — never ship these into the build context or image.
+.env
+.env.*
+.claude/
+tools/
+pytest.ini
+run.sh
+run.bat
+LICENSE
+Dockerfile
+.dockerignore
+docker-compose.yml
+portainer-stack.yml

@@ -59,3 +59,14 @@ def test_stable_secret_survives_new_instance():
 def test_random_secret_when_none():
     c = IdCodec(None)
     assert c.decode(c.encode(URL)) == URL
+
+
+def test_token_ok_non_ascii_does_not_raise():
+    # Regression: the site token comparison must tolerate a non-ASCII ``t=``
+    # query parameter. hmac.compare_digest raises TypeError on non-ASCII str, so
+    # "?t=café" would otherwise 500 instead of cleanly failing the check.
+    codec = IdCodec("stable-secret")
+    assert codec.token_ok("café") is False
+    assert codec.token_ok("🔓" * 8) is False
+    # The genuine token still validates.
+    assert codec.token_ok(codec.site_token) is True

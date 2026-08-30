@@ -202,7 +202,12 @@ def content_disposition(disposition: str, filename: str) -> str:
     on its own, and the one character that must never survive into a quoted
     header parameter is the quote that ends it — followed by CR and LF, which
     would end the header entirely. Defence at the point of construction means
-    the guarantee does not depend on every caller remembering.
+    the guarantee does not depend on every caller remembering. The scrub also
+    keeps only printable ASCII: HTTP headers are latin-1 on the wire and a
+    wider codepoint slipping through a caller that skipped
+    ``sanitize_filename`` would make response encoding itself raise (a 500) —
+    exactly the class of failure this defence exists to preclude. Real routes
+    already ASCII-fold first, so no delivered header changes.
 
     :returns: A fully-formed ``Content-Disposition`` header value such as
         ``'attachment; filename="my-book.epub"'``.
@@ -210,7 +215,7 @@ def content_disposition(disposition: str, filename: str) -> str:
     """
     disposition = disposition if disposition in ("inline", "attachment") else "attachment"
     safe_name = "".join(
-        ch for ch in (filename or "") if ch.isprintable() and ch not in '"\\;'
+        ch for ch in (filename or "") if "\x20" <= ch <= "\x7e" and ch not in '"\\;'
     )[:200] or "download"
     return f'{disposition}; filename="{safe_name}"'
 
@@ -373,15 +378,23 @@ async def stream_cover(
 
     _resp_headers = {"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"}
 
-    # (a) Cache hit
+    # (a) Cache hit. The read is guarded because the exists()/open() pair is a
+    # TOCTOU: a concurrent request writing another cover triggers
+    # _prune_cover_cache, which can delete this entry (payload or .ct sidecar)
+    # in the window between the check and the open. An OSError there means the
+    # entry vanished mid-read, so treat it as a cache miss and fall through to
+    # the upstream fetch rather than surfacing a 500 on a cover request.
     if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            data = f.read()
-        ct = "image/jpeg"
-        if os.path.exists(cache_ct_path):
-            with open(cache_ct_path) as f:
-                ct = _safe_image_type(f.read().strip()) or ct
-        return Response(content=data, status_code=200, media_type=ct, headers=_resp_headers)
+        try:
+            with open(cache_path, "rb") as f:
+                data = f.read()
+            ct = "image/jpeg"
+            if os.path.exists(cache_ct_path):
+                with open(cache_ct_path) as f:
+                    ct = _safe_image_type(f.read().strip()) or ct
+            return Response(content=data, status_code=200, media_type=ct, headers=_resp_headers)
+        except OSError:
+            pass  # entry pruned mid-read — fall through and re-fetch
 
     # (b) Fetch fully into memory, bounded — a cover is transcoded, so unlike a
     # book it cannot be streamed straight through. [SS-09]

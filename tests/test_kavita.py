@@ -88,7 +88,65 @@ def test_resolve_same_site_rule_does_not_overreach(bad):
         kc.resolve_url(bad)
 
 
+@pytest.mark.parametrize("bad", [
+    "http://kavita:5000/x\r\nHost: evil",   # CR/LF request smuggling
+    "http://kavita:5000/x\x00",             # NUL
+    "http://kavita:5000/x\ty",              # tab
+    "http://user:pass@kavita:5000/x",       # embedded credentials
+    "file:///etc/passwd",                   # non-HTTP scheme
+    "data:text/html,x",                     # data scheme
+    "gopher://kavita:5000/x",               # gopher scheme
+    "http://kavita:5000/" + "a" * 5000,     # oversized href
+])
+def test_resolve_rejects_hostile_shapes(bad):
+    kc = make_client(lambda r: httpx.Response(200))
+    with pytest.raises(SsrfError):
+        kc.resolve_url(bad)
+
+
 # -- fetch_feed ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_revalidates_redirect_ssrf():
+    # A 302 whose Location points at a foreign origin must be refused on the hop,
+    # not blindly followed — SSRF re-validation applies after every redirect.
+    def handler(req):
+        return httpx.Response(302, headers={"Location": "http://evil.com/x"})
+    kc = make_client(handler)
+    with pytest.raises(SsrfError):
+        await kc.fetch_feed("/api/opds/SECRETKEY")
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_follows_same_origin_redirect():
+    def handler(req):
+        if req.url.path == "/api/opds/SECRETKEY":
+            return httpx.Response(301, headers={"Location": "http://kavita:5000/moved"})
+        return httpx.Response(200, text="<feed/>")
+    kc = make_client(handler)
+    assert await kc.fetch_feed("/api/opds/SECRETKEY") == "<feed/>"
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_redirect_loop_is_bounded():
+    def handler(req):
+        return httpx.Response(302, headers={"Location": "http://kavita:5000/loop"})
+    kc = make_client(handler)
+    with pytest.raises(KavitaError):
+        await kc.fetch_feed("/api/opds/SECRETKEY")
+
+
+@pytest.mark.asyncio
+async def test_open_stream_redirect_loop_is_bounded():
+    def handler(req):
+        return httpx.Response(302, headers={"Location": "http://kavita:5000/loop"})
+    kc = make_client(handler)
+    with pytest.raises(KavitaError):
+        await kc.open_stream("/api/opds/SECRETKEY/dl")
+
+
+# -- fetch_feed (original) -----------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_fetch_feed_success():

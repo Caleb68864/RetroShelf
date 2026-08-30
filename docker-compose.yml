@@ -7,11 +7,11 @@
 # Use Kavita's INTERNAL port (5000), not any host-published port. [H-6 / SS-08]
 #
 # Host folder setup (run once):
-#   sudo mkdir -p /srv/docker_data/kavita-ibooks-bridge/{config,cache}
-#   sudo chown -R 1000:1000 /srv/docker_data/kavita-ibooks-bridge
+#   sudo mkdir -p /srv/docker_data/retroshelf/{config,cache}
+#   sudo chown -R 1000:1000 /srv/docker_data/retroshelf
 
 services:
-  kavita-ibooks-bridge:
+  retroshelf:
     image: retroshelf:latest
     container_name: retroshelf
     build: .
@@ -20,8 +20,6 @@ services:
       - "8099:8099"
     environment:
       - TZ=America/Chicago
-      - PUID=1000
-      - PGID=1000
       - APP_PORT=8099
       # Use Kavita's INTERNAL container port and service name:
       - KAVITA_BASE_URL=http://kavita:5000
@@ -49,8 +47,8 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
-      - /srv/docker_data/kavita-ibooks-bridge/config:/config
-      - /srv/docker_data/kavita-ibooks-bridge/cache:/cache
+      - /srv/docker_data/retroshelf/config:/config
+      - /srv/docker_data/retroshelf/cache:/cache
     networks:
       - kavita_net
 

@@ -129,6 +129,13 @@ _MAX_FORM_BYTES = 64 * 1024
 _SORT_KEYS = ("title", "author", "format")
 _FORMAT_ORDER = {"EPUB": 0, "PDF": 1}
 
+# Upper bound on a search query. Every real title/author/series lookup is far
+# shorter; anything past this is junk or abuse, and the ``/search`` query is
+# percent-encoded into an upstream OPDS URL — so an unbounded value would let a
+# caller inflate the upstream request (and the reflected page) without limit.
+# Truncating keeps the outbound URL and the in-book scan bounded. [dos]
+_MAX_SEARCH_QUERY = 256
+
 # Reader reading-comfort preferences (cookie-driven, no-JS). Each maps to a
 # body class the reader stylesheet keys off; the default (medium size, normal
 # leading) needs no class. Validated against these sets before a cookie is set,
@@ -746,12 +753,21 @@ def _error_response(request: Request, heading: str, message: str, status: int) -
     )
 
 
-# Matches a sanitizer-emitted placeholder (``{IMG:n}`` / ``{CH:i}``) whose
-# index is restricted to this charset. sanitize_chapter only ever emits plain
-# decimal indexes here, but the substitution result is spliced straight into
-# an HTML attribute and rendered with ``| safe`` — so the regex itself must
-# refuse to match anything wider than a bare id, never trust the input shape. [SS-04]
-_PLACEHOLDER_RE = re.compile(r"\{(IMG|CH|FRAG):([A-Za-z0-9/._-]+)\}")
+# Matches a sanitizer-emitted placeholder (``{IMG:n}`` / ``{CH:i}`` /
+# ``{FRAG:id}``). IMG/CH values are plain decimal indexes and FRAG values are
+# anchor ids bounded by :data:`app.reader._VALID_ANCHOR_ID` to
+# ``[A-Za-z0-9_.-]`` — so no legitimate placeholder ever contains ``/``. The
+# substitution result for IMG/CH is spliced straight into an HTML attribute and
+# rendered with ``| safe``, so the regex itself refuses to match anything wider
+# than a bare id (no slash): even a forged placeholder can never widen the
+# emitted URL past a single path segment, independent of the input shape. [SS-04]
+_PLACEHOLDER_RE = re.compile(r"\{(IMG|CH|FRAG):([A-Za-z0-9._-]+)\}")
+
+# Matches a single OpenSearch ``{token}`` (never spanning a brace), used to strip
+# optional tokens like ``{startIndex?}`` left in a search template after the
+# ``{searchTerms}`` substitution. ``[^{}]*`` keeps one crafted unbalanced brace
+# from consuming the rest of the URL or raising. [dos]
+_OPENSEARCH_TOKEN_RE = re.compile(r"\{[^{}]*\}")
 
 
 def _substitute_placeholders(
@@ -1506,10 +1522,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if template and "{searchTerms}" in template:
             url = template.replace("{searchTerms}", encoded)
             # Drop any remaining OpenSearch optional tokens (e.g. {startIndex?}).
-            while "{" in url and "}" in url:
-                start = url.index("{")
-                url = url[:start] + url[url.index("}", start) + 1:]
-            url = url.rstrip("?&")
+            # A single regex sweep is used rather than a hand-rolled index scan:
+            # a crafted template with an unbalanced brace (a ``{`` with no later
+            # ``}``) would make ``str.index`` raise and 500 the search page. [dos]
+            url = _OPENSEARCH_TOKEN_RE.sub("", url).rstrip("?&")
         else:
             url = f"{feed_url.rstrip('/')}/search?query={encoded}"
         # Resolve to an absolute, SSRF-checked URL against THIS feed's origin so a
@@ -1820,7 +1836,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :returns: Rendered ``search.html``.
         :rtype: HTMLResponse
         """
-        q = (q or "").strip()
+        q = (q or "").strip()[:_MAX_SEARCH_QUERY]
         multi = len(cfg.feeds) > 1
         # ``feed == "*"`` means fan out across every configured library.
         fan_out = feed == "*" and multi
@@ -2489,8 +2505,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 {"index": i, "title": c.title, "depth": 0, "current": i == current_chapter}
                 for i, c in enumerate(manifest.chapters)
             ]
+        # "Start over" targets the first chapter that actually has content, so a
+        # leading spine item that sanitized to zero blocks can never 404 it —
+        # same rule read_book applies to the bare-open redirect above.
+        first = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
         return templates.TemplateResponse(request, "toc.html", {
             "book_title": manifest.title, "bid": bid, "chapters": chapters,
+            "start_url": f"/read/{bid}/{first}/1",
         })
 
     @app.get("/read/{bid}/find", response_class=HTMLResponse)
@@ -2515,7 +2536,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if isinstance(opened, Response):
             return opened
         rec, key, manifest = opened
-        query = (q or "").strip()
+        query = (q or "").strip()[:_MAX_SEARCH_QUERY]
         results: list[dict] = []
         if len(query) >= SEARCH_MIN_QUERY:
             target = _split_target(request)
@@ -2555,17 +2576,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         refusal = _require_site_token(request)
         if refusal is not None:
             return refusal
-        rec = _decode_book_record(request, bid)
-        shelver = _reader_shelver(rec)
-        if shelver is None:
-            return _error_response(
-                request, "Not found",
-                "Only EPUB and HTML books can be read in the browser.", 404
-            )
-        key = book_key(rec.get("u", ""))
-        manifest = load_manifest(cfg.cache_dir, key)
-        if manifest is None:
-            manifest = await shelver(kc(request), rec, cfg.cache_dir)
+        # Shelve through the shared reader preamble so an unreadable format and a
+        # scanned (text-less) PDF are handled exactly as on every reader page —
+        # rather than a stale format message here or an unhandled PdfNoTextError.
+        opened = await _open_reader_book(request, bid)
+        if isinstance(opened, Response):
+            return opened
+        rec, key, manifest = opened
         chapter = max(0, min(chapter, len(manifest.chapters) - 1))
         label = manifest.chapters[chapter].title if manifest.chapters else ""
         store(request).add_bookmark(key, chapter, max(0, block), label,
@@ -2653,7 +2670,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 data = f.read()
             with open(os.path.join(image_dir, f"{n}.ct"), encoding="ascii") as f:
                 upstream_ct = f.read().strip()
-        except OSError:
+        except (OSError, ValueError):
+            # Missing image, or a corrupt/non-ASCII ``.ct`` sidecar (ValueError
+            # covers UnicodeDecodeError): a broken cache file must degrade to the
+            # empty 404 GIF, never 500 an <img> on the page. [H5]
             return Response(status_code=404, media_type="image/gif")
         return Response(
             content=data, media_type=_safe_image_type(upstream_ct),

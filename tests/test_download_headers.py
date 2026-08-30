@@ -131,3 +131,15 @@ async def test_stream_cover_passes_through_undecodable_upstream(tmp_path):
     assert up.closed is True
     # The apiKey must never leak into a cache filename.
     assert not any("K" in p.name and "apiKey" in p.name for p in tmp_path.rglob("*"))
+
+
+def test_content_disposition_non_ascii_scrubbed_to_latin1_safe():
+    # Routes ASCII-fold via sanitize_filename first, but this function is
+    # reachable on its own: a codepoint outside printable ASCII must never
+    # survive into the header value, where it would make Starlette's latin-1
+    # header encoding raise (a 500) instead of serving the book.
+    value = content_disposition("attachment", "日本語-café.epub")
+    value.encode("latin-1")  # must not raise
+    assert value == 'attachment; filename="-caf.epub"'
+    # All-non-ASCII collapses to the fallback name, never an empty filename.
+    assert content_disposition("inline", "日本語") == 'inline; filename="download"'

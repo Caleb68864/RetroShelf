@@ -58,3 +58,26 @@ def test_ip_allowlist_cidr_and_exact():
     assert ip_allowed("8.8.8.8", allowed) is False
     assert ip_allowed("not-an-ip", allowed) is False
     assert ip_allowed(None, allowed) is False
+
+
+def test_access_key_non_ascii_provided_does_not_raise():
+    # Regression: hmac.compare_digest raises TypeError on a str with non-ASCII
+    # characters. The provided key is attacker-controlled (X-Bridge-Key header /
+    # ?key= / cookie), so a value like "café" must simply fail the check, never
+    # crash the request with an unhandled 500.
+    assert access_key_ok("café", "secret-configured-key") is False
+    assert access_key_ok("naïve-🔑", "secret-configured-key") is False
+
+
+def test_access_key_non_ascii_match_succeeds():
+    # A configured key that is itself non-ASCII must still match its exact value.
+    assert access_key_ok("pÿ-secret", "pÿ-secret") is True
+
+
+def test_sanitize_unsafe_ext_cannot_reintroduce_separator():
+    # Defense-in-depth: even a hostile ext must not splice a path component or
+    # a second extension back into the returned filename.
+    out = sanitize_filename("book", "../evil")
+    assert "/" not in out and ".." not in out
+    out2 = sanitize_filename("book", "ep/ub")
+    assert "/" not in out2

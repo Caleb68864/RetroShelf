@@ -683,3 +683,111 @@ async def test_search_snippet_is_plain_text_not_markup(tmp_path):
     joined = hits[0].before + hits[0].match + hits[0].after
     assert "<b>" in joined  # decoded to plain text, not an HTML element
     assert "&lt;" not in joined  # entities were decoded for the snippet
+
+
+# -- hostile ToC metadata: depth bombs, entry floods, giant titles ------------
+
+
+def test_nav_toc_depth_bomb_does_not_blow_the_stack():
+    # 2000-deep <li><ol> nesting: the walk must stop at its depth guard
+    # instead of raising RecursionError (an uncaught 500 at shelve time).
+    depth = 2000
+    nav = (
+        '<html xmlns="http://www.w3.org/1999/xhtml" '
+        'xmlns:epub="http://www.idpf.org/2007/ops"><body>'
+        '<nav epub:type="toc"><ol>'
+        + '<li><a href="c.xhtml">T</a><ol>' * depth
+        + "</ol></li>" * depth
+        + "</ol></nav></body></html>"
+    ).encode("utf-8")
+    entries = reader._toc_entries_from_nav(nav, "OEBPS")
+    # Entries above the walk guard are kept (recorded depth clamps to
+    # _MAX_TOC_DEPTH); everything deeper is truncated, never a crash.
+    assert 0 < len(entries) <= reader._MAX_TOC_WALK_DEPTH + 1
+    assert all(d <= reader._MAX_TOC_DEPTH for d, _t, _p in entries)
+
+
+def test_ncx_toc_depth_bomb_does_not_blow_the_stack():
+    depth = 2000
+    ncx = (
+        '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>'
+        + ('<navPoint><navLabel><text>T</text></navLabel>'
+           '<content src="c.xhtml"/>') * depth
+        + "</navPoint>" * depth
+        + "</navMap></ncx>"
+    ).encode("utf-8")
+    entries = reader._toc_entries_from_ncx(ncx, "OEBPS")
+    assert 0 < len(entries) <= reader._MAX_TOC_WALK_DEPTH + 1
+
+
+def test_nav_toc_entry_flood_is_capped():
+    count = reader.MAX_TOC_ENTRIES + 500
+    items = "".join(
+        f'<li><a href="c{i}.xhtml">Chapter {i}</a></li>' for i in range(count)
+    )
+    nav = (
+        '<html xmlns="http://www.w3.org/1999/xhtml" '
+        'xmlns:epub="http://www.idpf.org/2007/ops"><body>'
+        f'<nav epub:type="toc"><ol>{items}</ol></nav></body></html>'
+    ).encode("utf-8")
+    entries = reader._toc_entries_from_nav(nav, "OEBPS")
+    assert len(entries) == reader.MAX_TOC_ENTRIES
+
+
+def test_nav_toc_giant_title_is_clipped():
+    long_title = "A" * 10_000
+    nav = (
+        '<html xmlns="http://www.w3.org/1999/xhtml" '
+        'xmlns:epub="http://www.idpf.org/2007/ops"><body>'
+        f'<nav epub:type="toc"><ol><li><a href="c.xhtml">{long_title}</a></li>'
+        "</ol></nav></body></html>"
+    ).encode("utf-8")
+    entries = reader._toc_entries_from_nav(nav, "OEBPS")
+    titles = reader._titles_from_nav(nav, "OEBPS")
+    assert len(entries) == 1
+    assert len(entries[0][1]) <= reader.MAX_TITLE_CHARS
+    assert all(len(t) <= reader.MAX_TITLE_CHARS for t in titles.values())
+
+
+def test_manifest_toc_depth_is_clamped_on_load(tmp_path):
+    # A tampered/corrupt cache row must not surface an out-of-range depth.
+    book_dir = tmp_path / "reader" / "clampkey"
+    book_dir.mkdir(parents=True)
+    manifest = {
+        "version": 2, "book_key": "clampkey", "title": "T", "author": "",
+        "chapters": [{"title": "c", "blocks": 1, "chars": 5}],
+        "images": 0, "total_chars": 5, "created": 0.0,
+        "toc": [[99, "deep", 0], [-5, "neg", 0]],
+    }
+    (book_dir / "manifest.json").write_text(__import__("json").dumps(manifest))
+    loaded = load_manifest(str(tmp_path), "clampkey")
+    assert loaded is not None
+    assert [d for d, _t, _i in loaded.toc] == [reader._MAX_TOC_DEPTH, 0]
+
+
+async def test_search_query_is_clamped_to_cap(tmp_path):
+    run = "q" * (reader.SEARCH_MAX_QUERY_CHARS + 50)
+    body = (
+        '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>'
+        f"<p>{run}</p></body></html>"
+    ).encode("utf-8")
+    kc = FakeKC(make_epub(chapters=1, image=False, ncx=False,
+                          chapter_bytes={0: body}))
+    d = str(tmp_path)
+    m = await reader.shelve_book(kc, _record(), d)
+    hits = reader.search_book(d, m.book_key, len(m.chapters), run)
+    # The over-long query is truncated to the cap, then matched normally.
+    assert hits and len(hits[0].match) == reader.SEARCH_MAX_QUERY_CHARS
+
+
+def test_load_chapter_non_string_blocks_rejected_not_coerced(tmp_path):
+    # A tampered/corrupt chapter entry holding non-string blocks must raise,
+    # never be str()-coerced — a dict's repr carries literal angle brackets
+    # straight into the one | safe render seam. [SS-01]
+    book_dir = tmp_path / "reader" / "strictkey" / "chapters"
+    book_dir.mkdir(parents=True)
+    (book_dir / "0.json").write_text(
+        '{"blocks": [{"evil": "<script>alert(1)</script>"}], "anchors": {}}'
+    )
+    with pytest.raises(ReaderError):
+        load_chapter(str(tmp_path), "strictkey", 0)

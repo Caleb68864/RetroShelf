@@ -412,3 +412,34 @@ async def test_oversized_pdf_raises_reader_error(tmp_path, monkeypatch):
     except ReaderError:
         raised = True
     assert raised
+
+
+# -- hostile outlines: depth bombs and entry floods ---------------------------
+
+
+def test_outline_depth_bomb_returns_empty_not_recursion_error():
+    # pypdf represents nesting as nested lists; 500 levels must hit the walk
+    # guard, not the Python recursion limit. No leaf destinations are ever
+    # resolved, so no reader object is needed.
+    from app import reader as r
+    outline: list = []
+    for _ in range(500):
+        outline = [outline]
+    assert r._flatten_pdf_outline(None, outline) == []
+
+
+def test_outline_entry_flood_and_giant_titles_are_capped():
+    from app import reader as r
+
+    class _FakeDest:
+        def __init__(self, title: str) -> None:
+            self.title = title
+
+    class _FakeReader:
+        def get_destination_page_number(self, _item) -> int:
+            return 0
+
+    flood = [_FakeDest("T" * 10_000) for _ in range(r.MAX_TOC_ENTRIES + 500)]
+    entries = r._flatten_pdf_outline(_FakeReader(), flood)
+    assert len(entries) == r.MAX_TOC_ENTRIES
+    assert all(len(t) <= r.MAX_TITLE_CHARS for _d, t, _p in entries)

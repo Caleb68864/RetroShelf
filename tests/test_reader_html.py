@@ -356,3 +356,48 @@ def test_image_route_serves_shelved_html_image(tmp_path):
         img = client.get(f"/read/{bid}/img/0")
         assert img.status_code == 200
         assert img.headers["content-type"].startswith("image/")
+
+
+# -- normalizer hardening: depth caps and end-tag handling --------------------
+
+
+async def test_deep_div_nest_content_survives(tmp_path):
+    # 3000 nested <div>s: past the normalizer's depth cap the wrappers are
+    # unwrapped (text keeps flowing at the cap depth), so re-serializing and
+    # sanitizing the tree never recurses past Python's limit — and because the
+    # cap equals the sanitizer's render cap, the deep text still renders.
+    cache_dir = str(tmp_path / "cache")
+    depth = 3000
+    page = "<html><body>" + "<div>" * depth + "deep text" + "</div>" * depth + "</body></html>"
+    handler, _calls = make_html_handler(page.encode("utf-8"), b"")
+    manifest = await _shelve(cache_dir, handler, _record())
+    texts = []
+    for i in range(len(manifest.chapters)):
+        texts.extend(load_chapter(cache_dir, manifest.book_key, i))
+    assert any("deep text" in b for b in texts)
+
+
+def test_normalizer_stray_and_mismatched_end_tags():
+    from app.reader import _normalize_html
+    # A stray </b> with nothing open is ignored; <b><i>x</b> closes both.
+    xhtml, _srcs = _normalize_html("</b><p>a</p><b><i>x</b>tail")
+    assert xhtml.startswith("<body>")
+    assert xhtml.endswith("</body>")
+    assert "<p>a</p>" in xhtml
+    # Balanced: every <i>/<b> opened is closed before </body>.
+    assert xhtml.count("<b>") == xhtml.count("</b>")
+    assert xhtml.count("<i>") == xhtml.count("</i>")
+
+
+def test_normalizer_many_end_tags_stay_fast():
+    # Regression guard for the O(depth) per-end-tag stack scan: thousands of
+    # nested opens followed by as many closes must normalize promptly.
+    import time
+    from app.reader import _normalize_html
+    n = 20_000
+    source = "<b>" * n + "x" + "</b>" * n
+    start = time.monotonic()
+    xhtml, _srcs = _normalize_html(source)
+    elapsed = time.monotonic() - start
+    assert "x" in xhtml
+    assert elapsed < 5.0  # quadratic behaviour took minutes here

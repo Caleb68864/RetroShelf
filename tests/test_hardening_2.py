@@ -487,3 +487,32 @@ def test_access_key_header_still_works_for_opds_readers():
 def test_health_stays_open_for_the_container_healthcheck():
     with TestClient(_keyed_app()) as client:
         assert client.get("/health").status_code == 200
+
+
+# -- Extra pass: crafted OpenSearch template must never 500 the search page ----
+
+def test_unbalanced_brace_in_opensearch_template_does_not_500():
+    # A hostile / broken upstream can advertise a search template whose optional
+    # tokens are unbalanced — a lone ``{`` with no later ``}`` sitting after a
+    # stray ``}``. The old hand-rolled ``str.index('}', start)`` scan raised a
+    # ValueError on exactly this shape and 500'd the whole search page. The
+    # token-stripping is now a single non-spanning regex sweep. [dos]
+    from tests.test_app import ROOT_XML
+    broken_root = ROOT_XML.replace(
+        'href="/api/opds/KEY/search?query={searchTerms}"',
+        'href="/api/opds/KEY/search?q={searchTerms}&amp;stray}oops{tail"',
+    )
+
+    def handler(request):
+        if request.url.path == "/api/opds/SECRETKEY":
+            return httpx.Response(200, text=broken_root)
+        if "/search" in request.url.path:
+            from tests.test_app import ACQ_XML
+            return httpx.Response(200, text=ACQ_XML)
+        from tests.test_app import ACQ_XML
+        return httpx.Response(200, text=ACQ_XML)
+
+    with make_client(handler) as client:
+        r = client.get("/search?q=verne")
+        assert r.status_code == 200
+        assert "unavailable" not in r.text.lower()

@@ -14,7 +14,7 @@
     <a class="navlink" href="/shelf/{{ s.id }}"><span class="prompt">&gt;&gt;</span>{{ s.name }} ({{ s.count }})</a>
     <form class="search" action="/shelves/rename/{{ s.id }}" method="get">
       <input type="hidden" name="t" value="{{ site_token(request) }}">
-      <input type="text" name="name" maxlength="40" value="{{ s.name }}" placeholder="rename" autocorrect="off" autocapitalize="off" autocomplete="off" spellcheck="false">
+      <input type="text" name="name" maxlength="40" value="{{ s.name }}" aria-label="Rename shelf {{ s.name }}" placeholder="rename" autocorrect="off" autocapitalize="off" autocomplete="off" spellcheck="false">
       <input type="submit" value="Rename">
     </form>
     <a class="unstar" href="/shelves/delete/{{ s.id }}?t={{ site_token(request) }}">&times; delete shelf</a>
@@ -26,7 +26,7 @@
 <div class="sectionhead">&gt;&gt; New shelf</div>
 <form class="search" action="/shelves/create" method="get">
   <input type="hidden" name="t" value="{{ site_token(request) }}">
-  <input type="text" name="name" maxlength="40" placeholder="e.g. To Read" autocorrect="off" autocapitalize="off" autocomplete="off" spellcheck="false">
+  <input type="text" name="name" maxlength="40" aria-label="New shelf name" placeholder="e.g. To Read" autocorrect="off" autocapitalize="off" autocomplete="off" spellcheck="false">
   <input type="submit" value="Create shelf">
 </form>
 

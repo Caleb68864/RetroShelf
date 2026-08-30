@@ -90,7 +90,10 @@ _VOID_ELEMENTS = frozenset({"br", "hr"})
 
 _SPAN_ATTRS = ("colspan", "rowspan")
 
-_INT_RE = re.compile(r"^[0-9]+$")
+# ``\Z`` (not ``$``): ``$`` also matches before a trailing newline, which
+# would let ``colspan="2\n"`` through. Harmless inside a quoted attribute,
+# but the XSS wall admits exactly digits, nothing else. [SS-01]
+_INT_RE = re.compile(r"[0-9]{1,4}\Z")
 
 # Recursion cap for the (pure-Python, genuinely recursive) render walk. A
 # hostile chapter can nest thousands of elements deep to blow the Python
@@ -498,6 +501,30 @@ _PASSTHROUGH_IMAGE_FORMATS = {"JPEG", "PNG"}
 
 _HEADING_TAGS = ("h1", "h2", "h3")
 
+# Ceiling on any single book-supplied display title (chapter, ToC entry,
+# ComicInfo series, PDF bookmark). A 4MB metadata member could otherwise
+# deliver one multi-megabyte "title" that is stored in manifest.json and
+# re-rendered on every page view. Real titles are a line of text. [SS-02]
+MAX_TITLE_CHARS = 300
+
+# Ceiling on stored hierarchical-ToC entries. nav/NCX documents and PDF
+# outlines are otherwise free to declare hundreds of thousands of entries
+# (all pointing at valid chapters), bloating manifest.json and the rendered
+# ToC page without bound. Mirrors MAX_SPINE_ITEMS bounding chapter work.
+MAX_TOC_ENTRIES = 2000
+
+
+def _clip_title(title: str) -> str:
+    """Clamp a book-supplied display title to :data:`MAX_TITLE_CHARS`.
+
+    :param title: An untrusted title string (already whitespace-collapsed).
+    :returns: *title*, truncated with an ellipsis when over the cap.
+    :rtype: str
+    """
+    if len(title) <= MAX_TITLE_CHARS:
+        return title
+    return title[: MAX_TITLE_CHARS - 1].rstrip() + "…"
+
 
 @dataclass
 class ChapterMeta:
@@ -663,6 +690,9 @@ def _read_member_capped(zf: zipfile.ZipFile, name: str, member_cap: int, budget:
         entry cannot be opened/decompressed, or the entry is
         zip-layer-encrypted or uses an unsupported compression method.
     """
+    # Zip member names run to 64KB; clip what we quote so a hostile name
+    # cannot balloon the (auto-escaped, but still rendered) error page.
+    shown = name if len(name) <= 120 else name[:120] + "…"
     chunks: list[bytes] = []
     total = 0
     try:
@@ -673,10 +703,10 @@ def _read_member_capped(zf: zipfile.ZipFile, name: str, member_cap: int, budget:
                     break
                 total += len(chunk)
                 if total > member_cap:
-                    raise ReaderError(f"This book's {name!r} entry exceeds the size cap")
+                    raise ReaderError(f"This book's {shown!r} entry exceeds the size cap")
                 chunks.append(chunk)
     except (zipfile.BadZipFile, OSError) as exc:
-        raise ReaderError(f"Could not read {name!r} from this book") from exc
+        raise ReaderError(f"Could not read {shown!r} from this book") from exc
     except RuntimeError as exc:
         # zipfile raises plain RuntimeError (NotImplementedError, its
         # subclass, for an unsupported compression method) for a
@@ -688,7 +718,7 @@ def _read_member_capped(zf: zipfile.ZipFile, name: str, member_cap: int, budget:
             raise ReaderError(
                 "This book is protected (DRM) and can't be read in the browser"
             ) from exc
-        raise ReaderError(f"Could not read {name!r} from this book") from exc
+        raise ReaderError(f"Could not read {shown!r} from this book") from exc
     budget.add(total)
     return b"".join(chunks)
 
@@ -779,7 +809,7 @@ def _titles_from_nav(data: bytes, nav_dir: str) -> dict[str, str]:
             path = _norm_zip_path(nav_dir, href) if href else None
             text = "".join(a_el.itertext()).strip()
             if path and text and path not in titles:
-                titles[path] = text
+                titles[path] = _clip_title(text)
         break
     return titles
 
@@ -813,11 +843,19 @@ def _titles_from_ncx(data: bytes, ncx_dir: str) -> dict[str, str]:
                 src = child.get("src")
         path = _norm_zip_path(ncx_dir, src) if src else None
         if path and title_text:
-            titles.setdefault(path, title_text)
+            titles.setdefault(path, _clip_title(title_text))
     return titles
 
 
 _MAX_TOC_DEPTH = 3
+
+# Recursion guard for the (genuinely recursive) nav/NCX/PDF-outline walks.
+# Recorded depth is clamped to _MAX_TOC_DEPTH, but without a walk bound a
+# hostile document nesting <ol>/navPoint/outline nodes thousands deep would
+# blow the Python call stack (RecursionError, an uncaught 500) — the same
+# failure MAX_NESTING_DEPTH prevents in the render walk. Real ToCs nest a
+# handful of levels. [SS-02]
+_MAX_TOC_WALK_DEPTH = 64
 
 
 def _toc_entries_from_nav(data: bytes, nav_dir: str) -> list[tuple[int, str, str]]:
@@ -838,7 +876,11 @@ def _toc_entries_from_nav(data: bytes, nav_dir: str) -> list[tuple[int, str, str
     entries: list[tuple[int, str, str]] = []
 
     def walk_ol(ol: Element, depth: int) -> None:
+        if depth > _MAX_TOC_WALK_DEPTH:
+            return
         for li in ol:
+            if len(entries) >= MAX_TOC_ENTRIES:
+                return
             if _local_name(li.tag) != "li":
                 continue
             anchor = next((e for e in li.iter() if _local_name(e.tag) == "a"), None)
@@ -847,7 +889,7 @@ def _toc_entries_from_nav(data: bytes, nav_dir: str) -> list[tuple[int, str, str
                 path = _norm_zip_path(nav_dir, href) if href else None
                 text = " ".join("".join(anchor.itertext()).split())
                 if path and text:
-                    entries.append((min(depth, _MAX_TOC_DEPTH), text, path))
+                    entries.append((min(depth, _MAX_TOC_DEPTH), _clip_title(text), path))
             child_ol = next((e for e in li if _local_name(e.tag) == "ol"), None)
             if child_ol is not None:
                 walk_ol(child_ol, depth + 1)
@@ -884,6 +926,8 @@ def _toc_entries_from_ncx(data: bytes, ncx_dir: str) -> list[tuple[int, str, str
     entries: list[tuple[int, str, str]] = []
 
     def walk_point(point: Element, depth: int) -> None:
+        if depth > _MAX_TOC_WALK_DEPTH or len(entries) >= MAX_TOC_ENTRIES:
+            return
         title_text = ""
         src: str | None = None
         children_points: list[Element] = []
@@ -899,7 +943,7 @@ def _toc_entries_from_ncx(data: bytes, ncx_dir: str) -> list[tuple[int, str, str
                 children_points.append(child)
         path = _norm_zip_path(ncx_dir, src) if src else None
         if path and title_text:
-            entries.append((min(depth, _MAX_TOC_DEPTH), title_text, path))
+            entries.append((min(depth, _MAX_TOC_DEPTH), _clip_title(title_text), path))
         for cp in children_points:
             walk_point(cp, depth + 1)
 
@@ -954,7 +998,7 @@ def _title_from_heading(source: bytes) -> str | None:
         if _local_name(el.tag) in _HEADING_TAGS:
             text = "".join(el.itertext()).strip()
             if text:
-                return text
+                return _clip_title(text)
     return None
 
 
@@ -1157,8 +1201,11 @@ def _manifest_from_dict(data: dict) -> Manifest:
         created=float(data["created"]),
         # ``toc`` is v2+; a v1 manifest (or a malformed entry) degrades to the
         # flat spine-chapter ToC, so tolerate absence and bad rows.
+        # Depth is clamped to the same range shelving writes, so a hand-edited
+        # or corrupt cache entry cannot render with an out-of-range indent
+        # class or a negative depth.
         toc=[
-            (int(row[0]), str(row[1]), int(row[2]))
+            (max(0, min(int(row[0]), _MAX_TOC_DEPTH)), str(row[1]), int(row[2]))
             for row in data.get("toc", [])
             if isinstance(row, (list, tuple)) and len(row) == 3
         ],
@@ -1344,6 +1391,11 @@ async def _spool_epub(kc: KavitaClient, url: str, spool_path: str, cap: int) -> 
     return total
 
 
+# One lock per distinct book key, never evicted. Deliberate: entries are tiny,
+# a key only exists for a book someone opened through a *validly signed* bridge
+# id (an attacker cannot mint keys), and eviction would reopen the very
+# duplicate-shelve race the lock exists to prevent. Bounded, in practice, by
+# the catalogue size. [SS-02]
 _SHELVE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
@@ -1432,6 +1484,18 @@ _HTML_CLOSES_P = frozenset({
     "li", "dl", "table", "blockquote", "pre", "hr", "tr",
 })
 
+# Ceiling on the normalizer's open-element depth. Elements past it are
+# unwrapped (children and text survive at the cap depth) rather than nested
+# deeper: ElementTree's ``tostring`` and this module's render walk both
+# recurse per nesting level, so an unbounded depth lets a hostile document
+# trade its element budget for a RecursionError (an uncaught 500) when the
+# normalized tree is re-serialized. Equal to MAX_NESTING_DEPTH: everything
+# the normalizer keeps nested stays within the sanitizer's render reach, and
+# content nested deeper flattens into the cap-depth element instead of being
+# silently dropped by the render cap. Comfortably below Python's default
+# recursion limit. [html-reader]
+_MAX_HTML_DEPTH = MAX_NESTING_DEPTH
+
 # XML 1.0 forbids most C0 control characters even when escaped; strip them from
 # text/attribute content so the normalized document always parses. Tab, LF and
 # CR are allowed.
@@ -1470,10 +1534,25 @@ class _XHTMLNormalizer(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._out: list[str] = ["<body>"]
         self._stack: list[str] = []
+        # Open-count per tag name, kept in lockstep with ``_stack``: the
+        # end-tag handler needs an "is this tag open at all?" test, and a
+        # linear ``in self._stack`` scan per end tag is O(depth) — a document
+        # nesting thousands of elements deep would make closing them
+        # quadratic (minutes of CPU inside the element cap). [html-reader]
+        self._open_counts: dict[str, int] = {}
         self._skip = 0  # >0 while inside a <head> subtree
         self._elements = 0
         self.img_srcs: list[str] = []
         self._seen_src: set[str] = set()
+
+    def _push(self, tag: str) -> None:
+        self._stack.append(tag)
+        self._open_counts[tag] = self._open_counts.get(tag, 0) + 1
+
+    def _pop(self) -> str:
+        tag = self._stack.pop()
+        self._open_counts[tag] -= 1
+        return tag
 
     def _close(self, tag: str) -> None:
         self._out.append(f"</{tag}>")
@@ -1486,15 +1565,15 @@ class _XHTMLNormalizer(HTMLParser):
         while self._stack:
             top = self._stack[-1]
             if top == "p" and tag in _HTML_CLOSES_P:
-                self._close(self._stack.pop())
+                self._close(self._pop())
             elif top == "li" and tag == "li":
-                self._close(self._stack.pop())
+                self._close(self._pop())
             elif top in ("td", "th") and tag in ("td", "th", "tr"):
-                self._close(self._stack.pop())
+                self._close(self._pop())
             elif top == "tr" and tag == "tr":
-                self._close(self._stack.pop())
+                self._close(self._pop())
             elif top in ("dt", "dd") and tag in ("dt", "dd"):
-                self._close(self._stack.pop())
+                self._close(self._pop())
             else:
                 break
 
@@ -1539,9 +1618,14 @@ class _XHTMLNormalizer(HTMLParser):
         attr_str = self._emit_attrs(tag, attrs)
         if tag in _HTML_VOID:
             self._out.append(f"<{tag}{attr_str}/>")
+        elif len(self._stack) >= _MAX_HTML_DEPTH:
+            # Depth cap: unwrap instead of nesting deeper — children and text
+            # keep flowing into the currently-open element, so content
+            # survives while the tree stays shallow enough to re-serialize.
+            return
         else:
             self._out.append(f"<{tag}{attr_str}>")
-            self._stack.append(tag)
+            self._push(tag)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
@@ -1559,11 +1643,11 @@ class _XHTMLNormalizer(HTMLParser):
             if tag == "head":
                 self._skip -= 1
             return
-        if tag in _HTML_TRANSPARENT or tag in _HTML_VOID or tag not in self._stack:
+        if tag in _HTML_TRANSPARENT or tag in _HTML_VOID or not self._open_counts.get(tag):
             return
         # Close any elements left open above the match, then the match itself.
         while self._stack:
-            top = self._stack.pop()
+            top = self._pop()
             self._close(top)
             if top == tag:
                 break
@@ -1584,7 +1668,7 @@ class _XHTMLNormalizer(HTMLParser):
     def result(self) -> str:
         """Close any still-open tags and return the ``<body>…</body>`` string."""
         while self._stack:
-            self._close(self._stack.pop())
+            self._close(self._pop())
         self._out.append("</body>")
         return "".join(self._out)
 
@@ -2115,7 +2199,10 @@ def _flatten_pdf_outline(
     destination with a ``.title`` resolvable to a 0-based page index via
     :meth:`pypdf.PdfReader.get_destination_page_number`. Entries whose page or
     title cannot be resolved are skipped (a broken bookmark must not fail the
-    book). Depth is capped at :data:`_MAX_TOC_DEPTH`.
+    book). Recorded depth is capped at :data:`_MAX_TOC_DEPTH`, the walk itself
+    at :data:`_MAX_TOC_WALK_DEPTH`, entry count at :data:`MAX_TOC_ENTRIES`,
+    and each title at :data:`MAX_TITLE_CHARS` — so a hostile outline can
+    neither blow the call stack nor bloat the manifest.
 
     :param reader: The open ``pypdf`` reader (for page-number resolution).
     :param outline: A ``reader.outline`` node (list) to walk.
@@ -2123,11 +2210,14 @@ def _flatten_pdf_outline(
     :returns: Ordered ``(depth, title, page_index)`` triples.
     """
     entries: list[tuple[int, str, int]] = []
-    if not isinstance(outline, list):
+    if not isinstance(outline, list) or depth > _MAX_TOC_WALK_DEPTH:
         return entries
     for item in outline:
+        if len(entries) >= MAX_TOC_ENTRIES:
+            break
         if isinstance(item, list):
-            entries.extend(_flatten_pdf_outline(reader, item, depth + 1))
+            remaining = MAX_TOC_ENTRIES - len(entries)
+            entries.extend(_flatten_pdf_outline(reader, item, depth + 1)[:remaining])
             continue
         try:
             page = reader.get_destination_page_number(item)
@@ -2135,7 +2225,7 @@ def _flatten_pdf_outline(
         except Exception:  # noqa: BLE001 - a broken bookmark must not fail the book
             continue
         if title and isinstance(page, int) and page >= 0:
-            entries.append((min(depth, _MAX_TOC_DEPTH), title, page))
+            entries.append((min(depth, _MAX_TOC_DEPTH), _clip_title(title), page))
     return entries
 
 
@@ -2400,14 +2490,32 @@ def _natural_sort_key(path: str) -> list[object]:
     string ordering would put ``page10`` first, scrambling the whole comic. The
     path is lower-cased first so ``Page`` and ``page`` interleave naturally.
 
+    ``re.split`` with a capturing group always yields the digit runs at the
+    *odd* indices, so run type is decided by position — never by ``.isdigit()``,
+    which is a trap here: it is ``True`` for non-decimal characters ``int()``
+    rejects (superscripts like ``²``) and says nothing about a run of thousands
+    of digits, both of which make ``int()`` raise ``ValueError``. A hostile CBZ
+    can name a member to hit either (``1²²²2.jpg``, or a 5000-digit run), so the
+    conversion is guarded — a run ``int()`` cannot digest sorts as ``0`` rather
+    than crashing the whole comic's page sort with an uncaught ``ValueError``
+    (which, not being a :class:`ReaderError`, would surface as a 500). Keeping an
+    ``int`` at every odd index also preserves type parity across all keys, so
+    the sort never compares ``int`` against ``str``. [cbz-reader]
+
     :param path: A zip member path (e.g. ``"comic/page10.jpg"``).
     :returns: A mixed ``list`` of ``str``/``int`` segments usable as a sort key.
     :rtype: list[object]
     """
-    return [
-        int(seg) if seg.isdigit() else seg
-        for seg in _CBZ_DIGITS_RE.split(path.lower())
-    ]
+    key: list[object] = []
+    for i, seg in enumerate(_CBZ_DIGITS_RE.split(path.lower())):
+        if i % 2:  # capturing group => a \d+ run, always at an odd index
+            try:
+                key.append(int(seg))
+            except ValueError:  # non-decimal \d, or a run past int()'s digit cap
+                key.append(0)
+        else:
+            key.append(seg)
+    return key
 
 
 def _cbz_title_from_comicinfo(zf: zipfile.ZipFile, names: set[str], budget: _UnpackBudget) -> str | None:
@@ -2439,9 +2547,9 @@ def _cbz_title_from_comicinfo(zf: zipfile.ZipFile, names: set[str], budget: _Unp
     for el in root.iter():
         name = _local_name(el.tag)
         if name == "series" and el.text and el.text.strip():
-            series = " ".join(el.text.split())
+            series = _clip_title(" ".join(el.text.split()))
         elif name == "title" and el.text and el.text.strip():
-            title = " ".join(el.text.split())
+            title = _clip_title(" ".join(el.text.split()))
     return series or title
 
 
@@ -2630,9 +2738,14 @@ def load_chapter(cache_dir: str, book_key: str, i: int) -> list[str]:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         blocks = data["blocks"]
-        if not isinstance(blocks, list):
+        # Strict shape check, no coercion: every block this cache holds was
+        # written as a sanitized string, so anything else is corruption —
+        # str()-ing a foreign value here would hand its repr (angle brackets
+        # intact) to the one ``| safe`` render seam. Refusing surfaces the
+        # friendly "could not load chapter" error instead. [SS-01]
+        if not isinstance(blocks, list) or not all(isinstance(b, str) for b in blocks):
             raise TypeError("malformed chapter cache entry")
-        return [str(b) for b in blocks]
+        return blocks
     except (FileNotFoundError, OSError, ValueError, KeyError, TypeError) as exc:
         raise ReaderError(f"Could not load chapter {i}") from exc
 
@@ -2666,8 +2779,10 @@ def load_chapter_anchors(cache_dir: str, book_key: str, i: int) -> dict[str, int
 
 
 # In-book search. Minimum query length (single characters would match every
-# page and are useless); results and per-book cost are bounded. [findability]
+# page and are useless); results, query length, and per-book cost are
+# bounded. [findability]
 SEARCH_MIN_QUERY = 2
+SEARCH_MAX_QUERY_CHARS = 200
 SEARCH_MAX_HITS = 60
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -2710,7 +2825,9 @@ def search_book(
     Scans each chapter's sanitized blocks as plain text (tags stripped,
     entities decoded), returning up to *max_hits* :class:`SearchHit` snippets
     in reading order. Returns ``[]`` for a query shorter than
-    :data:`SEARCH_MIN_QUERY`. Never raises: an unreadable chapter is skipped.
+    :data:`SEARCH_MIN_QUERY`; queries longer than
+    :data:`SEARCH_MAX_QUERY_CHARS` are truncated to that length. Never
+    raises: an unreadable chapter is skipped.
 
     :param cache_dir: The application cache root.
     :param book_key: The book's cache key.
@@ -2721,7 +2838,10 @@ def search_book(
     :returns: Ordered list of matches, each locating the containing block.
     :rtype: list[SearchHit]
     """
-    q = query.strip()
+    # Clamp the (caller-supplied, unbounded) query: nobody legitimately
+    # searches a paragraph, and a match longer than the cap could not be
+    # usefully snippeted anyway. [findability]
+    q = query.strip()[:SEARCH_MAX_QUERY_CHARS]
     if len(q) < SEARCH_MIN_QUERY:
         return []
     needle = q.lower()

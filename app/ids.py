@@ -124,7 +124,13 @@ class IdCodec:
         """
         if not provided:
             return False
-        return hmac.compare_digest(provided, self.site_token)
+        # Compare on UTF-8 bytes: hmac.compare_digest raises TypeError on a str
+        # with non-ASCII characters, and ``provided`` is the raw ``t=`` query
+        # parameter, so a value like "?t=café" would otherwise 500 instead of
+        # cleanly failing the check.
+        return hmac.compare_digest(
+            provided.encode("utf-8"), self.site_token.encode("utf-8")
+        )
 
     def _keystream(self, nonce: bytes, length: int, key: bytes | None = None) -> bytes:
         """Generate a deterministic keystream via counter-mode HMAC-SHA256.

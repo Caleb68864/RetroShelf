@@ -4,7 +4,8 @@
 <div class="sectionhead">&gt;&gt; Find in {{ book_title }}</div>
 
 <form class="search" action="/read/{{ bid }}/find" method="get">
-  <input type="text" name="q" value="{{ query }}" placeholder="search this book"
+  {# maxlength mirrors reader.SEARCH_MAX_QUERY_CHARS (the server clamps too). #}
+  <input type="text" name="q" value="{{ query }}" aria-label="Search this book" placeholder="search this book" maxlength="200"
          autocorrect="off" autocapitalize="off" autocomplete="off" spellcheck="false">
   <input type="submit" value="Find">
 </form>

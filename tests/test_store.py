@@ -185,6 +185,129 @@ def test_migrate_global_state_into_first_profile(tmp_path):
     assert [f["t"] for f in Store(p).favorites(profile_id=prof)] == ["Old Global"]
 
 
+def test_hostile_file_shapes_never_crash_startup(tmp_path):
+    import json
+    # A missing/corrupt/wrong-shaped file must never crash startup: every section
+    # is repaired field-by-field or quarantined, and reads must return safely.
+    shapes = [
+        [1, 2, 3],                                              # top-level list
+        {"favorites": [1, 2]},                                  # favorites wrong type
+        {"favorites": {"k": "notadict"}},                       # fav value not dict
+        {"history": {"notalist": 1}},                           # history wrong type
+        {"reading": {"k": {"chapter": "x", "block": 1, "percent": 2}}},  # bad pos
+        {"bookmarks": {"bk": {"notalist": 1}}},                 # per-book not list
+        {"shelves": {"s": {"items": [1, 2]}}},                  # shelf items not dict
+        {"shelves": "x"},                                       # shelves not dict
+        {"accounts": [1, 2]},                                   # accounts not dict
+        {"accounts": {"a": {"username": "u", "pw_hash": "h",
+                            "pw_salt": "s", "iterations": True}}},  # bool iters dropped
+        {"profile_state": [1, 2, 3]},                           # profile_state not dict
+        {"profile_state": {"p": "notadict"}},                   # profile value not dict
+    ]
+    for i, sh in enumerate(shapes):
+        p = str(tmp_path / f"s{i}.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(sh, f)
+        s = Store(p)  # must not raise
+        # Exercising every read path must not surface a bad value.
+        s.favorites()
+        s.recent_downloads()
+        s.list_shelves()
+        s.has_accounts()
+        s.bookmarks("bk")
+        s.reading_list()
+
+
+def test_bad_position_dropped_and_percent_clamped_on_load(tmp_path):
+    import json
+    p = str(tmp_path / "s.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"reading": {
+            "good": {"u": "http://x/1", "chapter": 1, "block": 2, "percent": 999},
+            "bad": {"chapter": "x", "block": 1, "percent": 2},
+            "neg": {"chapter": -1, "block": 0, "percent": 0},
+        }}, f)
+    s = Store(p)
+    good = s.get_position("good")
+    assert good is not None and good["percent"] == 100  # clamped
+    assert s.get_position("bad") is None
+    assert s.get_position("neg") is None
+
+
+def test_migrate_carries_shelves_and_new_shelf_does_not_crash(tmp_path):
+    # Regression: migrate_global_state_into once omitted the ``shelves`` section,
+    # so the migrated profile-state dict had no ``shelves`` key and the admin's
+    # first create_shelf/list_shelves KeyError'd. Pre-accounts shelves must carry
+    # over, and shelf ops on the migrated profile must keep working.
+    p = str(tmp_path / "s.json")
+    s = Store(p)
+    sid = s.create_shelf("Pre-accounts shelf")
+    s.add_to_shelf(sid, {"u": "http://x/1.epub", "t": "Old"})
+    acct = s.create_account("admin", "hunter2000")
+    prof = s.add_profile(acct, "admin", "amber")
+    s.migrate_global_state_into(prof)
+    # The old shelf came across, and the sentinel is now empty.
+    names = [row["name"] for row in s.list_shelves(profile_id=prof)]
+    assert names == ["Pre-accounts shelf"]
+    assert s.list_shelves() == []
+    # Creating and listing a fresh shelf on the migrated profile must not crash.
+    new_sid = s.create_shelf("Brand new", profile_id=prof)
+    assert new_sid in {r["id"] for r in s.list_shelves(profile_id=prof)}
+    # Survives a reload.
+    assert sorted(r["name"] for r in Store(p).list_shelves(profile_id=prof)) == \
+        ["Brand new", "Pre-accounts shelf"]
+
+
+def test_profile_state_count_is_capped_on_load(tmp_path):
+    import json
+
+    from app.store import _MAX_PROFILE_STATES
+    p = str(tmp_path / "s.json")
+    # A hostile/corrupt file lists far more profile-state blobs than could ever
+    # legitimately exist; the loader must not import them all.
+    bogus = {str(i): {"favorites": {}, "history": [], "reading": {}, "bookmarks": {}}
+             for i in range(_MAX_PROFILE_STATES + 250)}
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"favorites": {}, "history": [], "reading": {}, "bookmarks": {},
+                   "profile_state": bogus}, f)
+    s = Store(p)  # must not hang or blow up
+    assert len(s._data["profile_state"]) <= _MAX_PROFILE_STATES
+
+
+def test_loaded_mapping_keys_are_length_capped(tmp_path):
+    import json
+
+    from app.store import _MAX_STATE_KEY
+    p = str(tmp_path / "s.json")
+    huge = "k" * 100_000  # a hostile/bit-rotted key
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({
+            "favorites": {huge: {"u": "http://x/1", "t": "T"}},
+            "reading": {huge: {"chapter": 0, "block": 0, "percent": 5}},
+            "shelves": {huge: {"name": "S", "items": {huge: {"u": "http://x/2"}}}},
+        }, f)
+    s = Store(p)
+    # No key that survived the load exceeds the cap.
+    fav_keys = list(s._pstate_ro("_")["favorites"].keys())
+    assert fav_keys and all(len(k) <= _MAX_STATE_KEY for k in fav_keys)
+    read_keys = list(s._pstate_ro("_")["reading"].keys())
+    assert read_keys and all(len(k) <= _MAX_STATE_KEY for k in read_keys)
+    shelf_keys = list(s._pstate_ro("_")["shelves"].keys())
+    assert shelf_keys and all(len(k) <= _MAX_STATE_KEY for k in shelf_keys)
+
+
+def test_format_len_rejects_bool(tmp_path):
+    from app.store import sanitize_record
+    # ``True``/``False`` are ints in Python; a crafted feed must not smuggle one
+    # into the numeric ``len`` field.
+    rec = sanitize_record({"u": "http://x/1.epub", "fmts": [
+        {"u": "http://x/a.epub", "f": "epub", "len": True},
+        {"u": "http://x/b.epub", "f": "epub", "len": 1234},
+    ]})
+    assert rec["fmts"][0]["len"] is None
+    assert rec["fmts"][1]["len"] == 1234
+
+
 def test_accounts_off_file_stays_pre_accounts_shape(tmp_path):
     import json
     p = str(tmp_path / "s.json")

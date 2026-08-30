@@ -70,6 +70,11 @@ _MAX_SHELF_NAME = 40
 # without bound; all are far above any real household's needs.
 _MAX_ACCOUNTS = 200
 _MAX_PROFILES = 20  # per account
+# Ceiling on how many per-profile reading-state blobs a loaded file may carry.
+# The live maximum is _MAX_ACCOUNTS * _MAX_PROFILES (every account holding a full
+# roster of profiles); this bounds a hostile or corrupt file that lists profile
+# ids without a matching account so it cannot inflate memory without limit.
+_MAX_PROFILE_STATES = _MAX_ACCOUNTS * _MAX_PROFILES
 _MAX_USERNAME = 64
 _MAX_PROFILE_NAME = 40
 # Netflix-style profile accent choices. Purely cosmetic; validated on the way
@@ -95,6 +100,27 @@ _FIELD_LIMITS = {
     "key": 64, "feed_name": 128,
 }
 _MAX_FORMATS = 8
+
+# Longest a persisted mapping KEY may be when loaded from disk. Every key the
+# write paths produce is a 16-char book key (:func:`book_key`) or a 16-hex
+# opaque id (:func:`_new_id`); this ceiling bounds a hostile/corrupt state file
+# whose keys — unlike the record values, already field-capped — would otherwise
+# be an uncapped way to inflate memory. Comfortably above every real key.
+_MAX_STATE_KEY = 128
+
+
+def _cap_key(key: object) -> str:
+    """Coerce a loaded mapping key to a length-capped, control-char-free string.
+
+    Applied to every dict key read from the state file so a hand-crafted or
+    bit-rotted file cannot smuggle a megabyte-long (or newline-bearing) key past
+    the per-section item caps. Write-path keys (book keys, opaque ids) are always
+    well under the cap, so this is a no-op for any legitimately-produced file.
+
+    :param key: A raw mapping key from the state file.
+    :rtype: str
+    """
+    return _clean_text(key, _MAX_STATE_KEY)
 
 
 def book_key(url: str) -> str:
@@ -190,7 +216,10 @@ def sanitize_record(record: dict) -> dict:
                 "f": "pdf" if item.get("f") == "pdf" else "epub",
             }
             length = item.get("len")
-            entry["len"] = length if isinstance(length, int) and 0 <= length < 2**40 else None
+            entry["len"] = (
+                length if isinstance(length, int) and not isinstance(length, bool)
+                and 0 <= length < 2**40 else None
+            )
             clean.append(entry)
         if clean:
             out["fmts"] = clean
@@ -261,13 +290,13 @@ def _clean_state(data: dict) -> dict:
     """Return a validated per-profile reading-state dict from raw *data*.
 
     Applies the same field-by-field repair to ``favorites``/``history``/
-    ``reading``/``bookmarks`` whether they came from the top level of the file
-    (the sentinel profile) or from one profile under
+    ``reading``/``bookmarks``/``shelves`` whether they came from the top level of
+    the file (the sentinel profile) or from one profile under
     :data:`_PROFILE_STATE_KEY`. A wrong-shaped section becomes empty rather than
     surfacing a bad value to a later request.
 
-    :param data: A raw mapping that may hold the four reading sections.
-    :returns: A clean four-section state dict.
+    :param data: A raw mapping that may hold the reading sections.
+    :returns: A clean state dict with every section present.
     :rtype: dict
     """
     state = _empty_state()
@@ -276,7 +305,7 @@ def _clean_state(data: dict) -> dict:
     favorites = data.get("favorites")
     if isinstance(favorites, dict):
         state["favorites"] = {
-            str(k): sanitize_record(v)
+            _cap_key(k): sanitize_record(v)
             for k, v in list(favorites.items())[:_MAX_FAVORITES]
             if isinstance(v, dict)
         }
@@ -288,7 +317,7 @@ def _clean_state(data: dict) -> dict:
     reading = data.get("reading")
     if isinstance(reading, dict):
         state["reading"] = {
-            str(k): entry
+            _cap_key(k): entry
             for k, v in list(reading.items())[:_MAX_READING]
             if isinstance(v, dict) and (entry := _sanitize_position(v)) is not None
         }
@@ -303,7 +332,7 @@ def _clean_state(data: dict) -> dict:
                 if isinstance(item, dict) and (m := _sanitize_bookmark(item)) is not None
             ]
             if entries:
-                clean_marks[str(k)] = entries
+                clean_marks[_cap_key(k)] = entries
         state["bookmarks"] = clean_marks
     shelves = data.get("shelves")
     if isinstance(shelves, dict):
@@ -313,11 +342,11 @@ def _clean_state(data: dict) -> dict:
                 continue
             raw_items = sv.get("items")
             items = {
-                str(k): sanitize_record(v)
+                _cap_key(k): sanitize_record(v)
                 for k, v in list(raw_items.items())[:_MAX_SHELF_ITEMS]
                 if isinstance(v, dict)
             } if isinstance(raw_items, dict) else {}
-            clean_shelves[str(sid)] = {
+            clean_shelves[_cap_key(sid)] = {
                 "name": _clean_text(sv.get("name"), _MAX_SHELF_NAME) or "Shelf",
                 "created": _as_real_number(sv.get("created")) or 0,
                 "items": items,
@@ -373,7 +402,7 @@ def _sanitize_account(raw: object) -> dict | None:
         for pid, pv in list(raw_profiles.items())[:_MAX_PROFILES]:
             prof = _sanitize_profile(pv)
             if prof is not None:
-                profiles[str(pid)] = prof
+                profiles[_cap_key(pid)] = prof
     return {
         "username": username, "pw_hash": pw_hash, "pw_salt": pw_salt,
         "iterations": iterations, "kdf": kdf, "is_admin": bool(raw.get("is_admin")),
@@ -448,9 +477,9 @@ class Store:
             self._quarantine("top-level value is not an object")
             return
 
-        # Sentinel profile: the four reading sections at the top level.
+        # Sentinel profile: the reading sections at the top level.
         sentinel = _clean_state(data)
-        for name in ("favorites", "history", "reading", "bookmarks", "shelves"):
+        for name in _empty_state():
             self._data[name] = sentinel[name]
 
         # Accounts (each with its profile metadata). Malformed accounts dropped.
@@ -460,16 +489,19 @@ class Store:
             for acct_id, raw in list(accounts.items())[:_MAX_ACCOUNTS]:
                 acct = _sanitize_account(raw)
                 if acct is not None:
-                    clean_accounts[str(acct_id)] = acct
+                    clean_accounts[_cap_key(acct_id)] = acct
             self._data["accounts"] = clean_accounts
 
         # Per-profile reading state (non-sentinel profiles).
         profile_state = data.get(_PROFILE_STATE_KEY)
         if isinstance(profile_state, dict):
+            # Skip a hand-crafted ``"_"`` key: the sentinel profile's state lives
+            # at the top level, so a profile_state entry under that id would be
+            # dead weight (never read via _pstate) yet still persisted.
             self._data[_PROFILE_STATE_KEY] = {
-                str(pid): _clean_state(pv)
-                for pid, pv in profile_state.items()
-                if isinstance(pv, dict)
+                _cap_key(pid): _clean_state(pv)
+                for pid, pv in list(profile_state.items())[:_MAX_PROFILE_STATES]
+                if isinstance(pv, dict) and str(pid) != _SENTINEL_PROFILE
             }
 
     def _quarantine(self, reason: object) -> None:
@@ -769,7 +801,10 @@ class Store:
     def downloaded_keys(self, profile_id: str = _SENTINEL_PROFILE) -> set[str]:
         """:returns: The set of book keys that have been downloaded."""
         with self._lock:
-            return {h.get("key") for h in self._pstate_ro(profile_id)["history"]}
+            return {
+                key for h in self._pstate_ro(profile_id)["history"]
+                if isinstance(key := h.get("key"), str)
+            }
 
     def recent_downloads(self, limit: int = 12, profile_id: str = _SENTINEL_PROFILE) -> list[dict]:
         """:returns: The *limit* most recent download records."""
@@ -1115,20 +1150,20 @@ class Store:
             return
         with self._lock:
             sentinel = self._data
-            has_global = (sentinel["favorites"] or sentinel["history"]
-                          or sentinel["reading"] or sentinel["bookmarks"])
-            if not has_global:
+            # Schema-driven so a future reading section is carried automatically:
+            # hand-listing the keys once dropped ``shelves``, which both stranded
+            # pre-accounts shelves and left the migrated profile-state dict
+            # without a ``shelves`` key, KeyError'ing the first shelf op.
+            sections = _empty_state().keys()
+            if not any(sentinel[name] for name in sections):
                 return
             existing = self._data[_PROFILE_STATE_KEY].get(profile_id)
-            if existing and (existing["favorites"] or existing["history"]
-                             or existing["reading"] or existing["bookmarks"]):
+            if existing and any(existing.get(name) for name in sections):
                 return
             self._data[_PROFILE_STATE_KEY][profile_id] = {
-                "favorites": sentinel["favorites"], "history": sentinel["history"],
-                "reading": sentinel["reading"], "bookmarks": sentinel["bookmarks"],
+                name: sentinel[name] for name in sections
             }
-            self._data["favorites"] = {}
-            self._data["history"] = []
-            self._data["reading"] = {}
-            self._data["bookmarks"] = {}
+            fresh = _empty_state()
+            for name in sections:
+                self._data[name] = fresh[name]
             self._save()

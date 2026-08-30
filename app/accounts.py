@@ -55,6 +55,28 @@ _KDF_NAME = "pbkdf2_sha256"
 _DEFAULT_ITERATIONS = 600_000
 _SALT_BYTES = 16
 
+# Upper bound on the password bytes fed to PBKDF2. No real password approaches
+# this; the cap exists so a login POST carrying a multi-megabyte "password"
+# cannot force an oversized allocation and hash on every attempt (the same work
+# dummy_verify would then have to mirror). Applied identically on hash, verify,
+# and the dummy path so timing and behaviour stay consistent — a stored hash is
+# always reproduced from the same truncated bytes it was created from.
+_MAX_PASSWORD_BYTES = 1024
+
+
+def _pw_bytes(password: str) -> bytes:
+    """Return the UTF-8 bytes of *password*, capped at :data:`_MAX_PASSWORD_BYTES`.
+
+    Truncation is on the raw byte string (no re-decode), so a split multibyte
+    sequence is harmless — the bytes are only ever fed to the KDF, never decoded
+    back to text.
+
+    :param password: The plaintext password (never stored or logged).
+    :returns: At most :data:`_MAX_PASSWORD_BYTES` bytes of UTF-8.
+    :rtype: bytes
+    """
+    return password.encode("utf-8")[:_MAX_PASSWORD_BYTES]
+
 # A fixed salt used only by :func:`dummy_verify`. It never guards a real
 # account — its sole job is to make the KDF run for the same wall-clock time on
 # the unknown-user path as on the wrong-password path, so login timing does not
@@ -131,7 +153,7 @@ def hash_password(
     :rtype: tuple[str, int, str]
     """
     salt = os.urandom(_SALT_BYTES)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    digest = hashlib.pbkdf2_hmac("sha256", _pw_bytes(password), salt, iterations)
     return salt.hex(), iterations, digest.hex()
 
 
@@ -158,7 +180,7 @@ def verify_password(
         expected = bytes.fromhex(hash_hex)
     except (ValueError, TypeError):
         return False
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    digest = hashlib.pbkdf2_hmac("sha256", _pw_bytes(password), salt, iterations)
     return hmac.compare_digest(digest, expected)
 
 
@@ -175,7 +197,7 @@ def dummy_verify(password: str, iterations: int = _DEFAULT_ITERATIONS) -> bool:
     :returns: Always ``False``.
     :rtype: bool
     """
-    hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), _DUMMY_SALT, iterations)
+    hashlib.pbkdf2_hmac("sha256", _pw_bytes(password), _DUMMY_SALT, iterations)
     return False
 
 
@@ -309,4 +331,10 @@ def csrf_ok(secret: str, binding: str, provided: str | None) -> bool:
     """
     if not provided:
         return False
-    return hmac.compare_digest(provided, csrf_token(secret, binding))
+    # Compare on UTF-8 bytes, not the raw strings: hmac.compare_digest raises
+    # TypeError on a str carrying non-ASCII characters, so a submitted _csrf of
+    # e.g. "café" would crash the check with a 500 instead of simply failing it.
+    # The expected token is hex, but the *provided* value is attacker-controlled.
+    return hmac.compare_digest(
+        provided.encode("utf-8"), csrf_token(secret, binding).encode("utf-8")
+    )

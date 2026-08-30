@@ -100,3 +100,25 @@ def test_csrf_token_matches_and_binds():
     assert accounts.csrf_ok(SECRET, "OTHER-session", good) is False
     # A different secret yields a different token.
     assert accounts.csrf_token("other", "session-cookie-value") != good
+
+
+def test_csrf_ok_non_ascii_provided_does_not_raise():
+    # Regression: the submitted _csrf field is attacker-controlled. A non-ASCII
+    # value must simply fail the check, not raise TypeError out of
+    # hmac.compare_digest (which would surface as an unhandled 500).
+    assert accounts.csrf_ok(SECRET, "binding", "café") is False
+    assert accounts.csrf_ok(SECRET, "binding", "🧨" * 8) is False
+
+
+def test_password_length_is_capped_before_hashing():
+    # Two passwords that differ only past the cap hash identically, proving the
+    # KDF input is bounded. No real password reaches the cap; this just confirms
+    # a giant login body cannot force unbounded hashing.
+    from app.accounts import _MAX_PASSWORD_BYTES
+
+    base = "A" * _MAX_PASSWORD_BYTES
+    salt, iters, digest = accounts.hash_password(base + "extra-tail")
+    # A verify with the base (no tail) still succeeds — the tail was truncated.
+    assert accounts.verify_password(base, salt, iters, digest) is True
+    # And an entirely different password still fails.
+    assert accounts.verify_password("B" * _MAX_PASSWORD_BYTES, salt, iters, digest) is False

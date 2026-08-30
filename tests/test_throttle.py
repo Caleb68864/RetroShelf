@@ -104,3 +104,31 @@ def test_key_tables_do_not_grow_unbounded():
     clock.advance(901.0)
     t.record_failure("fresh", None)  # triggers the sweep via _recent
     assert len(t._by_user) <= 8
+
+
+def test_per_key_samples_are_capped():
+    # Regression: an attacker who hammers a single username from many addresses
+    # (so no per-IP lock ever fires for them) must not be able to grow that
+    # username's timestamp list without bound. Storage per key is capped, since
+    # both the lock and the tarpit saturate at a small count.
+    clock = Clock()
+    t = _throttle(clock)
+    for i in range(500):
+        t.record_failure("victim", f"10.0.{i // 256}.{i % 256}")
+    # The username's stored list is bounded, not 500 entries.
+    stored = t._by_user["victim"]
+    assert len(stored) <= t._max_samples
+    # The tarpit still reports its saturated (capped) delay despite truncation.
+    assert t.tarpit_delay("victim") == 4.0  # tarpit_cap from _throttle()
+
+
+def test_capped_ip_still_locks_and_clears():
+    # Capping the stored samples must not weaken the lock: the >= threshold
+    # still trips, and the key still clears after a quiet window.
+    clock = Clock()
+    t = _throttle(clock)  # hard_max_ip=5
+    for _ in range(50):
+        t.record_failure("alice", "10.0.0.9")
+    assert t.locked("10.0.0.9")
+    clock.advance(901.0)  # whole window elapses with no new failures
+    assert not t.locked("10.0.0.9")

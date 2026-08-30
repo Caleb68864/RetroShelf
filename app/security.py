@@ -16,6 +16,24 @@ import unicodedata
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
+def _ct_str_eq(a: str, b: str) -> bool:
+    """Constant-time equality for two arbitrary (possibly non-ASCII) strings.
+
+    :func:`hmac.compare_digest` raises :class:`TypeError` when handed a ``str``
+    containing non-ASCII characters, so a client-supplied value such as a
+    ``café`` access key would otherwise crash the comparison with an unhandled
+    500 instead of simply failing the check. Encoding both operands to UTF-8
+    bytes first sidesteps that: byte comparison never raises on content, and the
+    comparison stays constant-time in the byte length.
+
+    :param a: First string (may be attacker-controlled).
+    :param b: Second string (the configured/expected value).
+    :returns: ``True`` only when the two encode to identical bytes.
+    :rtype: bool
+    """
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
 def sanitize_filename(name: str | None, ext: str) -> str:
     """Return a safe ASCII filename ending in ``.{ext}``.
 
@@ -36,7 +54,11 @@ def sanitize_filename(name: str | None, ext: str) -> str:
     :returns: A sanitised filename string such as ``"My_Book.epub"``.
     :rtype: str
     """
-    ext = (ext or "").lower().lstrip(".")
+    # ``ext`` is code-supplied today ("epub"/"pdf"), but the contract promises a
+    # safe result for *any* input, so scrub it too: an ext carrying a separator
+    # or dot would otherwise splice a path component or a second extension back
+    # into the returned name.
+    ext = _UNSAFE.sub("", (ext or "").lower().lstrip("."))
     base = name or "download"
     # Strip any directory components (both separators).
     base = base.replace("\\", "/").split("/")[-1]
@@ -72,7 +94,7 @@ def access_key_ok(provided: str | None, configured: str | None) -> bool:
         return True
     if not provided:
         return False
-    return hmac.compare_digest(provided, configured)
+    return _ct_str_eq(provided, configured)
 
 
 def ip_allowed(client_ip: str | None, allowed: tuple[str, ...]) -> bool:

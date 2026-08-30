@@ -41,6 +41,7 @@ preserved.
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -81,6 +82,19 @@ class LoginThrottle:
         self._tarpit_base = tarpit_base
         self._tarpit_cap = tarpit_cap
         self._max_keys = max_keys
+        # Cap the timestamps stored per key. Both decisions are threshold tests
+        # (``>= hard_max_ip`` for the lock; the tarpit ramp saturates at
+        # ``tarpit_cap``), so once a key holds enough samples to max out both,
+        # storing more buys nothing — it only lets an attacker who hammers a
+        # single username (from many addresses, so the per-IP lock never fires
+        # for them) grow that one list without bound, turning every O(n) prune
+        # into O(n^2) work and unbounded memory. Keep only the newest few beyond
+        # what the largest threshold needs; the sliding window still clears the
+        # key after a quiet ``window`` and the ``>=`` lock test still trips.
+        tarpit_span = (
+            math.ceil(tarpit_cap / tarpit_base) if tarpit_base > 0 else 0
+        )
+        self._max_samples = max(hard_max_ip, tarpit_free + tarpit_span) + 1
         self._lock = threading.Lock()
         # key -> list of recent failure timestamps (monotonic seconds).
         self._by_ip: dict[str, list[float]] = {}
@@ -162,10 +176,14 @@ class LoginThrottle:
             if key:
                 live = self._recent(self._by_user, key, cutoff)
                 live.append(now)
+                if len(live) > self._max_samples:
+                    del live[: -self._max_samples]  # keep only the newest
                 self._by_user[key] = live
             if ip:
                 live = self._recent(self._by_ip, ip, cutoff)
                 live.append(now)
+                if len(live) > self._max_samples:
+                    del live[: -self._max_samples]  # keep only the newest
                 self._by_ip[ip] = live
 
     def record_success(self, username: str, ip: str | None) -> None:

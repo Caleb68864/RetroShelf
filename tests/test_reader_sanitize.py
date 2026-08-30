@@ -318,3 +318,24 @@ def test_wrapper_with_direct_text_is_kept_whole() -> None:
     )
     assert len(blocks) == 1
     assert "Loose text before" in blocks[0]
+
+
+def test_colspan_entity_newline_and_oversize_are_dropped() -> None:
+    # XML attribute-value normalization turns a literal newline into a space,
+    # but a character reference (&#10;) survives as a real newline — under the
+    # old ``$``-anchored regex ``"2\n"`` validated as an integer. The XSS wall
+    # admits exactly 1-4 digits, nothing else. [SS-01]
+    xhtml = (
+        '<html xmlns="http://www.w3.org/1999/xhtml"><body><table><tr>'
+        '<td colspan="2&#10;">a</td>'
+        '<td colspan="99999">b</td>'
+        '<td colspan="3">c</td>'
+        "</tr></table></body></html>"
+    )
+    blocks = sanitize_chapter(
+        xhtml, resolve_image=_resolve_image_none, resolve_link=_resolve_link_none
+    )
+    joined = "".join(blocks)
+    assert 'colspan="2' not in joined  # newline-tailed value dropped whole
+    assert 'colspan="99999"' not in joined  # over the 4-digit cap
+    assert 'colspan="3"' in joined  # plain integers still pass

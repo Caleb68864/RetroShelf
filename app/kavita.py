@@ -403,7 +403,10 @@ class KavitaClient:
                 ) from exc
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get("location")
-                await resp.aread()
+                # Close WITHOUT reading: the redirect body is discarded, and a
+                # hostile upstream could pair a 3xx with a multi-gigabyte body
+                # that an uncapped aread() would buffer into memory. Status and
+                # headers are already available before the body is touched.
                 await resp.aclose()
                 if not location:
                     raise KavitaError(
@@ -413,8 +416,7 @@ class KavitaClient:
                 safe = self.resolve_url(location, base=safe)  # SSRF re-check
                 continue
             if resp.status_code >= 400:
-                await resp.aread()
-                await resp.aclose()
+                await resp.aclose()  # discard body unread (see redirect note above)
                 raise KavitaError(
                     self._cfg.mask(f"Upstream returned HTTP {resp.status_code} for {safe}"),
                     url=self._cfg.mask(safe),
@@ -469,7 +471,8 @@ class KavitaClient:
             ) from exc
         try:
             if resp.status_code >= 400:
-                await resp.aread()
+                # Discard the error body unread — an uncapped aread() would let a
+                # hostile upstream OOM the host with a giant 4xx/5xx body.
                 await resp.aclose()
                 raise KavitaError(
                     self._cfg.mask(f"Kavita returned HTTP {resp.status_code} for {safe}"),

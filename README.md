@@ -132,8 +132,8 @@ You'll give that full URL to RetroShelf as `KAVITA_OPDS_URL`.
 **1. Create the data folders on the host (run once):**
 
 ```bash
-sudo mkdir -p /srv/docker_data/kavita-ibooks-bridge/{config,cache}
-sudo chown -R 1000:1000 /srv/docker_data/kavita-ibooks-bridge
+sudo mkdir -p /srv/docker_data/retroshelf/{config,cache}
+sudo chown -R 1000:1000 /srv/docker_data/retroshelf
 ```
 
 **2. Deploy the stack.** There are two ways to do this in Portainer — pick one:
@@ -143,9 +143,12 @@ sudo chown -R 1000:1000 /srv/docker_data/kavita-ibooks-bridge
 In Portainer go to **Stacks → Add stack → Web editor** and paste
 [`portainer-stack.yml`](portainer-stack.yml). It pulls a published multi-arch
 image (`ghcr.io/caleb68864/retroshelf:latest`, amd64 + arm64) so there's no
-build step. Set your values in Portainer's **Environment variables** section —
-at minimum `KAVITA_OPDS_URL`, and `KAVITA_NETWORK` (the network your Kavita
-stack is on).
+build step. This stack **runs with zero configuration** — out of the box it
+fronts two public libraries (ManyBooks + Project Gutenberg), so you can deploy
+and open it immediately. To add your own Kavita library, set `KAVITA_OPDS_URL`
+in Portainer's **Environment variables** section (and, only if Kavita is a
+Docker container on this host, uncomment the `networks:` blocks in the stack and
+set `KAVITA_NETWORK` — see the comments at the top of the file).
 
 > The image is published by the included GitHub Action on every push to `main`.
 > After the first run, make the GHCR package **public** (GitHub → Packages →
@@ -160,12 +163,13 @@ repo, and set the compose path to `docker-compose.yml`. Portainer clones the
 repo and builds the image itself (`build: .`). Use this if you'd rather not rely
 on GHCR. Edit the env values in `docker-compose.yml` first (or fork and commit).
 
-> **Networking note (both options):** For `http://kavita:5000` to resolve,
-> RetroShelf must be on the **same Docker network as Kavita**, and Kavita's
-> *service name* (or a network alias) must be `kavita`. Find Kavita's network
-> with `docker network ls` and set it as `KAVITA_NETWORK` (Option A) or the
-> network `name:` (Option B). Use Kavita's **internal** port (5000), not a
-> host-published port.
+> **Networking note (only when connecting to a Docker-hosted Kavita):** For
+> `http://kavita:5000` to resolve, RetroShelf must be on the **same Docker
+> network as Kavita**, and Kavita's *service name* (or a network alias) must be
+> `kavita`. Find Kavita's network with `docker network ls` and set it as
+> `KAVITA_NETWORK` (Option A) or the network `name:` (Option B). Use Kavita's
+> **internal** port (5000), not a host-published port. If Kavita runs on another
+> machine, just point `KAVITA_OPDS_URL` at its LAN IP — no shared network needed.
 
 ### Configuration (environment variables)
 
@@ -239,7 +243,7 @@ can't connect"** for the manual commands).
 
 1. On the iPad, open **Safari**.
 2. Go to `http://YOUR-SERVER-IP:8099` (e.g. `http://192.168.1.50:8099`).
-3. Tap **Browse the Library** and find a book.
+3. Tap **Enter the Library** (or pick a library from the menu) and find a book.
 
 ### Importing an EPUB
 Tap **Open in iBooks**. If iOS asks, choose **iBooks** / **Books**. Done — it's in your library.

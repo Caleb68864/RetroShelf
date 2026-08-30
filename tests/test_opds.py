@@ -210,3 +210,63 @@ def test_clean_summary_extracts_the_real_description():
 def test_clean_summary_passthrough_without_labels():
     assert clean_summary("Just a normal blurb.") == "Just a normal blurb."
     assert clean_summary("") == ""
+
+
+# -- app.publish: the OPDS *publisher* (re-publishing the Reading List) --------
+from app.publish import build_feed  # noqa: E402
+
+
+def test_published_feed_round_trips_through_the_parser():
+    # What we publish, a subscriber (including another RetroShelf) must be able
+    # to parse back. Untrusted metadata should survive as content, not markup.
+    xml = build_feed(
+        feed_id="urn:rs:reading-list",
+        title="My Shelf",
+        self_href="http://host/opds/list",
+        start_href="http://host/opds",
+        kind="acquisition",
+        entries=[{
+            "id": "urn:b:1",
+            "title": "A <Book> & \"Friends\"",
+            "author": "Ada & Bob",
+            "summary": "Angle < and amp & in the blurb",
+            "acquisitions": [{"type": "application/epub+zip", "href": "http://host/d/1.epub"}],
+            "cover_href": "http://host/c/1.jpg",
+        }],
+    )
+    feed = parse(xml)
+    assert feed.title == "My Shelf"
+    assert len(feed.entries) == 1
+    assert feed.entries[0].title == 'A <Book> & "Friends"'
+    assert feed.entries[0].author == "Ada & Bob"
+    assert feed.entries[0].acquisitions[0].is_epub
+
+
+def test_published_feed_scrubs_xml_illegal_control_chars():
+    # A book title/author/summary carrying a C0 control char (from an untrusted
+    # upstream feed) must NOT make the whole re-published feed unparseable — one
+    # poisoned entry would otherwise take the entire subscriber-facing feed
+    # offline. Legal whitespace (tab/newline) is preserved.
+    xml = build_feed(
+        feed_id="urn:rs:list",
+        title="Shelf\tName",
+        self_href="http://host/opds/list",
+        start_href="http://host/opds",
+        kind="acquisition",
+        entries=[{
+            "id": "urn:b:\x00bad",
+            "title": "Bad\x0cTitle\x00End",
+            "author": "A\x08uthor",
+            "summary": "line1\nline2\x1fmore",
+            "acquisitions": [{"type": "application/epub+zip", "href": "http://host/d/\x001.epub"}],
+        }],
+    )
+    feed = parse(xml)  # must not raise OpdsParseError
+    # (The parser collapses runs of legal whitespace to single spaces on read;
+    # what matters here is that the control chars were dropped, not escaped into
+    # an unparseable token.)
+    assert feed.title == "Shelf Name"
+    entry = feed.entries[0]
+    assert entry.title == "BadTitleEnd"
+    assert entry.author == "Author"
+    assert entry.summary == "line1 line2more"

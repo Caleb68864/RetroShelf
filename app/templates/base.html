@@ -12,11 +12,11 @@
 <link rel="icon" type="image/png" href="/static/icons/apple-touch-icon-180.png">
 <link rel="alternate" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="/opds" title="RetroShelf OPDS">
 </head>
-<body class="color-{{ request.cookies.get('rs_color') or 'amber' }}{{ ' big' if request.cookies.get('rs_big') == '1' else '' }}{{ ' reader-phosphor' if request.cookies.get('rs_reader_theme') == 'phosphor' else '' }}{% if request.cookies.get('rs_reader_size') in ('s','l','xl') %} read-size-{{ request.cookies.get('rs_reader_size') }}{% endif %}{% if request.cookies.get('rs_reader_leading') in ('tight','roomy') %} read-lead-{{ request.cookies.get('rs_reader_leading') }}{% endif %}{% if request.cookies.get('rs_reader_font') in ('sans','mono') %} read-font-{{ request.cookies.get('rs_reader_font') }}{% endif %}{% if request.cookies.get('rs_reader_align') == 'justify' %} read-align-justify{% endif %}{% if request.cookies.get('rs_reader_margin') in ('narrow','wide') %} read-marg-{{ request.cookies.get('rs_reader_margin') }}{% endif %}">
+<body class="color-{{ request.cookies.get('rs_color') if request.cookies.get('rs_color') in ('amber', 'green', 'white') else 'amber' }}{{ ' big' if request.cookies.get('rs_big') == '1' else '' }}{{ ' reader-phosphor' if request.cookies.get('rs_reader_theme') == 'phosphor' else '' }}{% if request.cookies.get('rs_reader_size') in ('s','l','xl') %} read-size-{{ request.cookies.get('rs_reader_size') }}{% endif %}{% if request.cookies.get('rs_reader_leading') in ('tight','roomy') %} read-lead-{{ request.cookies.get('rs_reader_leading') }}{% endif %}{% if request.cookies.get('rs_reader_font') in ('sans','mono') %} read-font-{{ request.cookies.get('rs_reader_font') }}{% endif %}{% if request.cookies.get('rs_reader_align') == 'justify' %} read-align-justify{% endif %}{% if request.cookies.get('rs_reader_margin') in ('narrow','wide') %} read-marg-{{ request.cookies.get('rs_reader_margin') }}{% endif %}">
 <div class="page">
 <div class="wrap">
   <div class="topbar">
-<pre class="ascii">+------------------------------+
+<pre class="ascii" aria-hidden="true">+------------------------------+
 |..............................|
 |..+...+...+...+...+...+...+...|
 |..+...+...+...+...+...+...+.@.|

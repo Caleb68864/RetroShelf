@@ -146,6 +146,21 @@ def test_natural_sort_key_orders_page2_before_page10():
     assert sorted(names) != sorted(names, key=_natural_sort_key)
 
 
+def test_natural_sort_key_survives_hostile_digit_runs():
+    # A crafted CBZ member name must never crash the page sort with an uncaught
+    # ValueError (which, not being a ReaderError, would surface as a 500):
+    #  - ``1²²²2`` — a run ``str.isdigit()`` calls a digit but ``int()`` rejects
+    #    (superscripts are not decimal), and
+    #  - a run of thousands of digits, past int()'s 4300-digit conversion cap.
+    # Both must sort deterministically without raising, and mixing them with
+    # ordinary names must not raise TypeError (int-vs-str comparison).
+    hostile = ["1²²²2.jpg", "page" + "0" * 5000 + ".jpg"]
+    for name in hostile:
+        _natural_sort_key(name)  # must not raise
+    mixed = ["page2.jpg", *hostile, "page10.jpg"]
+    assert sorted(mixed, key=_natural_sort_key)  # no TypeError across mixed keys
+
+
 async def test_shelve_orders_pages_naturally_not_lexicographically(tmp_path):
     cache_dir = str(tmp_path / "cache")
     # Written to the zip as 10,1,2 — natural order must yield 1,2,10.
