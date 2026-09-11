@@ -32,13 +32,11 @@ services:
       - "${HOST_PORT:-8099}:8099"
     environment:
       - TZ=${TZ:-America/Chicago}
-      - APP_PORT=8099
       # Public libraries fronted by default (Name|URL pairs, comma-separated).
       # Edit/override via the OPDS_FEEDS env var in Portainer.
       - "OPDS_FEEDS=${OPDS_FEEDS:-ManyBooks|https://manybooks.net/opds, Project Gutenberg|https://www.gutenberg.org/ebooks.opds/}"
       # Your Kavita library — leave blank for now; set it later (becomes primary).
       - KAVITA_OPDS_URL=${KAVITA_OPDS_URL:-}
-      - KAVITA_BASE_URL=${KAVITA_BASE_URL:-}
       # Optional hardening (leave blank to disable):
       - BRIDGE_ACCESS_KEY=${BRIDGE_ACCESS_KEY:-}
       - BRIDGE_ID_SECRET=${BRIDGE_ID_SECRET:-}
@@ -47,7 +45,6 @@ services:
       # Behaviour:
       - SHOW_COVERS=${SHOW_COVERS:-true}
       - CACHE_FEEDS_SECONDS=${CACHE_FEEDS_SECONDS:-300}
-      - CACHE_BOOKS=${CACHE_BOOKS:-false}
       - PDF_DISPOSITION=${PDF_DISPOSITION:-inline}
       - EPUB_DISPOSITION=${EPUB_DISPOSITION:-attachment}
       - LOG_LEVEL=${LOG_LEVEL:-info}

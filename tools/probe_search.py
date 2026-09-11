@@ -7,6 +7,11 @@ from app.config import load_config
 from app.kavita import KavitaClient, build_client
 
 CFG = load_config({"KAVITA_OPDS_URL": "https://manybooks.net/opds"})
+# The primary feed's URL. (There used to be a Config.kavita_opds_url holding a
+# second copy of this; its name lied whenever the primary feed came from
+# OPDS_FEEDS rather than KAVITA_OPDS_URL, which is the shipped Portainer
+# default.)
+PRIMARY_URL = CFG.feeds[0].url
 
 
 async def main():
@@ -16,7 +21,7 @@ async def main():
         # --- replicate _resolve_search_url ---
         q = "love"
         encoded = quote(q)
-        root = opds.parse(await kc.fetch_feed(CFG.kavita_opds_url))
+        root = opds.parse(await kc.fetch_feed(PRIMARY_URL))
         template = root.search_url
         print("root.search_url template:", template)
         if template and "{searchTerms}" in template:
@@ -26,7 +31,7 @@ async def main():
                 url = url[:s] + url[url.index("}", s) + 1:]
             url = url.rstrip("?&")
         else:
-            url = f"{CFG.kavita_opds_url}/search?query={encoded}"
+            url = f"{PRIMARY_URL}/search?query={encoded}"
         print("resolved search url:", url)
 
         # --- fetch + parse ---

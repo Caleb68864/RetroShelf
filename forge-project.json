@@ -3,9 +3,9 @@
   "name": "RetroShelf",
   "repo_root": ".",
   "project_vault": "vault",
-  "build_command": "/home/caleb/Projects/Kavita-Retro-iPad/.venv/bin/python -m compileall -q app",
-  "test_command": "/home/caleb/Projects/Kavita-Retro-iPad/.venv/bin/python -m pytest -q",
-  "start_command": "/home/caleb/Projects/Kavita-Retro-iPad/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8099",
+  "build_command": ".venv/bin/python -m compileall -q app",
+  "test_command": ".venv/bin/python -m pytest -q",
+  "start_command": ".venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8099",
   "spec_output_dir": "docs/specs",
   "notes_dir": "docs/notes",
   "graph_front_door": false,
@@ -15,7 +15,8 @@
     "frontend_test_runner": null,
     "frontend_build_tool": null,
     "notes": [
-      "No Docker available in dev environment; verify natively via venv import + pytest + uvicorn smoke. Dockerfile/compose validated statically.",
+      "The three commands above are relative to repo_root and need the venv the README's Development section (and ./run.sh) creates: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt. They previously named /home/caleb/Projects/Kavita-Retro-iPad/.venv, a path left over from the pre-rename clone that does not exist on this machine — all three were dead.",
+      "No Docker available in dev environment; verify natively via venv import + pytest + uvicorn smoke. Dockerfile/compose validated statically by tests/validate_docker.py, which the pytest suite now runs (tests/test_docker_assets.py).",
       "Frontend is server-rendered Jinja2 HTML + one static CSS file. NO JavaScript. Target old Mobile Safari iOS 5.1.1-12.",
       "Books are proxied/streamed from Kavita via httpx; never buffer whole files."
     ]

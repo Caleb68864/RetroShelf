@@ -72,6 +72,8 @@ class _Server:
             # A minimal, deterministic environment: no network is touched at
             # startup, and nothing outside it leaks in from the dev shell.
             "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "LANG": os.environ.get("LANG", ""),
             "PYTHONPATH": REPO_ROOT,
             "PYTHONUNBUFFERED": "1",
             "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),  # Windows needs this
