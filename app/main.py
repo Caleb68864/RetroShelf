@@ -467,6 +467,14 @@ def _install_secret_masking(cfg: Config) -> None:
     hundreds of applications in one process. (The filter this replaced appended
     a fresh instance on every startup and never removed one.)
 
+    ``logging.lastResort`` is included deliberately. It is the handler Python
+    uses when a record reaches no handler at all, it belongs to no logger's
+    ``handlers`` list, and a handler-walking installer would therefore miss it —
+    a hole that the record-mutating filter this replaced did not have. It does
+    not arise in practice (``lifespan`` calls ``logging.basicConfig`` first, so
+    the root logger always has a handler), which is exactly why it would have
+    gone unnoticed.
+
     Known limit, stated rather than assumed: a handler created *after* startup
     is not wrapped. Nothing in this application adds one, and uvicorn installs
     its handlers before the ASGI lifespan runs.
@@ -481,13 +489,15 @@ def _install_secret_masking(cfg: Config) -> None:
         logger = logging.getLogger(name)
         if logger not in targets:
             targets.append(logger)
+    handlers: list[logging.Handler] = [logging.lastResort] if logging.lastResort else []
     for logger in targets:
-        for handler in logger.handlers:
-            existing = handler.formatter
-            if isinstance(existing, _MaskingFormatter):
-                existing.cfg = cfg  # refresh; never wrap a wrapper
-            else:
-                handler.setFormatter(_MaskingFormatter(existing, cfg))
+        handlers.extend(logger.handlers)
+    for handler in handlers:
+        existing = handler.formatter
+        if isinstance(existing, _MaskingFormatter):
+            existing.cfg = cfg  # refresh; never wrap a wrapper
+        else:
+            handler.setFormatter(_MaskingFormatter(existing, cfg))
 
 
 def _account_gate(request: Request, path: str) -> Response | None:

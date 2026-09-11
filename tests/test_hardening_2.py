@@ -213,6 +213,24 @@ def test_masking_failure_is_counted_and_does_not_leak():
         access.removeHandler(handler)
 
 
+def test_masking_covers_the_last_resort_handler():
+    """``logging.lastResort`` belongs to no logger, so it is easy to miss.
+
+    Moving masking from loggers onto handlers opened exactly this hole, and it
+    would not have shown up in normal running: ``lifespan`` calls
+    ``logging.basicConfig`` first, so the root logger always has a handler and
+    lastResort never fires. A record that reached no handler at all would have
+    been printed with the secret in it.
+    """
+    from app.main import _install_secret_masking
+    cfg = load_config({**ENV, "BRIDGE_ACCESS_KEY": "topsecretkey"})
+    _install_secret_masking(cfg)
+    record = logging.LogRecord("some.library", logging.ERROR, __file__, 1,
+                               "leaking topsecretkey here", (), None)
+    # _StderrHandler.emit() writes exactly what format() returns.
+    assert "topsecretkey" not in logging.lastResort.format(record)
+
+
 def test_masking_covers_non_access_loggers_too():
     """httpx logs full URLs; it must be masked wherever it lands. [H7]"""
     from app.main import _install_secret_masking
