@@ -352,60 +352,135 @@ class FeedCache:
         self._data[key] = (time.monotonic(), feed)
 
 
-class _SecretMaskingFilter(logging.Filter):
-    """Safety net: mask the apiKey/access key in EVERY log record, including
-    those emitted by third-party libraries (e.g. httpx logging the full URL). [H7]
+#: Text substituted for a log line whose masking raised. The line is withheld
+#: rather than emitted unmasked: this is a secret-redaction control, and the
+#: only safe failure for one is to say nothing useful.
+MASK_FAILED_PLACEHOLDER = "<log line withheld: secret masking failed>"
 
-    Attached to all root-logger handlers during :func:`lifespan` startup so
-    that secrets cannot appear in any sink regardless of their origin.
+#: Process-wide census of masking failures. Not maintained by hand anywhere
+#: else — :func:`mask_failure_count` is the only reader.
+_mask_failures = 0
+
+#: Set once, so reporting a masking failure cannot recurse through the very
+#: formatter that failed.
+_mask_failure_reported = False
+
+
+def mask_failure_count() -> int:
+    """Number of log lines withheld because :meth:`Config.mask` raised.
+
+    Zero in every healthy process. A non-zero value means secret masking is
+    broken and log output has been suppressed to avoid leaking — the old
+    ``except Exception: pass`` reported neither fact. [H7]
+
+    :returns: Count of masking failures since process start.
+    :rtype: int
+    """
+    return _mask_failures
+
+
+class _MaskingFormatter(logging.Formatter):
+    """Wraps another formatter and redacts secrets from its *rendered* output.
+
+    Masking happens at format time rather than on the :class:`logging.LogRecord`
+    for one concrete reason. The previous implementation was a
+    :class:`logging.Filter` that did ``record.msg = mask(record.getMessage())``
+    followed by ``record.args = ()``. ``uvicorn.logging.AccessFormatter`` builds
+    its access line by unpacking exactly five values out of ``record.args`` —
+    so with the args cleared it raised ``ValueError: not enough values to
+    unpack (expected 5, got 0)`` and **every HTTP request logged a traceback
+    instead of an access line**, in the container too.
+
+    A formatter cannot have that problem: it runs *after* the record has been
+    rendered, sees only a finished string, and so is indifferent to how any
+    particular formatter builds one. It also masks fields a record-level filter
+    structurally cannot reach — ``AccessFormatter`` derives ``request_line``
+    from ``args``, not from ``msg``, so masking ``msg`` never touched the part
+    of the line where ``?key=…`` actually appears.
+
+    :param inner: The formatter whose output is masked. ``None`` means the
+        record is rendered with a default :class:`logging.Formatter`.
+    :param cfg: Active configuration supplying :meth:`~app.config.Config.mask`.
     """
 
-    def __init__(self, cfg: Config) -> None:
-        """Initialise the filter with the active configuration.
-
-        :param cfg: Application configuration object whose
-            :meth:`~app.config.Config.mask` method is called on every
-            formatted log message.
-        :type cfg: Config
-        """
+    def __init__(self, inner: logging.Formatter | None, cfg: Config) -> None:
         super().__init__()
-        self._cfg = cfg
+        self.inner = inner or logging.Formatter()
+        self.cfg = cfg
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        """Mask secrets in *record* before it is emitted.
+    def format(self, record: logging.LogRecord) -> str:
+        """Render *record* through :attr:`inner`, then mask the result.
 
-        Replaces ``record.msg`` with the masked, fully-formatted message and
-        clears ``record.args`` so the logging machinery does not re-format it.
-        Exceptions inside masking are silently swallowed to prevent the filter
-        from crashing a request. [H7]
+        Errors raised by :attr:`inner` are deliberately **not** caught: a
+        formatter that cannot render its own records is exactly the defect this
+        class exists to stop hiding, and Python's logging machinery already
+        reports it. Only a failure of :meth:`~app.config.Config.mask` itself is
+        contained, and then the line is withheld and counted rather than
+        emitted unmasked.
 
-        :param record: The log record to sanitise in-place.
-        :type record: logging.LogRecord
-        :returns: Always ``True`` so the record is never suppressed.
-        :rtype: bool
+        :param record: The record to render.
+        :returns: The masked, fully rendered log line.
+        :rtype: str
         """
+        rendered = self.inner.format(record)
         try:
-            record.msg = self._cfg.mask(record.getMessage())
-            record.args = ()
-        except Exception:  # never let logging crash the request
-            pass
-        return True
+            return self.cfg.mask(rendered)
+        except Exception:
+            global _mask_failures, _mask_failure_reported
+            _mask_failures += 1
+            if not _mask_failure_reported:
+                _mask_failure_reported = True  # set first: bounds the recursion
+                log.error("secret masking failed; log lines are being withheld")
+            return MASK_FAILED_PLACEHOLDER
+
+    # -- delegation, so wrapping is transparent to callers that introspect ---
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        """Delegate to the wrapped formatter."""
+        return self.inner.formatTime(record, datefmt)
+
+    def formatException(self, ei: object) -> str:
+        """Delegate to the wrapped formatter."""
+        return self.inner.formatException(ei)  # type: ignore[arg-type]
+
+    def formatStack(self, stack_info: str) -> str:
+        """Delegate to the wrapped formatter."""
+        return self.inner.formatStack(stack_info)
+
+    def usesTime(self) -> bool:
+        """Delegate to the wrapped formatter."""
+        return self.inner.usesTime()
 
 
-def _install_mask_filter(cfg: Config) -> None:
-    """Attach a :class:`_SecretMaskingFilter` to every live logging sink.
+def _install_secret_masking(cfg: Config) -> None:
+    """Wrap every live logging sink's formatter in a :class:`_MaskingFormatter`.
 
-    Filters on the *root* logger only cover records that propagate to it.
-    ``uvicorn``, ``uvicorn.access``, ``uvicorn.error`` and ``httpx`` each
-    install their own handlers with ``propagate = False``, so a root-only
-    filter never sees them — and ``uvicorn.access`` logs the full request
-    line, which is exactly where ``?key=…`` would appear. Attaching to both
-    the logger and each of its handlers covers records however they arrive.
-    [H-7]
+    Secrets must not reach *any* sink, whoever emitted the record — httpx logs
+    full URLs, and ``uvicorn.access`` logs the full request line, which is
+    exactly where ``?key=…`` appears. Handlers are the right place to do it:
+    every record that is emitted anywhere passes through some handler's
+    ``format()``, including records that arrive by propagation from a logger
+    this function has never heard of. [H-7]
+
+    Idempotent. A handler already carrying a :class:`_MaskingFormatter` has its
+    configuration refreshed instead of being wrapped a second time, because
+    :func:`lifespan` runs once per application startup and the test suite starts
+    hundreds of applications in one process. (The filter this replaced appended
+    a fresh instance on every startup and never removed one.)
+
+    ``logging.lastResort`` is included deliberately. It is the handler Python
+    uses when a record reaches no handler at all, it belongs to no logger's
+    ``handlers`` list, and a handler-walking installer would therefore miss it —
+    a hole that the record-mutating filter this replaced did not have. It does
+    not arise in practice (``lifespan`` calls ``logging.basicConfig`` first, so
+    the root logger always has a handler), which is exactly why it would have
+    gone unnoticed.
+
+    Known limit, stated rather than assumed: a handler created *after* startup
+    is not wrapped. Nothing in this application adds one, and uvicorn installs
+    its handlers before the ASGI lifespan runs.
 
     :param cfg: Active configuration supplying :meth:`~app.config.Config.mask`.
     """
-    mask_filter = _SecretMaskingFilter(cfg)
     manager_loggers = list(logging.Logger.manager.loggerDict.values())
     targets = [logging.getLogger()] + [
         lg for lg in manager_loggers if isinstance(lg, logging.Logger)
@@ -414,10 +489,15 @@ def _install_mask_filter(cfg: Config) -> None:
         logger = logging.getLogger(name)
         if logger not in targets:
             targets.append(logger)
+    handlers: list[logging.Handler] = [logging.lastResort] if logging.lastResort else []
     for logger in targets:
-        logger.addFilter(mask_filter)
-        for handler in logger.handlers:
-            handler.addFilter(mask_filter)
+        handlers.extend(logger.handlers)
+    for handler in handlers:
+        existing = handler.formatter
+        if isinstance(existing, _MaskingFormatter):
+            existing.cfg = cfg  # refresh; never wrap a wrapper
+        else:
+            handler.setFormatter(_MaskingFormatter(existing, cfg))
 
 
 def _account_gate(request: Request, path: str) -> Response | None:
@@ -475,7 +555,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
       :class:`~app.store.Store` to ``app.state``.
     * Configures the root logger at the level specified by
       :attr:`~app.config.Config.log_level`.
-    * Attaches a :class:`_SecretMaskingFilter` to every root-logger handler.
+    * Wraps every live logging handler's formatter in a
+      :class:`_MaskingFormatter` so no sink can print a secret.
 
     On exit:
 
@@ -506,7 +587,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # resets on restart). Only consulted when accounts are enabled.
     app.state.throttle = LoginThrottle()
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
-    _install_mask_filter(cfg)
+    _install_secret_masking(cfg)
     # One triage line an operator can read at a glance: what is being fronted
     # and which optional protections are actually active in this deployment.
     log.info(

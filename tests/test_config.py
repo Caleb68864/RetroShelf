@@ -6,7 +6,6 @@ from app.config import (
 )
 
 BASE_ENV = {
-    "KAVITA_BASE_URL": "http://kavita:5000",
     "KAVITA_OPDS_URL": "http://kavita:5000/api/opds/SECRETKEY123",
 }
 
@@ -15,32 +14,38 @@ def test_loads_minimal_required():
     cfg = load_config(BASE_ENV)
     assert cfg.kavita_origin == "http://kavita:5000"
     assert cfg.api_key == "SECRETKEY123"
-    assert cfg.app_port == 8099
     assert cfg.pdf_disposition == "inline"
     assert cfg.epub_disposition == "attachment"
     assert cfg.cache_feeds_seconds == 300
-    assert cfg.cache_books is False
     assert cfg.show_covers is True
 
 
 def test_missing_opds_url_raises_clear_configerror():
     with pytest.raises(ConfigError) as exc:
-        load_config({"KAVITA_BASE_URL": "http://kavita:5000"})
+        load_config({})
     assert "KAVITA_OPDS_URL" in str(exc.value)
 
 
-def test_base_url_derived_from_opds_when_omitted():
+def test_origin_derived_from_the_primary_feed():
     cfg = load_config({"KAVITA_OPDS_URL": "http://kavita:5000/api/opds/K"})
-    assert cfg.kavita_base_url == "http://kavita:5000"
     assert cfg.kavita_origin == "http://kavita:5000"
 
 
-def test_mismatched_origins_raise():
-    with pytest.raises(ConfigError):
-        load_config({
-            "KAVITA_BASE_URL": "http://other:5000",
-            "KAVITA_OPDS_URL": "http://kavita:5000/api/opds/K",
-        })
+def test_kavita_base_url_no_longer_refuses_startup():
+    """``KAVITA_BASE_URL`` was read by nothing and could only refuse to start.
+
+    Its sole effect was a ConfigError when its origin differed from the primary
+    feed's — which two configurations this repository *ships* produced: the
+    Portainer stack's ManyBooks/Gutenberg defaults beside a filled-in
+    KAVITA_BASE_URL, and docker-compose.yml with KAVITA_OPDS_URL moved to a LAN
+    IP (the move portainer-stack.yml documents) and KAVITA_BASE_URL left alone.
+    A leftover value in someone's .env must now be inert, not fatal.
+    """
+    cfg = load_config({
+        "KAVITA_BASE_URL": "http://stale-value-from-an-old-env:5000",
+        "KAVITA_OPDS_URL": "http://192.168.1.5:5000/api/opds/K",
+    })
+    assert cfg.kavita_origin == "http://192.168.1.5:5000"
 
 
 def test_origin_normalizes_default_ports():

@@ -4,7 +4,6 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 KAVITA_OPDS_URL="https://manybooks.net/opds" \
-KAVITA_BASE_URL="https://manybooks.net" \
 BRIDGE_ID_SECRET="e2e" \
 SHOW_COVERS="true" \
   $PY -m uvicorn app.main:app --host 127.0.0.1 --port 8099 >/tmp/uvicorn_e2e.log 2>&1 &

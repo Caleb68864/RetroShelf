@@ -49,16 +49,28 @@ def main() -> int:
         check(bool(services), "compose must define services")
         svc = next(iter(services.values())) if services else {}
         ports = svc.get("ports", [])
-        check(any("8099:8099" in str(p) for p in ports), "compose must publish 8099:8099")
+        # The CONTAINER side is fixed at 8099 (EXPOSE, the HEALTHCHECK URL and
+        # the CMD all name it). The host side is a knob — HOST_PORT — so match
+        # the mapping by what it publishes *to*, not by an exact "8099:8099".
+        check(any(str(p).rstrip('"\'').endswith(":8099") for p in ports),
+              "compose must publish the container's 8099")
         vols = svc.get("volumes", [])
         check(any(":/config" in str(v) for v in vols), "compose must mount /config")
         check(any(":/cache" in str(v) for v in vols), "compose must mount /cache")
         check(svc.get("restart") == "unless-stopped", "compose service should restart unless-stopped")
         env = svc.get("environment", [])
         env_str = "\n".join(env) if isinstance(env, list) else str(env)
-        for key in ("KAVITA_BASE_URL", "KAVITA_OPDS_URL", "APP_PORT", "PDF_DISPOSITION",
-                    "EPUB_DISPOSITION", "CACHE_FEEDS_SECONDS", "CACHE_BOOKS", "LOG_LEVEL", "TZ"):
+        # Only variables the app actually reads, plus TZ (read by tzdata).
+        # KAVITA_BASE_URL, APP_PORT and CACHE_BOOKS used to be listed here and
+        # were removed: none of them reached any code, and setting
+        # KAVITA_BASE_URL to an origin other than the primary feed's refused to
+        # start the app. See tests/test_config_reachability.py.
+        for key in ("KAVITA_OPDS_URL", "PDF_DISPOSITION", "EPUB_DISPOSITION",
+                    "CACHE_FEEDS_SECONDS", "LOG_LEVEL", "TZ"):
             check(key in env_str, f"compose env must include {key}")
+        for gone in ("KAVITA_BASE_URL", "APP_PORT", "CACHE_BOOKS"):
+            check(gone not in env_str,
+                  f"compose env must not advertise {gone}: nothing reads it")
         networks = compose.get("networks", {})
         check(any(n.get("external") for n in networks.values() if isinstance(n, dict)),
               "compose must join an external (Kavita) network")
@@ -72,10 +84,11 @@ def main() -> int:
               "compose service must provide a writable tmpfs /tmp (rootfs is read-only)")
     except ImportError:
         # No PyYAML — fall back to substring checks.
-        check("8099:8099" in compose_text, "compose must publish 8099:8099")
+        check(":8099\"" in compose_text or ":8099'" in compose_text,
+              "compose must publish the container's 8099")
         check(":/config" in compose_text and ":/cache" in compose_text, "compose must mount /config and /cache")
         check("external: true" in compose_text, "compose must join an external (Kavita) network")
-        for key in ("KAVITA_BASE_URL", "KAVITA_OPDS_URL", "TZ"):
+        for key in ("KAVITA_OPDS_URL", "TZ"):
             check(key in compose_text, f"compose env must include {key}")
         check("read_only: true" in compose_text, "compose service must set read_only: true")
         check("no-new-privileges" in compose_text, "compose service must set no-new-privileges")

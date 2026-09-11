@@ -325,20 +325,12 @@ class Config:
     directly in application code. The dataclass is frozen to prevent
     accidental mutation after startup.
 
-    :ivar kavita_base_url: Base URL of the Kavita server
-        (e.g. ``http://kavita:5000``). Used to build Kavita web links.
-    :vartype kavita_base_url: str
-    :ivar kavita_opds_url: Full user-specific OPDS URL including the
-        embedded ``apiKey`` path segment.
-    :vartype kavita_opds_url: str
-    :ivar kavita_origin: Normalised ``scheme://host[:port]`` origin
-        derived from *kavita_opds_url*; used by the SSRF guard.
+    :ivar kavita_origin: Normalised ``scheme://host[:port]`` origin of the
+        primary feed's URL; used by the SSRF guard.
     :vartype kavita_origin: str
-    :ivar api_key: Kavita API key extracted from *kavita_opds_url*.
+    :ivar api_key: API key extracted from the primary feed's URL. Read by
+        :meth:`mask` so it can never survive into a log line.
     :vartype api_key: str
-    :ivar app_port: TCP port on which the bridge listens.
-        Defaults to ``8099``.
-    :vartype app_port: int
     :ivar bridge_public_url: Optional public-facing base URL of this
         bridge (used when constructing absolute self-referential links).
     :vartype bridge_public_url: str | None
@@ -357,9 +349,6 @@ class Config:
     :ivar cache_feeds_seconds: TTL in seconds for cached OPDS feed
         responses. Defaults to ``300``.
     :vartype cache_feeds_seconds: int
-    :ivar cache_books: Whether to cache proxied book file responses.
-        Defaults to ``False``.
-    :vartype cache_books: bool
     :ivar log_level: Logging verbosity level string (e.g. ``"info"``,
         ``"debug"``). Defaults to ``"info"``.
     :vartype log_level: str
@@ -371,9 +360,6 @@ class Config:
         downloads; either ``"attachment"`` or ``"inline"``.
         Defaults to ``"attachment"``.
     :vartype epub_disposition: str
-    :ivar tz: IANA timezone name used for log timestamps and display.
-        Defaults to ``"America/Chicago"``.
-    :vartype tz: str
     :ivar extra_origins: Additional upstream origins (normalised) that
         the SSRF guard will allow, for non-Kavita OPDS servers that host
         downloads or covers on separate hosts or CDNs.
@@ -399,22 +385,17 @@ class Config:
     :vartype feeds: tuple[FeedSource, ...]
     """
 
-    kavita_base_url: str
-    kavita_opds_url: str
     kavita_origin: str
     api_key: str
-    app_port: int = 8099
     bridge_public_url: str | None = None
     bridge_access_key: str | None = None
     bridge_id_secret: str | None = None
     allowed_ips: tuple[str, ...] = ()
     show_covers: bool = True
     cache_feeds_seconds: int = 300
-    cache_books: bool = False
     log_level: str = "info"
     pdf_disposition: str = "inline"
     epub_disposition: str = "attachment"
-    tz: str = "America/Chicago"
     # Additional upstream origins the SSRF guard will allow, for generic
     # (non-Kavita) OPDS servers that host downloads/covers on other hosts/CDNs.
     extra_origins: tuple[str, ...] = ()
@@ -506,11 +487,14 @@ class Config:
 def load_config(env: dict[str, str] | None = None) -> Config:
     """Build a :class:`Config` from *env* (defaults to ``os.environ``).
 
-    Reads and validates all recognised environment variables, derives
-    ``kavita_origin`` from ``KAVITA_OPDS_URL``, and falls back to that
-    origin for ``KAVITA_BASE_URL`` when the latter is omitted. The
-    function is pure — passing an explicit *env* mapping makes it fully
-    testable without touching the process environment.
+    Reads and validates all recognised environment variables and derives
+    ``kavita_origin`` from the primary feed's URL. The function is pure —
+    passing an explicit *env* mapping makes it fully testable without
+    touching the process environment.
+
+    Every variable listed below reaches a field that some code reads;
+    ``tests/test_config_reachability.py`` is what fails when one stops
+    doing so.
 
     Recognised environment variables (all optional unless noted; at least
     one feed — ``KAVITA_OPDS_URL`` and/or ``OPDS_FEEDS`` — is **required**):
@@ -520,9 +504,6 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     - ``KAVITA_FEED_NAME`` — portal name for that feed; default ``Library``.
     - ``OPDS_FEEDS`` — comma/newline-separated ``Name|URL`` (or bare URL)
       entries for additional libraries in the portal menu.
-    - ``KAVITA_BASE_URL`` — Kavita web base URL; derived if absent, and must
-      share the primary feed's origin when given.
-    - ``APP_PORT`` — bridge listen port (default ``8099``).
     - ``BRIDGE_PUBLIC_URL`` — public base URL of this bridge.
     - ``BRIDGE_ACCESS_KEY`` — shared secret for incoming requests.
     - ``BRIDGE_ID_SECRET`` — secret for opaque identifier signing.
@@ -531,13 +512,11 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     - ``ACCOUNTS_ENABLED`` — bool; default ``false``. When true, the login
       page becomes the gate and reading state is per-profile.
     - ``CACHE_FEEDS_SECONDS`` — int TTL; default ``300``.
-    - ``CACHE_BOOKS`` — bool; default ``false``.
     - ``LOG_LEVEL`` — verbosity; default ``"info"``.
     - ``PDF_DISPOSITION`` — ``"inline"`` or ``"attachment"``; default
       ``"inline"``.
     - ``EPUB_DISPOSITION`` — ``"attachment"`` or ``"inline"``; default
       ``"attachment"``.
-    - ``TZ`` — IANA timezone; default ``"America/Chicago"``.
     - ``EXTRA_UPSTREAM_ORIGINS`` — comma-separated extra SSRF-allowed
       origins.
     - ``UPSTREAM_USER_AGENT`` — override User-Agent for upstream fetches.
@@ -554,9 +533,16 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     :type env: dict[str, str] | None
     :returns: Fully validated, frozen :class:`Config` instance.
     :rtype: Config
-    :raises ConfigError: If ``KAVITA_OPDS_URL`` is absent, if
-        ``KAVITA_BASE_URL`` and ``KAVITA_OPDS_URL`` resolve to different
-        origins, or if any numeric/enum variable has an invalid value.
+    :raises ConfigError: If no feed is configured, if accounts are enabled
+        without a stable signing secret, or if any numeric/enum variable
+        has an invalid value.
+
+    .. note::
+       ``APP_PORT`` and ``TZ`` are deliberately absent. ``APP_PORT`` is read
+       by ``run.sh``/``run.bat``, which pass it to uvicorn as ``--port``; the
+       application never binds a socket, so it cannot be what reads a listen
+       port. ``TZ`` is read by the C library via tzdata. Both used to be
+       parsed into fields nothing looked at.
     """
     e = dict(os.environ if env is None else env)
 
@@ -570,17 +556,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
             "(comma-separated 'Name|URL' entries)."
         )
     primary = feeds[0]
-    opds_url = primary.url
     kavita_origin = primary.origin
     api_key = primary.api_key
-
-    # KAVITA_BASE_URL (if given) must share the primary feed's origin.
-    base_url = (e.get("KAVITA_BASE_URL") or "").strip() or kavita_origin
-    if _normalize_origin(base_url) != kavita_origin:
-        raise ConfigError(
-            "KAVITA_BASE_URL must share the primary feed's origin "
-            f"(got {_normalize_origin(base_url)} vs {kavita_origin})."
-        )
 
     pdf_disp = (e.get("PDF_DISPOSITION") or "inline").strip().lower()
     if pdf_disp not in {"inline", "attachment"}:
@@ -622,11 +599,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         cover_jpeg_quality=_as_int(e.get("COVER_JPEG_QUALITY"), 80, "COVER_JPEG_QUALITY"),
         extra_origins=extra_origins,
         upstream_user_agent=(e.get("UPSTREAM_USER_AGENT") or "").strip() or None,
-        kavita_base_url=base_url,
-        kavita_opds_url=opds_url,
         kavita_origin=kavita_origin,
         api_key=api_key,
-        app_port=_as_int(e.get("APP_PORT"), 8099, "APP_PORT"),
         bridge_public_url=(e.get("BRIDGE_PUBLIC_URL") or "").strip() or None,
         bridge_access_key=(e.get("BRIDGE_ACCESS_KEY") or "").strip() or None,
         bridge_id_secret=(e.get("BRIDGE_ID_SECRET") or "").strip() or None,
@@ -634,9 +608,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         show_covers=_as_bool(e.get("SHOW_COVERS"), True),
         accounts_enabled=_as_bool(e.get("ACCOUNTS_ENABLED"), False),
         cache_feeds_seconds=_as_int(e.get("CACHE_FEEDS_SECONDS"), 300, "CACHE_FEEDS_SECONDS"),
-        cache_books=_as_bool(e.get("CACHE_BOOKS"), False),
         log_level=(e.get("LOG_LEVEL") or "info").strip(),
         pdf_disposition=pdf_disp,
         epub_disposition=epub_disp,
-        tz=(e.get("TZ") or "America/Chicago").strip(),
     )

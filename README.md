@@ -178,8 +178,7 @@ on GHCR. Edit the env values in `docker-compose.yml` first (or fork and commit).
 | `KAVITA_OPDS_URL` | ✅* | — | Full OPDS URL incl. your API key (the primary library) |
 | `OPDS_FEEDS` | – | — | Extra libraries for the portal menu (see below) |
 | `KAVITA_FEED_NAME` | – | `Library` | Menu name for the primary feed |
-| `KAVITA_BASE_URL` | – | derived | Kavita base (derived from OPDS origin if unset) |
-| `APP_PORT` | – | `8099` | Listen port |
+| `APP_PORT` | – | `8099` | Listen port — **bare metal only** (`run.sh` / `run.bat` pass it to uvicorn). In Docker the container always listens on 8099; publish it on whatever host port you like with `HOST_PORT` |
 | `PDF_DISPOSITION` | – | `inline` | `inline` (render in Safari) or `attachment` |
 | `EPUB_DISPOSITION` | – | `attachment` | EPUB disposition |
 | `SHOW_COVERS` | – | `true` | Show cover thumbnails |
@@ -190,7 +189,8 @@ on GHCR. Edit the env values in `docker-compose.yml` first (or fork and commit).
 | `ALLOWED_IPS` | – | off | Direct-LAN IP/CIDR allowlist (not proxy-aware) |
 | `ACCOUNTS_ENABLED` | – | off | Multi-account login + profiles; first visit creates an admin at `/setup`, `/login` becomes the gate (supersedes `BRIDGE_ACCESS_KEY`), reading state is per-profile |
 | `LOG_LEVEL` | – | `info` | `debug` for verbose (masked) logs |
-| `TZ` | – | `America/Chicago` | Container timezone |
+| `TZ` | – | `America/Chicago` | Container timezone (tzdata). RetroShelf stores epoch timestamps and stamps UTC, so it changes nothing RetroShelf prints |
+| `HOST_PORT` | – | `8099` | Docker only: host port the container's 8099 is published on |
 
 \* At least one feed is required — via `KAVITA_OPDS_URL`, `OPDS_FEEDS`, or both.
 

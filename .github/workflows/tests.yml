@@ -20,8 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.12 is what the Dockerfile ships; 3.13 catches deprecations early.
-        python-version: ['3.12', '3.13']
+        # 3.12 is what the Dockerfile ships. 3.14 is what the README's
+        # bare-metal path gets: run.sh builds its venv from whatever `python3`
+        # is, and on a current desktop distro that is 3.14 — the one path
+        # nothing used to test. 3.13 sits between them and catches deprecations.
+        python-version: ['3.12', '3.13', '3.14']
     steps:
       - name: Checkout
         uses: actions/checkout@v4

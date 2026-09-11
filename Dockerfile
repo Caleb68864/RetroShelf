@@ -16,7 +16,6 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    APP_PORT=8099 \
     TZ=America/Chicago
 
 WORKDIR /app
@@ -39,6 +38,10 @@ COPY --chown=1000:1000 app ./app
 
 USER 1000
 
+# The container's listen port is fixed: EXPOSE, the HEALTHCHECK URL and the CMD
+# below all name 8099, so it is not a knob. Publish it on whatever host port you
+# like (HOST_PORT in the compose files); APP_PORT is a bare-metal setting that
+# run.sh/run.bat pass to uvicorn, and it was never read inside the image.
 EXPOSE 8099
 
 # Healthcheck hits the plain-text /health endpoint. [C-1]

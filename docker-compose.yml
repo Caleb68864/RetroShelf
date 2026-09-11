@@ -16,13 +16,13 @@ services:
     container_name: retroshelf
     build: .
     restart: unless-stopped
+    # The container always listens on 8099 (EXPOSE, the HEALTHCHECK URL and the
+    # CMD all name it). The HOST side is the knob.
     ports:
-      - "8099:8099"
+      - "${HOST_PORT:-8099}:8099"
     environment:
       - TZ=America/Chicago
-      - APP_PORT=8099
       # Use Kavita's INTERNAL container port and service name:
-      - KAVITA_BASE_URL=http://kavita:5000
       - KAVITA_OPDS_URL=http://kavita:5000/api/opds/YOUR_AUTH_KEY
       # Optional hardening (leave unset to disable):
       # - BRIDGE_ACCESS_KEY=changeme
@@ -30,7 +30,6 @@ services:
       # - ALLOWED_IPS=192.168.1.0/24
       - SHOW_COVERS=true
       - CACHE_FEEDS_SECONDS=300
-      - CACHE_BOOKS=false
       - PDF_DISPOSITION=inline
       - EPUB_DISPOSITION=attachment
       - LOG_LEVEL=info

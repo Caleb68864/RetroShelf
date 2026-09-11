@@ -10,6 +10,7 @@ A recurring assertion across the file: nothing added here may cost an iOS
 ignores or a query parameter it passes through untouched.
 """
 import base64
+import io
 import json
 import logging
 import os
@@ -94,21 +95,160 @@ def test_non_secret_text_is_left_alone():
         assert cfg.mask(benign) == benign
 
 
-def test_mask_filter_reaches_uvicorn_access_logger():
-    from app.main import _install_mask_filter
+def _uvicorn_access_record(path: str) -> logging.LogRecord:
+    """A record in exactly the shape ``uvicorn.access`` emits.
+
+    uvicorn logs a request as::
+
+        access_logger.info('%s - "%s %s HTTP/%s" %d',
+                           client_addr, method, full_path, http_version, status)
+
+    — five ``args``, which ``uvicorn.logging.AccessFormatter`` unpacks. The
+    previous version of this test built its record with ``args=()``, i.e. the
+    shape the old masking *filter* produced rather than the shape uvicorn
+    produces, and never involved the formatter. It therefore could not observe
+    that masking destroyed the access line, and the server wrote a traceback
+    for every request while this test stayed green.
+    """
+    return logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:55356", "GET", path, "1.1", 200),
+        None,
+    )
+
+
+def _access_handler() -> logging.StreamHandler:
+    """A handler carrying uvicorn's *real* ``AccessFormatter``, colours off."""
+    from uvicorn.logging import AccessFormatter
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setFormatter(AccessFormatter(
+        '%(client_addr)s - "%(request_line)s" %(status_code)s', use_colors=False))
+    return handler
+
+
+def test_masking_leaves_a_real_uvicorn_access_line_formattable():
+    """The secret goes, and the access line survives. Both, or neither counts."""
+    from app.main import _install_secret_masking
     cfg = load_config({**ENV, "BRIDGE_ACCESS_KEY": "topsecretkey"})
     access = logging.getLogger("uvicorn.access")
-    before = len(access.filters)
-    _install_mask_filter(cfg)
+    handler = _access_handler()
+    access.addHandler(handler)
     try:
-        assert len(access.filters) > before
-        record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1,
-                                   'GET /?key=topsecretkey HTTP/1.1', (), None)
-        for flt in access.filters:
-            flt.filter(record)
-        assert "topsecretkey" not in record.getMessage()
+        _install_secret_masking(cfg)
+        # The real formatter, not a stand-in for it. Against the old
+        # record-clearing filter this raises ValueError: not enough values to
+        # unpack (expected 5, got 0).
+        line = handler.format(_uvicorn_access_record("/?key=topsecretkey"))
     finally:
-        access.filters = access.filters[:before]
+        access.removeHandler(handler)
+    assert "topsecretkey" not in line, line
+    assert 'GET /?key=*** HTTP/1.1' in line, line
+    assert line.startswith("127.0.0.1:55356 - "), line
+    assert line.endswith("200 OK"), line
+
+
+def test_masking_is_idempotent_across_repeated_installs():
+    """Startup runs once per process in production and once per test here.
+
+    The old filter was appended afresh on every :func:`lifespan` entry, so a
+    647-test run left hundreds of identical filters on ``uvicorn.access`` and
+    masked every record that many times.
+    """
+    from app.main import _install_secret_masking
+    cfg = load_config({**ENV, "BRIDGE_ACCESS_KEY": "topsecretkey"})
+    access = logging.getLogger("uvicorn.access")
+    handler = _access_handler()
+    access.addHandler(handler)
+    try:
+        for _ in range(5):
+            _install_secret_masking(cfg)
+        assert len(access.filters) == 0, access.filters
+        first = handler.formatter
+        _install_secret_masking(cfg)
+        assert handler.formatter is first, "re-wrapped an already-wrapped sink"
+        line = handler.format(_uvicorn_access_record("/?key=topsecretkey"))
+    finally:
+        access.removeHandler(handler)
+    # Masking a masked line must not double-redact it into nonsense.
+    assert line.count("***") == 1, line
+
+
+class _BrokenMasker:
+    """Stands in for a :class:`~app.config.Config` whose ``mask`` is broken."""
+
+    def mask(self, text: str) -> str:
+        raise RuntimeError("mask exploded")
+
+
+def test_masking_failure_is_counted_and_does_not_leak():
+    """[R9] A masking failure must be visible, and must not print the secret.
+
+    The old filter wrapped its body in ``except Exception: pass``, so a broken
+    mask emitted the *unmasked* record and said nothing. Now the count is
+    readable and the line is withheld.
+    """
+    from app import main as appmain
+    cfg = load_config({**ENV, "BRIDGE_ACCESS_KEY": "topsecretkey"})
+    access = logging.getLogger("uvicorn.access")
+    handler = _access_handler()
+    access.addHandler(handler)
+    try:
+        appmain._install_secret_masking(cfg)
+        before = appmain.mask_failure_count()
+
+        # -- control: a healthy mask is accepted, not withheld ---------------
+        ok = handler.format(_uvicorn_access_record("/?key=topsecretkey"))
+        assert "***" in ok and "withheld" not in ok, ok
+        assert appmain.mask_failure_count() == before, "healthy mask counted a failure"
+
+        # -- subject: a mask that raises is withheld and counted ------------
+        assert isinstance(handler.formatter, appmain._MaskingFormatter)
+        handler.formatter.cfg = _BrokenMasker()
+        broken = handler.format(_uvicorn_access_record("/?key=topsecretkey"))
+        assert "topsecretkey" not in broken, broken
+        assert broken == appmain.MASK_FAILED_PLACEHOLDER, broken
+        assert appmain.mask_failure_count() == before + 1
+    finally:
+        access.removeHandler(handler)
+
+
+def test_masking_covers_the_last_resort_handler():
+    """``logging.lastResort`` belongs to no logger, so it is easy to miss.
+
+    Moving masking from loggers onto handlers opened exactly this hole, and it
+    would not have shown up in normal running: ``lifespan`` calls
+    ``logging.basicConfig`` first, so the root logger always has a handler and
+    lastResort never fires. A record that reached no handler at all would have
+    been printed with the secret in it.
+    """
+    from app.main import _install_secret_masking
+    cfg = load_config({**ENV, "BRIDGE_ACCESS_KEY": "topsecretkey"})
+    _install_secret_masking(cfg)
+    record = logging.LogRecord("some.library", logging.ERROR, __file__, 1,
+                               "leaking topsecretkey here", (), None)
+    # _StderrHandler.emit() writes exactly what format() returns.
+    assert "topsecretkey" not in logging.lastResort.format(record)
+
+
+def test_masking_covers_non_access_loggers_too():
+    """httpx logs full URLs; it must be masked wherever it lands. [H7]"""
+    from app.main import _install_secret_masking
+    cfg = load_config({**ENV, "BRIDGE_ACCESS_KEY": "topsecretkey"})
+    root = logging.getLogger()
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root.addHandler(handler)
+    try:
+        _install_secret_masking(cfg)
+        record = logging.LogRecord("httpx", logging.INFO, __file__, 1,
+                                   'HTTP Request: GET https://x/y?key=%s "200 OK"',
+                                   ("topsecretkey",), None)
+        line = handler.format(record)
+    finally:
+        root.removeHandler(handler)
+    assert "topsecretkey" not in line, line
+    assert "key=***" in line, line
 
 
 # -- Pass 3: resource-exhaustion caps -----------------------------------------
