@@ -1478,6 +1478,33 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             return _render(message=f"Password reset for '{target['username']}'. "
                                    "Their other sessions are signed out.")
 
+        if action == "delete_account":
+            # Admin-only, irreversible: removes the account, its profiles and
+            # all their reading state. Never the admin's own account and never
+            # another admin, so the instance always keeps an admin. An explicit
+            # confirm field guards against a stray tap on an old iPad.
+            if not acct["is_admin"]:
+                log.info("non-admin %s attempted to delete an account", account_id)
+                return _error_response(
+                    request, "Refused", "Only the admin account can delete accounts.", 403)
+            target_id = form.get("target_account_id") or ""
+            if target_id == account_id:
+                return _render(error="You cannot delete your own account.", status=400)
+            target = store(request).get_account(target_id) if target_id else None
+            if target is None:
+                return _render(error="That account is not available.", status=400)
+            if form.get("confirm_delete") != "yes":
+                return _render(error="Tick the confirm box to delete an account.",
+                               status=400)
+            try:
+                deleted = store(request).delete_account(target_id)
+            except ValueError as exc:
+                return _render(error=str(exc), status=400)
+            if not deleted:
+                return _render(error="That account is not available.", status=400)
+            log.info("admin %s deleted account %s", account_id, target_id)
+            return _render(message=f"Account '{target['username']}' deleted.")
+
         return RedirectResponse("/account", status_code=303)
 
     # -- view-model seam: encode every upstream href as a bridge id [H-2] ----

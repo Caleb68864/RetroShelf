@@ -56,8 +56,13 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   The admin cannot target itself (it uses "Change your password"). CSRF,
   password policy and admin-only checks apply; a non-admin who forges the
   request gets 403.
-- [ ] A2. Admin deletes a non-admin account and removes its per-profile reading
-  state (positions/bookmarks/favorites/history/shelves keyed by profile id).
+- [x] **A2. Admin deletes a non-admin account** (done 2026-11-09 on
+  `wip/2026-11-09-next-plan`). `Store.delete_account` in `app/store.py` removes
+  the account and every profile's state (positions/bookmarks/favorites/history/
+  shelves). The `delete_account` action on `POST /account` is admin-only and
+  needs a confirm checkbox; it refuses the admin's own account and any admin
+  account. The deleted account's cookies stop working because the session
+  lookup no longer finds it. Tests in `tests/test_admin_delete_account.py`.
 - [ ] A3. Admin promotes/demotes admins (at least one admin must always remain).
 
 ### Deferred by design (not scheduled)

@@ -1146,6 +1146,30 @@ class Store:
             self._save()
             return True
 
+    def delete_account(self, account_id: str) -> bool:
+        """Delete a non-admin account, its profiles, and their reading state.
+
+        Every session cookie for the account stops authenticating, since the
+        session lookup no longer finds the account. Admin accounts are refused
+        so the instance can never be left without an admin.
+
+        :param account_id: The account to delete.
+        :returns: ``True`` when the account existed and was deleted.
+        :rtype: bool
+        :raises ValueError: If the account is an admin.
+        """
+        with self._lock:
+            acct = self._data["accounts"].get(account_id)
+            if acct is None:
+                return False
+            if acct["is_admin"]:
+                raise ValueError("An admin account cannot be deleted.")
+            for profile_id in acct["profiles"]:
+                self._data[_PROFILE_STATE_KEY].pop(profile_id, None)
+            del self._data["accounts"][account_id]
+            self._save()
+            return True
+
     def migrate_global_state_into(self, profile_id: str) -> None:
         """Fold any pre-existing sentinel (global) reading state into *profile_id*.
 

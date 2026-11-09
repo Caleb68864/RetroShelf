@@ -94,6 +94,16 @@
         <input type="password" name="reset_confirm" autocomplete="new-password"></label></p>
       <p><button class="button small" type="submit">Reset password</button></p>
     </form>
+    {% if not o.is_admin %}
+    <form class="authform" method="post" action="/account">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="delete_account">
+      <input type="hidden" name="target_account_id" value="{{ o.id }}">
+      <p><label><input type="checkbox" name="confirm_delete" value="yes">
+        Delete {{ o.username }} and all their reading state</label></p>
+      <p><button class="button small" type="submit">Delete account</button></p>
+    </form>
+    {% endif %}
   </li>
 {% endfor %}
 </ul>

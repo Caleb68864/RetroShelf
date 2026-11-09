@@ -319,7 +319,9 @@ authenticate to `/opds` (browser login only) — a v1 limitation.
 lists the other accounts, and each has a **Reset password** form. A reset signs that
 account out on every device and clears its sign-in delay. The admin changes its own
 password through the normal "Change your password" form, which asks for the current
-one.
+one. The same list can also **Delete** a non-admin account. Deleting needs a confirm
+tick and removes the account's profiles and all their reading state. It cannot be
+undone.
 
 Login hardening (all automatic, no configuration):
 
