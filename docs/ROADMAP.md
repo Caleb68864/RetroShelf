@@ -1,0 +1,65 @@
+# RetroShelf Roadmap
+
+Status of every design in `docs/plans/`, checked against the code and git log
+(last audit: 2026-11-09). Keep this file current when an item lands.
+
+## Done
+
+### Base app (`docs/plans/2026-06-07-retroshelf-design.md`)
+- [x] OPDS bridge, downloads with iBooks-safe headers, covers, search
+  (`app/main.py`, `app/opds.py`, `app/download.py`, `docs/notes/header-expectations.md`).
+
+### iPad QoL pack (`docs/plans/2026-06-08-ipad-qol-pack-design.md`)
+- [x] SS1 home-screen web app: meta tags in `app/templates/base.html`,
+  `app/static/icons/apple-touch-icon-180.png`, `tools/make_icon.py`,
+  `tests/test_webapp_meta.py`.
+- [x] SS2 cover transcoding + disk cache (Pillow) in `app/download.py`;
+  `COVER_MAX_EDGE` / `COVER_JPEG_QUALITY` in `app/config.py`; `tests/test_covers.py`.
+  The "cover cache eviction" open question is closed: `MAX_COVER_CACHE_BYTES`
+  + `_prune_cover_cache`.
+- [x] SS4 current-page sort: `_sorted_page` in `app/main.py`, `?sort=` carried by the pager.
+- [x] SS6 polish: `autocorrect="off"` on search inputs, `/static` `Cache-Control`,
+  HTML-only gzip middleware (`app/main.py`), `body.big` rules in `app/static/app.css`.
+- Note: the plan's "Next Steps" checkboxes were never ticked, but the work landed.
+
+### In-browser EPUB reader (`docs/plans/2026-08-23-epub-reader-design.md`)
+- [x] `app/reader.py`, `/read/...` routes in `app/main.py`, per-profile positions,
+  `tests/test_reader_*.py`. Converged in 6 passes with no residual gaps
+  (`docs/converge/2026-08-23-epub-reader/converge-report.md`).
+- [x] Built beyond the plan (originally excluded): bookmarks, in-book find, TOC
+  page, CBZ comics, PDF reading, typography prefs, series row.
+
+### Accounts & profiles (`docs/plans/2026-08-24-accounts-and-profiles-design.md`)
+- [x] All 10 acceptance criteria: `app/accounts.py` (pbkdf2, signed session,
+  CSRF), accounts/profiles in `app/store.py`, `/setup` `/login` `/logout`
+  `/profiles` `/account` in `app/main.py`; tests in `tests/test_accounts.py`,
+  `tests/test_auth_routes.py`, `tests/test_account_authz.py`,
+  `tests/test_csrf_and_enumeration.py`, `tests/test_session_hardening.py`,
+  `tests/test_gate.py`.
+- [x] Two v1 exclusions were built later anyway: brute-force lockout
+  (`app/throttle.py`, `tests/test_login_lockout.py`) and "sign out all devices"
+  (`signout_all` action on `/account`).
+- [x] Custom named per-profile shelves (`/shelves`, `tests/test_shelves.py`).
+
+## Open
+
+### Accounts: admin account management (gap found 2026-11-09)
+The admin can *create* accounts but cannot see, reset, or remove them. Email
+reset is excluded by design, so a user who forgets their password is locked out
+for good. The fix that suits a LAN tool is admin-driven management on `/account`.
+- [ ] **A1. Admin lists accounts and resets another account's password** (in
+  progress on `wip/2026-11-09-next-plan`). The reset bumps `token_version`, so the
+  target's sessions stop working. The admin cannot target itself through this
+  path (it uses "Change your password"). CSRF and admin-only; a non-admin who
+  forges the request gets 403.
+- [ ] A2. Admin deletes a non-admin account and removes its per-profile reading
+  state (positions/bookmarks/favorites/history/shelves keyed by profile id).
+- [ ] A3. Admin promotes/demotes admins (at least one admin must always remain).
+
+### Deferred by design (not scheduled)
+- Per-profile PIN; email password reset; per-profile avatars/theming; admin
+  dashboard (accounts plan, "Exclusions").
+- Per-device reading positions; EPUB CSS passthrough; EPUB3 media/fixed-layout
+  (EPUB reader plan, "Exclusions").
+- Reader image max-edge config knob (`READER_IMAGE_MAX_EDGE` in `app/reader.py`
+  is fixed at 1024): EPUB reader plan, open question 2.
