@@ -315,6 +315,12 @@ mutating form carries a server-checked CSRF token. Set a stable `BRIDGE_ID_SECRE
 sessions survive restarts. Note: with accounts on, external OPDS readers can't
 authenticate to `/opds` (browser login only) — a v1 limitation.
 
+**Forgotten passwords.** There is no email reset. Instead, the admin's `/account` page
+lists the other accounts, and each has a **Reset password** form. A reset signs that
+account out on every device and clears its sign-in delay. The admin changes its own
+password through the normal "Change your password" form, which asks for the current
+one.
+
 Login hardening (all automatic, no configuration):
 
 - **Brute-force throttle.** Failed logins are rate-limited in-process (no new

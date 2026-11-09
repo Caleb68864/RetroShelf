@@ -1467,6 +1467,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             # holds (a stolen one included) stops authenticating at once.
             if not store(request).set_password(target_id, new_pw):
                 return _render(error="That account is not available.", status=400)
+            # Clear the per-username login delay the user may have built up
+            # while guessing the forgotten password, so the new password is not
+            # met with a tarpit. The per-IP lockout is left alone on purpose:
+            # it tracks an address, not this account.
+            th = login_throttle(request)
+            if th is not None:
+                th.record_success(target["username"], None)
             log.info("admin %s reset the password of account %s", account_id, target_id)
             return _render(message=f"Password reset for '{target['username']}'. "
                                    "Their other sessions are signed out.")

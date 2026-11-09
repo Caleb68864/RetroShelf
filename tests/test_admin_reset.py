@@ -126,6 +126,25 @@ def test_reset_enforces_password_policy():
         assert _login_ok(client, "bob", "passwordb")     # unchanged
 
 
+def test_reset_clears_the_targets_login_tarpit():
+    from app.throttle import LoginThrottle
+    with make_client() as client:
+        register_admin(client, "admin", "hunter2000")
+        _make_second_account(client, "bob", "passwordb")
+        bob_id = client._store.get_account_by_username("bob")["account_id"]
+        th = LoginThrottle(tarpit_free=0, tarpit_base=1.0, hard_max_ip=1000)
+        client.app.state.throttle = th
+        # Bob guessed at his forgotten password from elsewhere (record directly,
+        # so the test doesn't sit through the real tarpit sleeps).
+        for _ in range(4):
+            th.record_failure("Bob", "10.0.0.9")
+        assert th.tarpit_delay("bob") > 0
+        assert _reset(client, bob_id, "brandnew99").status_code == 200
+        assert th.tarpit_delay("bob") == 0.0
+        # The per-device lockout counter is not touched by a reset.
+        assert th._by_ip.get("10.0.0.9")
+
+
 def test_reset_requires_csrf():
     with make_client() as client:
         register_admin(client, "admin", "hunter2000")

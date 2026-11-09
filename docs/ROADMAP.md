@@ -47,11 +47,15 @@ Status of every design in `docs/plans/`, checked against the code and git log
 The admin can *create* accounts but cannot see, reset, or remove them. Email
 reset is excluded by design, so a user who forgets their password is locked out
 for good. The fix that suits a LAN tool is admin-driven management on `/account`.
-- [ ] **A1. Admin lists accounts and resets another account's password** (in
-  progress on `wip/2026-11-09-next-plan`). The reset bumps `token_version`, so the
-  target's sessions stop working. The admin cannot target itself through this
-  path (it uses "Change your password"). CSRF and admin-only; a non-admin who
-  forges the request gets 403.
+- [x] **A1. Admin lists accounts and resets another account's password** (done
+  2026-11-09 on `wip/2026-11-09-next-plan`). `Store.list_accounts` in
+  `app/store.py`; `reset_password` action on `POST /account` in `app/main.py`;
+  "Other accounts" section in `app/templates/account.html`; tests in
+  `tests/test_admin_reset.py`. The reset bumps `token_version`, so the target's
+  sessions stop working, and it clears the target's per-username login tarpit.
+  The admin cannot target itself (it uses "Change your password"). CSRF,
+  password policy and admin-only checks apply; a non-admin who forges the
+  request gets 403.
 - [ ] A2. Admin deletes a non-admin account and removes its per-profile reading
   state (positions/bookmarks/favorites/history/shelves keyed by profile id).
 - [ ] A3. Admin promotes/demotes admins (at least one admin must always remain).
