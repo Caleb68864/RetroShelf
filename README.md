@@ -321,7 +321,9 @@ account out on every device and clears its sign-in delay. The admin changes its 
 password through the normal "Change your password" form, which asks for the current
 one. The same list can also **Delete** a non-admin account. Deleting needs a confirm
 tick and removes the account's profiles and all their reading state. It cannot be
-undone.
+undone. An admin can also **Make admin** / **Remove admin** on other accounts, or
+**Step down as admin** when another admin exists. RetroShelf never lets the last admin
+be demoted. To delete an admin account, demote it first.
 
 Login hardening (all automatic, no configuration):
 

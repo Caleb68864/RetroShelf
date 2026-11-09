@@ -63,7 +63,13 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   needs a confirm checkbox; it refuses the admin's own account and any admin
   account. The deleted account's cookies stop working because the session
   lookup no longer finds it. Tests in `tests/test_admin_delete_account.py`.
-- [ ] A3. Admin promotes/demotes admins (at least one admin must always remain).
+- [x] **A3. Admin promotes/demotes admins** (done 2026-11-09 on
+  `wip/2026-11-09-next-plan`). `Store.set_admin` in `app/store.py` refuses to
+  demote the last admin. The `set_admin` action on `POST /account` is admin-only
+  (403 otherwise) and CSRF-checked. "Make admin"/"Remove admin" buttons appear
+  per account, and "Step down as admin" shows only when another admin exists.
+  Tests in `tests/test_admin_promote.py`. To delete an admin account, demote it
+  first.
 
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin

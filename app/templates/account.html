@@ -94,6 +94,13 @@
         <input type="password" name="reset_confirm" autocomplete="new-password"></label></p>
       <p><button class="button small" type="submit">Reset password</button></p>
     </form>
+    <form class="authform" method="post" action="/account">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="set_admin">
+      <input type="hidden" name="target_account_id" value="{{ o.id }}">
+      <input type="hidden" name="make_admin" value="{{ 'no' if o.is_admin else 'yes' }}">
+      <p><button class="button small" type="submit">{{ 'Remove admin' if o.is_admin else 'Make admin' }}</button></p>
+    </form>
     {% if not o.is_admin %}
     <form class="authform" method="post" action="/account">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
@@ -109,6 +116,15 @@
 </ul>
 {% else %}
 <p class="muted">No other accounts yet.</p>
+{% endif %}
+{% if others | selectattr("is_admin") | list %}
+<form class="authform" method="post" action="/account">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="action" value="set_admin">
+  <input type="hidden" name="target_account_id" value="{{ self_id }}">
+  <input type="hidden" name="make_admin" value="no">
+  <p><button class="button small" type="submit">Step down as admin</button></p>
+</form>
 {% endif %}
 {% endif %}
 

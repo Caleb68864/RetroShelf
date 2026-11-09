@@ -1146,6 +1146,30 @@ class Store:
             self._save()
             return True
 
+    def set_admin(self, account_id: str, is_admin: bool) -> bool:
+        """Promote or demote *account_id*, never leaving the instance without an admin.
+
+        :param account_id: The account to change.
+        :param is_admin: ``True`` to promote, ``False`` to demote.
+        :returns: ``True`` when the account existed (whether or not it changed).
+        :rtype: bool
+        :raises ValueError: If demoting the last remaining admin.
+        """
+        with self._lock:
+            acct = self._data["accounts"].get(account_id)
+            if acct is None:
+                return False
+            want = bool(is_admin)
+            if acct["is_admin"] == want:
+                return True
+            if not want:
+                admins = sum(1 for a in self._data["accounts"].values() if a["is_admin"])
+                if admins <= 1:
+                    raise ValueError("At least one admin account must remain.")
+            acct["is_admin"] = want
+            self._save()
+            return True
+
     def delete_account(self, account_id: str) -> bool:
         """Delete a non-admin account, its profiles, and their reading state.
 

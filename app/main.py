@@ -1306,6 +1306,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "colors": PROFILE_COLORS, "username": account["username"],
             "is_admin": account["is_admin"], "can_delete": len(profiles) > 1,
             "error": error, "message": message,
+            "self_id": account["account_id"],
             # Admin-only: the other accounts it can manage. Never itself: its
             # own password goes through "Change your password", which demands
             # the current one. Public views only; no hash/salt reaches here.
@@ -1477,6 +1478,33 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             log.info("admin %s reset the password of account %s", account_id, target_id)
             return _render(message=f"Password reset for '{target['username']}'. "
                                    "Their other sessions are signed out.")
+
+        if action == "set_admin":
+            # Admin-only promote/demote. The store refuses to demote the last
+            # admin, so the instance can never be left without one. An admin
+            # may step down itself when another admin exists.
+            if not acct["is_admin"]:
+                log.info("non-admin %s attempted to change admin rights", account_id)
+                return _error_response(
+                    request, "Refused", "Only an admin account can change admin rights.", 403)
+            target_id = form.get("target_account_id") or ""
+            make = form.get("make_admin")
+            if make not in ("yes", "no"):
+                return _render(error="Choose promote or demote.", status=400)
+            target = store(request).get_account(target_id) if target_id else None
+            if target is None:
+                return _render(error="That account is not available.", status=400)
+            try:
+                if not store(request).set_admin(target_id, make == "yes"):
+                    return _render(error="That account is not available.", status=400)
+            except ValueError as exc:
+                return _render(error=str(exc), status=400)
+            log.info("admin %s set is_admin=%s on account %s", account_id, make, target_id)
+            if target_id == account_id and make == "no":
+                # No longer an admin: the admin-only page sections must go.
+                return RedirectResponse("/account", status_code=303)
+            verb = "is now an admin" if make == "yes" else "is no longer an admin"
+            return _render(message=f"'{target['username']}' {verb}.")
 
         if action == "delete_account":
             # Admin-only, irreversible: removes the account, its profiles and
