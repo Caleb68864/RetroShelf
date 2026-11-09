@@ -77,6 +77,29 @@
     <input type="password" name="new_confirm" autocomplete="new-password"></label></p>
   <p><button class="button" type="submit">Create account</button></p>
 </form>
+
+<div class="sectionhead">&gt;&gt; Other accounts (admin)</div>
+{% if others %}
+<ul class="list">
+{% for o in others %}
+  <li class="item">
+    <p><strong>{{ o.username }}</strong>{% if o.is_admin %} (admin){% endif %}</p>
+    <form class="authform" method="post" action="/account">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="reset_password">
+      <input type="hidden" name="target_account_id" value="{{ o.id }}">
+      <p><label>New password<br>
+        <input type="password" name="reset_password" autocomplete="new-password"></label></p>
+      <p><label>Repeat new password<br>
+        <input type="password" name="reset_confirm" autocomplete="new-password"></label></p>
+      <p><button class="button small" type="submit">Reset password</button></p>
+    </form>
+  </li>
+{% endfor %}
+</ul>
+{% else %}
+<p class="muted">No other accounts yet.</p>
+{% endif %}
 {% endif %}
 
 <p><a class="back" href="/">Main Menu</a></p>

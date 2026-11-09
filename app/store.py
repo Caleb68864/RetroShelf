@@ -958,6 +958,17 @@ class Store:
             acct = self._data["accounts"].get(account_id)
             return _public_account(account_id, acct) if acct is not None else None
 
+    def list_accounts(self) -> list[dict]:
+        """:returns: Public views of every account, sorted by username.
+
+        Like :meth:`get_account`, the views never carry the password hash/salt.
+        Used by the admin's account-management list.
+        """
+        with self._lock:
+            views = [_public_account(acct_id, acct)
+                     for acct_id, acct in self._data["accounts"].items()]
+        return sorted(views, key=lambda v: (v["username"].casefold(), v["account_id"]))
+
     def get_account_by_username(self, username: str) -> dict | None:
         """:returns: The public account view for *username*, or ``None``."""
         with self._lock:

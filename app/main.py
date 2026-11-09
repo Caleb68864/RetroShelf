@@ -1306,6 +1306,14 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "colors": PROFILE_COLORS, "username": account["username"],
             "is_admin": account["is_admin"], "can_delete": len(profiles) > 1,
             "error": error, "message": message,
+            # Admin-only: the other accounts it can manage. Never itself: its
+            # own password goes through "Change your password", which demands
+            # the current one. Public views only; no hash/salt reaches here.
+            "others": ([{"id": a["account_id"], "username": a["username"],
+                         "is_admin": a["is_admin"]}
+                        for a in store(request).list_accounts()
+                        if a["account_id"] != account["account_id"]]
+                       if account["is_admin"] else []),
         }
 
     @app.get("/account", response_class=HTMLResponse)
@@ -1433,6 +1441,35 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             # A brand-new account needs at least one profile to sign in to.
             store(request).add_profile(new_id, new_user, PROFILE_COLORS[0])
             return _render(message=f"Account '{new_user}' created.")
+
+        if action == "reset_password":
+            # Admin-only recovery for a forgotten password (there is no email
+            # reset). The target comes from the form, so authorization comes
+            # from the signed session alone. The admin may not aim this at
+            # itself: that would skip the current-password check that
+            # "Change your password" enforces.
+            if not acct["is_admin"]:
+                log.info("non-admin %s attempted an admin password reset", account_id)
+                return _error_response(
+                    request, "Refused", "Only the admin account can reset passwords.", 403)
+            target_id = form.get("target_account_id") or ""
+            if target_id == account_id:
+                return _render(error="Use 'Change your password' for your own account.",
+                               status=400)
+            target = store(request).get_account(target_id) if target_id else None
+            if target is None:
+                return _render(error="That account is not available.", status=400)
+            new_pw = form.get("reset_password") or ""
+            pw_err = _password_error(new_pw, form.get("reset_confirm") or "")
+            if pw_err:
+                return _render(error=pw_err, status=400)
+            # set_password bumps token_version, so every session the target
+            # holds (a stolen one included) stops authenticating at once.
+            if not store(request).set_password(target_id, new_pw):
+                return _render(error="That account is not available.", status=400)
+            log.info("admin %s reset the password of account %s", account_id, target_id)
+            return _render(message=f"Password reset for '{target['username']}'. "
+                                   "Their other sessions are signed out.")
 
         return RedirectResponse("/account", status_code=303)
 
