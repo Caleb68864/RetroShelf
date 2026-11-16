@@ -184,3 +184,33 @@ def test_password_change_still_works_without_a_throttle():
         assert getattr(client.app.state, "throttle", None) is None
         assert _change(client, "WRONG").status_code == 400
         assert _change(client, "hunter2000").status_code == 200
+
+
+def test_over_long_current_password_is_capped_like_login(sleeps):
+    with make_client() as client:
+        register_admin(client, "admin", "hunter2000")
+        th = _throttle(tarpit_free=0)
+        client.app.state.throttle = th
+        calls: list[str] = []
+        real_verify = client._store.verify_login
+
+        def spy(username, password):
+            calls.append(password)
+            return real_verify(username, password)
+
+        client._store.verify_login = spy
+        r = _change(client, "A" * (main_mod._MAX_PASSWORD_LEN + 1))
+        # Same answer as any wrong current password, as /login gives one
+        # uniform error for an over-long password.
+        assert r.status_code == 400 and "current password is wrong" in r.text
+        # Refused before hashing, and without the tarpit sleep (as /login).
+        assert calls == []
+        assert sleeps == []
+        # Still counted as a failure in the shared throttle.
+        assert th.tarpit_delay("admin") > 0
+        # A password exactly at the cap is still checked normally.
+        r = _change(client, "A" * main_mod._MAX_PASSWORD_LEN)
+        assert r.status_code == 400
+        assert len(calls) == 1
+        del client._store.verify_login
+        assert client._store.verify_login("admin", "hunter2000") is not None

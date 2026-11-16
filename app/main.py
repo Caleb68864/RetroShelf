@@ -1414,6 +1414,15 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 log.info("password change refused: address %s is rate-limited", ip)
                 return _render(error="Too many password attempts from this device. "
                                      "Wait a few minutes and try again.", status=429)
+            # An over-long current password is bounded before it can reach the
+            # KDF, exactly as /login does: it counts as a failure (no tarpit
+            # sleep, no hashing) and gets the same wrong-password answer. [dos]
+            if len(current) > _MAX_PASSWORD_LEN:
+                if throttle is not None:
+                    throttle.record_failure(username, ip)
+                log.info("wrong current password on password change for account %s "
+                         "from %s (over-long password)", account_id, ip)
+                return _render(error="Your current password is wrong.", status=400)
             if store(request).verify_login(username, current) != account_id:
                 if throttle is not None:
                     throttle.record_failure(username, ip)

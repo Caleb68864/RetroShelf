@@ -95,6 +95,15 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   Failures here slow `/login` for that username, and the reverse is also true.
   CSRF and the new-password checks still apply. Tests in
   `tests/test_password_change_throttle.py`.
+- [x] **Cap over-long current passwords on "Change your password"** (done
+  2026-11-16 on `fix/current-password-length-cap`). `/login` refuses a password
+  over `_MAX_PASSWORD_LEN` (256) before hashing; the `password` action on
+  `POST /account` now does the same for the current-password field. An
+  over-long value is checked after the per-IP hard lock, never reaches the KDF,
+  counts as a failure in the shared `LoginThrottle` (no tarpit sleep, as on
+  `/login`), and gets the usual "Your current password is wrong." (400). Test:
+  `test_over_long_current_password_is_capped_like_login` in
+  `tests/test_password_change_throttle.py`.
 
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
