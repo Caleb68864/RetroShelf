@@ -77,6 +77,13 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   on `review/2026-11-16-admin-accounts`: a forged delete of another admin is
   refused, and a demoted admin's existing session loses admin rights at once
   (admin rights are read from the store on every request).
+- [x] **A2 follow-up: delete clears the login tarpit** (done 2026-11-16 on
+  `fix/tarpit-on-delete`). The `delete_account` action now clears the deleted
+  username's per-username login tarpit, so an account re-created with the same
+  name does not inherit the delay. It shares `_clear_login_tarpit` in
+  `app/main.py` with the A1 reset (case-insensitive match, per-IP counter left
+  alone). Test: `test_delete_clears_the_deleted_usernames_login_tarpit` in
+  `tests/test_admin_delete_account.py`.
 
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
