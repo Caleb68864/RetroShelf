@@ -1328,6 +1328,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         return templates.TemplateResponse(
             request, "account.html", _account_context(request, sess["account"]))
 
+    def _clear_login_tarpit(request: Request, username: str) -> None:
+        """Clear *username*'s per-username login tarpit (case-insensitive).
+
+        Used when an admin resets or deletes an account. The per-IP lockout is
+        left alone on purpose: it tracks an address, not this account.
+        """
+        th = login_throttle(request)
+        if th is not None:
+            th.record_success(username, None)
+
     @app.post("/account")
     async def account_post(request: Request) -> Response:
         """POST ``/account`` — profile CRUD, own-password change, admin add-account.
@@ -1470,11 +1480,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 return _render(error="That account is not available.", status=400)
             # Clear the per-username login delay the user may have built up
             # while guessing the forgotten password, so the new password is not
-            # met with a tarpit. The per-IP lockout is left alone on purpose:
-            # it tracks an address, not this account.
-            th = login_throttle(request)
-            if th is not None:
-                th.record_success(target["username"], None)
+            # met with a tarpit.
+            _clear_login_tarpit(request, target["username"])
             log.info("admin %s reset the password of account %s", account_id, target_id)
             return _render(message=f"Password reset for '{target['username']}'. "
                                    "Their other sessions are signed out.")
@@ -1530,6 +1537,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 return _render(error=str(exc), status=400)
             if not deleted:
                 return _render(error="That account is not available.", status=400)
+            # Drop the delay built up against this username, so an account
+            # re-created with the same name does not inherit it.
+            _clear_login_tarpit(request, target["username"])
             log.info("admin %s deleted account %s", account_id, target_id)
             return _render(message=f"Account '{target['username']}' deleted.")
 

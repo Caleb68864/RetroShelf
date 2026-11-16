@@ -139,3 +139,26 @@ def test_route_refuses_to_delete_another_admin():
         r = _delete(client, bob_id)
         assert r.status_code == 400 and "admin account cannot be deleted" in r.text
         assert client._store.get_account(bob_id) is not None
+
+
+def test_delete_clears_the_deleted_usernames_login_tarpit():
+    # A tarpit built up against the deleted username must not carry over to a
+    # new account re-created with the same name. Same path as the reset: the
+    # username match is case-insensitive and the per-IP counter is untouched.
+    from app.throttle import LoginThrottle
+    with make_client() as client:
+        register_admin(client, "admin", "hunter2000")
+        _make_second_account(client, "bob", "passwordb")
+        bob_id = client._store.get_account_by_username("bob")["account_id"]
+        th = LoginThrottle(tarpit_free=0, tarpit_base=1.0, hard_max_ip=1000)
+        client.app.state.throttle = th
+        for _ in range(4):
+            th.record_failure("BOB", "10.0.0.9")
+        assert th.tarpit_delay("bob") > 0
+        # A refused delete (no confirm) leaves the tarpit in place.
+        assert _delete(client, bob_id, confirm=None).status_code == 400
+        assert th.tarpit_delay("bob") > 0
+        assert _delete(client, bob_id).status_code == 200
+        assert th.tarpit_delay("bob") == 0.0
+        assert th.tarpit_delay("Bob") == 0.0
+        assert th._by_ip.get("10.0.0.9")
