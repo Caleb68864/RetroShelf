@@ -1402,8 +1402,27 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             current = form.get("current") or ""
             new = form.get("new") or ""
             confirm = form.get("confirm") or ""
-            if store(request).verify_login(acct["username"], current) != account_id:
+            # Throttled exactly like /login, sharing its state: a valid session
+            # cookie must not buy free guesses at the current password. Same
+            # per-IP hard lock, same per-username tarpit (keyed on the account's
+            # username, case-insensitive), and a correct current password
+            # clears both, as a successful login does. [brute-force]
+            username = acct["username"]
+            ip = _client_ip(request)
+            throttle = login_throttle(request)
+            if throttle is not None and throttle.locked(ip):
+                log.info("password change refused: address %s is rate-limited", ip)
+                return _render(error="Too many password attempts from this device. "
+                                     "Wait a few minutes and try again.", status=429)
+            if store(request).verify_login(username, current) != account_id:
+                if throttle is not None:
+                    throttle.record_failure(username, ip)
+                    await asyncio.sleep(throttle.tarpit_delay(username))
+                log.info("wrong current password on password change for account %s from %s",
+                         account_id, ip)
                 return _render(error="Your current password is wrong.", status=400)
+            if throttle is not None:
+                throttle.record_success(username, ip)
             pw_err = _password_error(new, confirm)
             if pw_err:
                 return _render(error=pw_err, status=400)

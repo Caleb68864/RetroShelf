@@ -84,6 +84,17 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   `app/main.py` with the A1 reset (case-insensitive match, per-IP counter left
   alone). Test: `test_delete_clears_the_deleted_usernames_login_tarpit` in
   `tests/test_admin_delete_account.py`.
+- [x] **Throttle wrong current passwords on "Change your password"** (done
+  2026-11-16 on `fix/password-change-throttle`, branched from
+  `fix/tarpit-on-delete`). Before this, anyone with a valid session cookie
+  could guess the current password with no delay. The `password` action on
+  `POST /account` now uses the `/login` `LoginThrottle` and shares its state:
+  the per-IP hard lock (429, checked before hashing), the per-username tarpit
+  (keyed on the account's username, case-insensitive), and on a correct
+  current password `record_success` clears both, as a successful login does.
+  Failures here slow `/login` for that username, and the reverse is also true.
+  CSRF and the new-password checks still apply. Tests in
+  `tests/test_password_change_throttle.py`.
 
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
