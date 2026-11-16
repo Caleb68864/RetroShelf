@@ -101,3 +101,24 @@ def test_set_admin_rejects_bad_input_and_missing_csrf():
         r = _set_admin(client, bob_id, "yes", token="0" * 64)
         assert r.status_code in (400, 403)
         assert not _is_admin(client, "bob")
+
+
+def test_demoted_admin_loses_rights_on_its_existing_session():
+    # Admin rights are read from the store on every request, not the cookie,
+    # so a session opened while bob was an admin stops working as one at once.
+    with make_client() as client:
+        register_admin(client, "admin", "hunter2000")
+        _make_second_account(client, "bob", "passwordb")
+        _make_second_account(client, "carol", "passwordc")
+        bob_id = client._store.get_account_by_username("bob")["account_id"]
+        carol_id = client._store.get_account_by_username("carol")["account_id"]
+        client._store.set_admin(bob_id, True)
+        client.post("/logout", data={"_csrf": _logout_csrf(client)}, follow_redirects=False)
+        _sign_in(client, "bob", "passwordb")
+        token = _csrf(client.get("/account").text)
+        client._store.set_admin(bob_id, False)       # the other admin demotes bob
+        r = client.post("/account", data={"_csrf": token, "action": "set_admin",
+                                          "target_account_id": carol_id,
+                                          "make_admin": "yes"}, follow_redirects=False)
+        assert r.status_code == 403
+        assert not _is_admin(client, "carol")

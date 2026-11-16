@@ -1,7 +1,7 @@
 # RetroShelf Roadmap
 
 Status of every design in `docs/plans/`, checked against the code and git log
-(last audit: 2026-11-09). Keep this file current when an item lands.
+(last audit: 2026-11-16). Keep this file current when an item lands.
 
 ## Done
 
@@ -70,6 +70,13 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   per account, and "Step down as admin" shows only when another admin exists.
   Tests in `tests/test_admin_promote.py`. To delete an admin account, demote it
   first.
+- Review 2026-11-16: A1-A3 merged to `main` by fast-forward (8e8b39b, the
+  `wip/2026-11-09-next-plan` branch ref is gone). A re-review of authz, CSRF,
+  last-admin, self/admin delete, token_version revocation, deleted-account
+  cookies and the tarpit clear found no bugs. Two route-level tests were added
+  on `review/2026-11-16-admin-accounts`: a forged delete of another admin is
+  refused, and a demoted admin's existing session loses admin rights at once
+  (admin rights are read from the store on every request).
 
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin

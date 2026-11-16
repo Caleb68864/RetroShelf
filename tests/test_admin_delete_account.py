@@ -127,3 +127,15 @@ def test_deleted_username_can_be_reused():
         _make_second_account(client, "bob", "passwordnew")
         new = client._store.get_account_by_username("bob")
         assert new is not None and new["account_id"] != old_id
+
+
+def test_route_refuses_to_delete_another_admin():
+    # The UI hides the delete form for admins; a forged POST must still fail.
+    with make_client() as client:
+        register_admin(client, "admin", "hunter2000")
+        _make_second_account(client, "bob", "passwordb")
+        bob_id = client._store.get_account_by_username("bob")["account_id"]
+        client._store.set_admin(bob_id, True)
+        r = _delete(client, bob_id)
+        assert r.status_code == 400 and "admin account cannot be deleted" in r.text
+        assert client._store.get_account(bob_id) is not None
