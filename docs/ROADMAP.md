@@ -188,6 +188,12 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   garbled titles. The XML declaration's encoding is now used when the
   server sends none; a server charset still wins. Test:
   `test_feed_without_http_charset_uses_its_xml_encoding`.
+- [x] **A `<feed>` without the Atom namespace parses** (done 2026-11-21, same
+  branch). `opds.parse` accepted a namespace-less root but looked every
+  child up Atom-qualified, so the page came out empty. Its un-namespaced
+  elements are now moved into Atom first. Test:
+  `test_feed_without_the_atom_namespace_still_parses_its_entries` in
+  `tests/test_opds.py`.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)
