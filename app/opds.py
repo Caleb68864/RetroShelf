@@ -26,6 +26,8 @@ from xml.etree.ElementTree import Element
 
 from defusedxml import ElementTree as DET
 
+from .errors import RetroShelfError
+
 # Bounds on what a single feed document may cost this process. ``defusedxml``
 # already blocks entity expansion and external entities, but it has nothing to
 # say about a *syntactically valid* feed with a million entries or a title the
@@ -53,7 +55,7 @@ COVER_RELS = ("http://opds-spec.org/image", "http://opds-spec.org/cover")
 THUMB_RELS = ("http://opds-spec.org/image/thumbnail", "http://opds-spec.org/thumbnail")
 
 
-class OpdsParseError(Exception):
+class OpdsParseError(RetroShelfError):
     """Raised when an OPDS/Atom document cannot be parsed.
 
     Wraps all low-level :mod:`defusedxml` / :mod:`xml.etree` parse exceptions

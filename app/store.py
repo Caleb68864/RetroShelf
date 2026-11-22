@@ -688,10 +688,11 @@ class Store:
 
         :returns: ``True`` when the shelf existed under this profile.
         :rtype: bool
+        :raises ValueError: If *name* is empty/blank (as :meth:`create_shelf`).
         """
         clean = _clean_text(name, _MAX_SHELF_NAME).strip()
         if not clean:
-            return False
+            raise ValueError("Shelf name must not be empty.")
         with self._lock:
             shelf = self._pstate_ro(profile_id)["shelves"].get(shelf_id)
             if shelf is None:

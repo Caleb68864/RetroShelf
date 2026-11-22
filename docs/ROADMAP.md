@@ -1,7 +1,7 @@
 # RetroShelf Roadmap
 
 Status of every design in `docs/plans/`, checked against the code and git log
-(last audit: 2026-11-16). Keep this file current when an item lands.
+(last audit: 2026-11-21). Keep this file current when an item lands.
 
 ## Done
 
@@ -104,6 +104,69 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   `/login`), and gets the usual "Your current password is wrong." (400). Test:
   `test_over_long_current_password_is_capped_like_login` in
   `tests/test_password_change_throttle.py`.
+
+### Small fixes (found 2026-11-21)
+- [x] **Blank shelf rename reports an error** (done 2026-11-21 on
+  `fix/shelf-rename-and-bad-ids`). `/shelves/rename/{id}` with a blank name
+  used to redirect to `/shelves` as if it worked. `Store.rename_shelf` now
+  raises the same `ValueError` as `create_shelf`, and the route redirects to
+  `/shelves?err=Shelf name must not be empty.`, exactly as create does. Tests:
+  `test_blank_rename_reports_an_error_like_create` in `tests/test_shelves.py`.
+- [x] **Book ids that are not a book record get "Malformed book id"** (done
+  2026-11-21, same branch). A signed id whose JSON is not an object, or has no
+  non-empty `u` URL, raised `KeyError`/`TypeError` (500) in `/star/{bid}`,
+  `/shelf/{id}/add/{bid}` and `/book/{bid}`. All three now use
+  `_decode_book_record` in `app/main.py`, which also requires `u`, so they
+  return the usual 404 "That link is not valid or has expired." (the reader
+  routes share it). Ids are MAC-signed, so this is hardening. Tests:
+  `tests/test_bad_book_ids.py`.
+- [x] **Upstream robustness: feeds, downloads, covers** (done 2026-11-21, same
+  branch; found by a bug hunt of the OPDS/download/Kavita code). Tests in
+  `tests/test_upstream_robustness.py`, each failing on the old code:
+  - `OpdsParseError` (`app/opds.py`) now subclasses `RetroShelfError`. A feed
+    that answers 200 with a non-Atom body (maintenance or login page) gave a
+    500 on `/feed` and `/search` and broke `/random`; it is now the 502
+    "Library unavailable" page, and one bad library in a fan-out search is an
+    error group.
+  - A next/previous link that fails the SSRF guard drops that pager link
+    instead of failing the whole `/feed` page with a 400.
+  - `KavitaClient.open_stream` sends `Accept-Encoding: identity`. Downloads are
+    relayed raw, so a gzip'd upstream body used to reach iBooks as a corrupt
+    file.
+  - `/download` takes the type from the record's MIME when it is EPUB or PDF,
+    and otherwise looks for `.pdf` in the URL path and query only, not the
+    host (`_media_for_url` in `app/main.py`).
+  - A cover stream that dies mid-body is a `KavitaError` (the tiny 404 GIF),
+    not a 500 HTML page in an `<img>`.
+  - The 64M decoded-pixel cap is enforced at the cap for covers and reader
+    images. Pillow only raises above twice `MAX_IMAGE_PIXELS`.
+  - `/opds/reading-list` no longer publishes an HTML/text/CBZ book as a
+    `.epub` acquisition. Only EPUB/PDF records get one, and an unknown MIME
+    still counts as EPUB, as on `/book`.
+  - Search results resolve relative links against the search URL, not the
+    library root.
+- [x] **Reader robustness** (done 2026-11-21, same branch; found by a bug hunt
+  of `app/reader.py`). Tests in `tests/test_reader_robustness.py`, each
+  failing on the old code except one regression guard:
+  - A damaged deflate stream (`zlib.error`/`EOFError`) in an EPUB chapter is
+    a `ReaderError`, and a damaged CBZ page or EPUB image is skipped. An
+    unsupported zip version (`NotImplementedError` from `ZipFile`) is a
+    `ReaderError`. Each used to be a 500.
+  - EPUB2/XHTML 1.1 chapters using HTML named entities (`&nbsp;`, `&mdash;`)
+    parse. They used to render as escaped source text with no title.
+    `_parse_xhtml` retries with the names rewritten as numeric references.
+  - A chapter's declared encoding or BOM is honoured (ISO-8859-1, UTF-16),
+    because the bytes go to the parser undecoded.
+  - Loose text directly in `<body>`, after a top-level element, or between
+    the inline children of a `<div>` is kept. It used to be dropped, and a
+    body of bare text gave a zero-block chapter.
+  - `_scrub_xml` removes U+FFFE/U+FFFF and lone surrogates, so one stray
+    non-character no longer fails a whole HTML book.
+  - In-book find snippets stay aligned when `lower()` changes a string's
+    length (`İ`).
+  - EPUB and PDF extraction run in a worker thread (`asyncio.to_thread`), as
+    CBZ already did, so shelving a big book no longer stalls every request.
+- Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
