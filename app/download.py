@@ -346,6 +346,55 @@ async def stream_download(
     )
 
 
+def _cover_cache_paths(cache_dir: str, url: str) -> tuple[str, str]:
+    """Return ``(image_path, content_type_path)`` of *url*'s cached cover."""
+    path = os.path.join(cache_dir, "covers", _cover_cache_key(url))
+    return path, path + ".ct"
+
+
+async def head_download(
+    kc: KavitaClient,
+    url: str,
+    *,
+    media_type: str,
+    filename: str,
+    disposition: str,
+    range_header: str | None = None,
+) -> Response:
+    """Answer a ``HEAD`` for a book with the library's real status and size.
+
+    Opens the same upstream ``GET`` a download would (Kavita does not
+    reliably answer ``HEAD``), takes its status and relayed headers, and
+    closes it without reading the body. A missing book is therefore a
+    ``HEAD`` failure too, instead of a ``200`` that the ``GET`` then breaks.
+
+    :raises KavitaError: If the library cannot be reached or answers >= 400.
+    """
+    resp = await kc.open_stream(url, range_header=range_header)
+    try:
+        if resp.status_code == 416:
+            content_range = resp.headers.get("content-range")
+            return Response(status_code=416,
+                            headers={"Content-Range": content_range} if content_range else None)
+        headers = build_headers(filename=filename, disposition=disposition, upstream=resp)
+        return Response(status_code=resp.status_code, media_type=media_type, headers=headers)
+    finally:
+        await resp.aclose()
+
+
+async def head_cover(kc: KavitaClient, url: str, *, cache_dir: str = "/cache") -> Response:
+    """Answer a ``HEAD`` for a cover: ``200`` when it is cached or the library
+    has it, else :class:`KavitaError` (the caller's tiny 404). The body is
+    never read."""
+    cache_path, _ct_path = _cover_cache_paths(cache_dir, url)
+    headers = {"Cache-Control": "private, max-age=86400"}
+    if os.path.exists(cache_path):
+        return Response(status_code=200, media_type="image/jpeg", headers=headers)
+    resp = await kc.open_stream(url)
+    await resp.aclose()
+    return Response(status_code=200, media_type="image/jpeg", headers=headers)
+
+
 async def stream_cover(
     kc: KavitaClient,
     url: str,
@@ -378,10 +427,8 @@ async def stream_cover(
     :returns: A buffered :class:`Response` with appropriate ``Cache-Control``.
     :raises KavitaError: If the upstream fetch fails and the cache is cold.
     """
-    key = _cover_cache_key(url)
     cache_covers = os.path.join(cache_dir, "covers")
-    cache_path = os.path.join(cache_covers, key)
-    cache_ct_path = cache_path + ".ct"
+    cache_path, cache_ct_path = _cover_cache_paths(cache_dir, url)
 
     _resp_headers = {"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"}
 

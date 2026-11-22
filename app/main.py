@@ -40,14 +40,13 @@ from .download import (
     EPUB_MIME,
     PDF_MIME,
     format_of,
+    head_cover,
+    head_download,
     stream_cover,
     stream_download,
 )
 from .download import (
     _safe_image_type,
-)
-from .download import (
-    build_headers as build_download_headers,
 )
 from .errors import (
     BadIdError,
@@ -2453,12 +2452,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         url = kc(request).resolve_url(raw)  # re-validate
         media_type, disposition, ext = _media_for_url(url, cfg, (record or {}).get("m"))
         filename = sanitize_filename(name_hint or (record or {}).get("t") or _basename(url), ext)
-        if request.method == "HEAD":
-            # Answer header probes (e.g. `curl -I`, Safari) without fetching the
-            # body. Same headers a GET would produce.
-            headers = build_download_headers(filename=filename, disposition=disposition)
-            return Response(status_code=200, media_type=media_type, headers=headers)
         range_header = request.headers.get("range")
+        if request.method == "HEAD":
+            # Answer header probes (curl -I, Safari) with the library's real
+            # status and size, without reading the body.
+            return await head_download(
+                kc(request), url, media_type=media_type, filename=filename,
+                disposition=disposition, range_header=range_header)
         resp = await stream_download(
             kc(request), url, media_type=media_type, filename=filename,
             disposition=disposition, range_header=range_header,
@@ -2540,8 +2540,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         try:
             url = kc(request).resolve_url(codec(request).decode(cid))
             if request.method == "HEAD":
-                return Response(status_code=200, media_type="image/jpeg",
-                                headers={"Cache-Control": "private, max-age=86400"})
+                return await head_cover(kc(request), url, cache_dir=cfg.cache_dir)
             return await stream_cover(
                 kc(request), url,
                 cache_dir=cfg.cache_dir,

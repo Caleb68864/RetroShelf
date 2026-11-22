@@ -259,6 +259,15 @@ setting where that fits, without touching existing data.
   not recorded. A transfer cut off mid-body still counts, since the response
   has already started. Tests: `tests/test_download_records.py`.
 
+- [x] **HEAD on `/download` and `/cover` asks the library** (same branch).
+  Decided by agent 2026-11-21 (owner may revisit): HEAD used to answer 200
+  without contacting the library. It now opens the same upstream GET (Kavita
+  does not reliably answer HEAD) and closes it unread. `head_download`
+  relays the real status, `Content-Length` and range headers, and a missing
+  book is a 502. `head_cover` is 200 when the cover is cached or the library
+  has it, else the tiny 404. A HEAD is never recorded as a download. Tests:
+  `tests/test_head_proxy.py`.
+
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").
