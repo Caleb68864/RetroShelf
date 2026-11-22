@@ -385,7 +385,9 @@ class KavitaClient:
             code >= 400 (the upstream connection is closed before raising).
         """
         safe = self.resolve_url(url)
-        headers: dict[str, str] = {}
+        # Ask for the bytes as stored: a download is relayed raw (aiter_raw),
+        # so a gzip'd body would reach iBooks as a corrupt EPUB/PDF.
+        headers: dict[str, str] = {"Accept-Encoding": "identity"}
         if range_header:
             headers["Range"] = range_header
         # Follow redirects manually, re-validating EACH hop through the SSRF

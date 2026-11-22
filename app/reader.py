@@ -1022,6 +1022,10 @@ def _transcode_reader_image(raw: bytes) -> tuple[bytes, str] | None:
         return None
     try:
         img: _PILImage.Image = _PILImage.open(io.BytesIO(raw))
+        # Pillow only raises above 2x MAX_IMAGE_PIXELS; enforce the cap itself
+        # before load() decodes the pixels.
+        if img.size[0] * img.size[1] > _PILImage.MAX_IMAGE_PIXELS:
+            return None
         img.load()
         fmt = img.format or ""
         w, h = img.size

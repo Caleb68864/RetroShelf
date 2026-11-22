@@ -1910,8 +1910,19 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         sort = sort if sort in _SORT_KEYS else ""   # normalize unknown → upstream order
         entries = _sorted_page(entries, sort)
         suffix = f"?sort={sort}" if sort else ""    # carry the sort across pages
-        next_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.next_url, base=url))}{suffix}" if parsed.next_url else None
-        prev_url = f"/feed/{codec(request).encode(kc(request).resolve_url(parsed.prev_url, base=url))}{suffix}" if parsed.prev_url else None
+
+        def _pager(href: str | None) -> str | None:
+            # A next/previous link that fails the SSRF guard is dropped, like
+            # an entry link, instead of failing the whole page.
+            if not href:
+                return None
+            try:
+                target = kc(request).resolve_url(href, base=url)
+            except SsrfError:
+                return None
+            return f"/feed/{codec(request).encode(target)}{suffix}"
+
+        next_url, prev_url = _pager(parsed.next_url), _pager(parsed.prev_url)
         # Scope the on-page search box to the library this feed belongs to.
         owner = _feed_for_url(url)
         search_feed = codec(request).encode(kc(request).resolve_url(owner.url))
@@ -2065,7 +2076,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 su = await _resolve_search_url(request, q, source.url)
                 body = await kc(request).fetch_feed(su)
                 ents = _to_view_model(opds.parse(body), codec(request), kc(request),
-                                      base_url=source.url, downloaded=downloaded)
+                                      base_url=su, downloaded=downloaded)
                 return {"name": source.name, "entries": ents, "error": False}
             except RetroShelfError as exc:
                 log.info("search failed in %r for %r: %s", source.name, q, cfg.mask(str(exc)))
@@ -2300,7 +2311,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         base, ks = _public_base(request), _key_suffix()
         entries = []
         for rec in store(request).favorites(profile_id=current_profile_id(request)):
-            fmts = rec.get("fmts") or [{"u": rec.get("u"), "m": rec.get("m"), "f": "epub"}]
+            fmts = rec.get("fmts")
+            if not fmts:
+                # Only an EPUB/PDF record is a downloadable book; an HTML/text/
+                # CBZ edition gets no acquisition. An unknown MIME counts as EPUB,
+                # as on the /book page.
+                fmt = format_of(rec.get("m") or "") or "epub"
+                fmts = [{"u": rec.get("u"), "m": rec.get("m"), "f": fmt}] if fmt in ("epub", "pdf") else []
             acqs = []
             for fm in fmts:
                 if not fm.get("u"):
@@ -2431,7 +2448,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         except (ValueError, TypeError):
             raw = decoded
         url = kc(request).resolve_url(raw)  # re-validate
-        media_type, disposition, ext = _media_for_url(url, cfg)
+        media_type, disposition, ext = _media_for_url(url, cfg, (record or {}).get("m"))
         filename = sanitize_filename(name_hint or (record or {}).get("t") or _basename(url), ext)
         if request.method == "GET" and record is not None:
             store(request).record_download(
@@ -3093,7 +3110,8 @@ def _basename(url: str) -> str:
     return path.rsplit("/", 1)[-1] if "/" in path else path
 
 
-def _media_for_url(url: str, cfg: Config) -> tuple[str, str, str]:
+def _media_for_url(url: str, cfg: Config,
+                   record_mime: str | None = None) -> tuple[str, str, str]:
     """Return ``(media_type, disposition, ext)`` inferred from the download URL's
     file extension.
 
@@ -3114,8 +3132,15 @@ def _media_for_url(url: str, cfg: Config) -> tuple[str, str, str]:
         ``"epub"``.
     :rtype: tuple[str, str, str]
     """
-    low = url.lower()
-    if ".pdf" in low:
+    fmt = format_of(record_mime or "")
+    if fmt == "pdf":
+        return PDF_MIME, cfg.pdf_disposition, "pdf"
+    if fmt == "epub":
+        return EPUB_MIME, cfg.epub_disposition, "epub"
+    # No usable MIME: look at the path and query only, never the host
+    # (``pdfhost.example/book.epub`` is an EPUB).
+    parts = urlsplit(url)
+    if ".pdf" in f"{parts.path}?{parts.query}".lower():
         return PDF_MIME, cfg.pdf_disposition, "pdf"
     # Default to EPUB (the common case) for .epub or anything else.
     return EPUB_MIME, cfg.epub_disposition, "epub"

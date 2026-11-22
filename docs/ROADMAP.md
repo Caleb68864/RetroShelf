@@ -120,6 +120,31 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   return the usual 404 "That link is not valid or has expired." (the reader
   routes share it). Ids are MAC-signed, so this is hardening. Tests:
   `tests/test_bad_book_ids.py`.
+- [x] **Upstream robustness: feeds, downloads, covers** (done 2026-11-21, same
+  branch; found by a bug hunt of the OPDS/download/Kavita code). Tests in
+  `tests/test_upstream_robustness.py`, each failing on the old code:
+  - `OpdsParseError` (`app/opds.py`) now subclasses `RetroShelfError`. A feed
+    that answers 200 with a non-Atom body (maintenance or login page) gave a
+    500 on `/feed` and `/search` and broke `/random`; it is now the 502
+    "Library unavailable" page, and one bad library in a fan-out search is an
+    error group.
+  - A next/previous link that fails the SSRF guard drops that pager link
+    instead of failing the whole `/feed` page with a 400.
+  - `KavitaClient.open_stream` sends `Accept-Encoding: identity`. Downloads are
+    relayed raw, so a gzip'd upstream body used to reach iBooks as a corrupt
+    file.
+  - `/download` takes the type from the record's MIME when it is EPUB or PDF,
+    and otherwise looks for `.pdf` in the URL path and query only, not the
+    host (`_media_for_url` in `app/main.py`).
+  - A cover stream that dies mid-body is a `KavitaError` (the tiny 404 GIF),
+    not a 500 HTML page in an `<img>`.
+  - The 64M decoded-pixel cap is enforced at the cap for covers and reader
+    images. Pillow only raises above twice `MAX_IMAGE_PIXELS`.
+  - `/opds/reading-list` no longer publishes an HTML/text/CBZ book as a
+    `.epub` acquisition. Only EPUB/PDF records get one, and an unknown MIME
+    still counts as EPUB, as on `/book`.
+  - Search results resolve relative links against the search URL, not the
+    library root.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)

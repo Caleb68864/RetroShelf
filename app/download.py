@@ -404,6 +404,8 @@ async def stream_cover(
         raw_bytes = await _read_capped(upstream, MAX_COVER_BYTES)
     except ValueError as exc:
         raise KavitaError(f"Refusing oversized cover: {exc}") from exc
+    except httpx.HTTPError as exc:  # upstream died mid-body
+        raise KavitaError(f"Cover stream failed: {type(exc).__name__}") from exc
     finally:
         await upstream.aclose()
 
@@ -416,6 +418,10 @@ async def stream_cover(
             img: _PILImage.Image = _PILImage.open(io.BytesIO(raw_bytes))
             fmt = img.format or ""
             w, h = img.size
+            # Pillow only raises above 2x MAX_IMAGE_PIXELS (it just warns in
+            # between), so enforce the cap here before anything decodes.
+            if w * h > _PILImage.MAX_IMAGE_PIXELS:
+                raise ValueError("image over the decoded-pixel cap")
             if fmt in _PASSTHROUGH_FORMATS and max(w, h) <= cover_max_edge:
                 pass  # passthrough: format and size are fine
             else:
