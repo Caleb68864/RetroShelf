@@ -417,6 +417,10 @@ class KavitaClient:
                     )
                 safe = self.resolve_url(location, base=safe)  # SSRF re-check
                 continue
+            if resp.status_code == 416 and range_header:
+                # "Range Not Satisfiable" is an answer to the client's Range
+                # header, not an upstream failure: hand it back for relay.
+                return resp
             if resp.status_code >= 400:
                 await resp.aclose()  # discard body unread (see redirect note above)
                 raise KavitaError(

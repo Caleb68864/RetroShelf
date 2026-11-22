@@ -201,3 +201,21 @@ def test_search_results_resolve_relative_links_against_the_search_url():
         rec = json.loads(client.app.state.ids.decode(bid))
         search_req = next(q for q in seen if "/search" in q.url.path)
         assert rec["u"] == urljoin(str(search_req.url), "dl/1.epub")
+
+
+# -- 8. an upstream 416 on a Range request is relayed, not a 502 -------------
+def test_unsatisfiable_range_is_relayed_as_416():
+    def handler(request):
+        if request.url.path == "/api/opds/SECRETKEY":
+            return httpx.Response(200, text=ROOT_XML)
+        if request.url.path == "/book.pdf":
+            return httpx.Response(416, headers={"Content-Range": "bytes */10"})
+        return httpx.Response(404)
+
+    with make_client(handler) as client:
+        did = _enc(client, "http://kavita:5000/book.pdf")
+        r = client.get(f"/download/{did}", headers={"Range": "bytes=100-"})
+        assert r.status_code == 416
+        assert r.headers.get("content-range") == "bytes */10"
+        # Without a Range header a 416 is still an upstream failure.
+        assert client.get(f"/download/{did}").status_code == 502

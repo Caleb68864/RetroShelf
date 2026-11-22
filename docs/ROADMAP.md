@@ -173,6 +173,14 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   `app/reader.py` now runs under `IMAGE_FETCH_TIMEOUT`, which reuses
   `FEED_READ_TIMEOUT` (30 s, not configurable, like the feed timeout). A
   timeout drops that image only. Test: `tests/test_reader_followups.py`.
+- [x] **An unsatisfiable Range is relayed as 416** (done 2026-11-21, same
+  branch). An upstream 416 to a forwarded `Range` header (Safari's ranged
+  PDF reads) became a 502 "Library unavailable" page. `open_stream` in
+  `app/kavita.py` now returns a 416 when a range was sent, and
+  `stream_download` in `app/download.py` relays it with its
+  `Content-Range`. Without a `Range` header a 416 is still a failure. Test:
+  `test_unsatisfiable_range_is_relayed_as_416` in
+  `tests/test_upstream_robustness.py`.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)
