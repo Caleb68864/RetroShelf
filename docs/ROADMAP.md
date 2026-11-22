@@ -326,8 +326,47 @@ setting where that fits, without touching existing data.
   unchanged (current page only). Tests: `tests/test_search_paging.py`.
 
 ### Deferred by design (not scheduled)
-- Per-profile PIN; email password reset; per-profile avatars/theming; admin
-  dashboard (accounts plan, "Exclusions").
+- [x] **Per-profile PIN** (built 2026-11-21 on `feat/deferred-features-2`;
+  accounts plan, "Exclusions"). Opt-in per profile, set on `/account` with
+  plain password-type fields (`pattern="[0-9]*"` brings up the iPad number
+  pad).
+  - 4-8 digits, hashed with the same PBKDF2 as passwords. The digits are
+    never stored, and the hash never leaves the store (views only carry
+    `has_pin`).
+  - Selecting a pinned profile on `/profiles` needs its PIN. Changing or
+    removing the PIN, or deleting the profile, needs the current PIN or the
+    account password (for a forgotten PIN).
+  - Wrong tries are limited by a separate `LoginThrottle`: 5 per profile
+    and 5 per address in 15 minutes.
+  - It keeps one family member out of another's profile on a shared
+    account; it is not a substitute for separate accounts.
+  - Tests: `tests/test_profile_pin.py`.
+- [x] **Admin dashboard** (built 2026-11-21 on `feat/deferred-features-2`;
+  accounts plan, "Exclusions"). `/admin` is plain HTML tables and forms,
+  linked from `/account` for admins. It shows the accounts (admin flag,
+  profile count), storage (shelved books, cached covers, state file sizes),
+  the non-secret settings and the version.
+  - It can clear the reader or cover cache (CSRF plus a confirm box). Books
+    being built and in-flight spools are skipped, and positions, bookmarks
+    and shelves are never touched.
+  - Admin-only (403 otherwise, re-read from the store each request) and 404
+    with accounts off. Account changes stay on `/account`.
+  - Tests: `tests/test_admin_dashboard.py`; `/admin` is also in the
+    old-iPad guard.
+- **Blocked: email password reset.** It needs a mail service and its
+  credentials. A forgotten password is handled by the admin reset (A1).
+- [x] **Per-profile avatars** (built 2026-11-21 on `feat/deferred-features-2`;
+  accounts plan, "Exclusions"). Eight built-in shapes (`AVATAR_SHAPES` in
+  `app/store.py`) drawn in the profile's colour, as 48x48 baseline PNGs in
+  `app/static/avatars/` (about 8 KB in all; regenerate with
+  `tools/make_avatars.py`). Chosen with a plain form on `/account` and shown
+  on `/account` and the `/profiles` picker. Profiles without one show the
+  circle. Per-profile theming is already covered by the profile colour plus
+  the existing per-device theme preferences.
+  - **Blocked: photo upload.** iOS 5 Safari has no working file input (it
+    arrived in iOS 6), and accepting uploads would need a multipart parser
+    the app deliberately avoids.
+  - Tests: `tests/test_avatars.py`.
 - [x] **Per-device reading positions** (built 2026-11-21 on
   `feat/deferred-features`; EPUB reader plan, "Exclusions"). Opt-in
   `PER_DEVICE_POSITIONS=1` (default off; nothing changes otherwise). Each

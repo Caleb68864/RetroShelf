@@ -37,9 +37,10 @@ def _handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, text=ROOT_XML)
 
 
-def make_client(store: Store | None = None, accounts_on: bool = True) -> TestClient:
+def make_client(store: Store | None = None, accounts_on: bool = True,
+                extra_env: dict | None = None) -> TestClient:
     """Build a TestClient with a mocked Kavita and an injectable Store."""
-    env = dict(ENV)
+    env = {**ENV, **(extra_env or {})}
     if not accounts_on:
         env.pop("ACCOUNTS_ENABLED", None)
     cfg = load_config(env)

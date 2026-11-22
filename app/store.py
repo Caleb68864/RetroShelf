@@ -83,6 +83,11 @@ _MAX_PROFILE_NAME = 40
 _PROFILE_COLORS = ("amber", "green", "cyan", "white", "magenta", "blue")
 #: Public, ordered tuple of the selectable profile accent colours (for forms).
 PROFILE_COLORS = _PROFILE_COLORS
+#: Built-in profile avatars: shapes drawn in the profile's colour, served as
+#: static PNGs (``app/static/avatars``, made by ``tools/make_avatars.py``).
+#: iOS 5 Safari cannot upload files, so there is no photo upload.
+_PIN_RE = re.compile(r"^[0-9]{4,8}$")
+AVATAR_SHAPES = ("circle", "square", "triangle", "diamond", "star", "moon", "heart", "book")
 _KDF_NAME = "pbkdf2_sha256"
 
 # The fixed profile id used when accounts are disabled (and for any state that
@@ -398,7 +403,14 @@ def _sanitize_profile(raw: object) -> dict | None:
     name = _clean_text(raw.get("name"), _MAX_PROFILE_NAME) or "Reader"
     color = raw.get("color") if raw.get("color") in _PROFILE_COLORS else _PROFILE_COLORS[0]
     created = _as_real_number(raw.get("created"))
-    return {"name": name, "color": color, "created": float(created) if created is not None else 0.0}
+    out = {"name": name, "color": color, "created": float(created) if created is not None else 0.0}
+    if raw.get("avatar") in AVATAR_SHAPES:
+        out["avatar"] = raw["avatar"]
+    pin = raw.get("pin")
+    if (isinstance(pin, dict) and isinstance(pin.get("salt"), str)
+            and isinstance(pin.get("hash"), str) and isinstance(pin.get("iterations"), int)):
+        out["pin"] = {"salt": pin["salt"], "iterations": pin["iterations"], "hash": pin["hash"]}
+    return out
 
 
 def _sanitize_account(raw: object) -> dict | None:
@@ -461,7 +473,10 @@ def _public_account(account_id: str, account: dict) -> dict:
         "is_admin": account["is_admin"],
         "token_version": account["token_version"],
         "created": account["created"],
-        "profiles": {pid: dict(p) for pid, p in account["profiles"].items()},
+        # A profile's PIN hash never leaves the store either: only whether
+        # it has one.
+        "profiles": {pid: {**{k: v for k, v in p.items() if k != "pin"}, "has_pin": "pin" in p}
+                     for pid, p in account["profiles"].items()},
     }
 
 
@@ -1187,6 +1202,72 @@ class Store:
             }
             self._save()
             return profile_id
+
+    # -- Per-profile PIN (opt-in) -------------------------------------------
+    def set_pin(self, account_id: str, profile_id: str, pin: str) -> bool:
+        """Give one of *account_id*'s profiles a PIN (4-8 digits), hashed with
+        the same PBKDF2 as passwords; the digits are never stored.
+
+        :returns: ``True`` when the profile existed under this account.
+        :raises ValueError: If *pin* is not 4-8 digits.
+        """
+        if not _PIN_RE.match(pin or ""):
+            raise ValueError("A PIN is 4 to 8 digits.")
+        salt_hex, iterations, hash_hex = _accounts.hash_password(pin)
+        with self._lock:
+            acct = self._data["accounts"].get(account_id)
+            if acct is None or profile_id not in acct["profiles"]:
+                return False
+            acct["profiles"][profile_id]["pin"] = {
+                "salt": salt_hex, "iterations": iterations, "hash": hash_hex}
+            self._save()
+            return True
+
+    def clear_pin(self, account_id: str, profile_id: str) -> bool:
+        """Remove a profile's PIN. :returns: ``True`` when one was removed."""
+        with self._lock:
+            acct = self._data["accounts"].get(account_id)
+            profile = acct["profiles"].get(profile_id) if acct else None
+            if profile is None or profile.pop("pin", None) is None:
+                return False
+            self._save()
+            return True
+
+    def verify_pin(self, account_id: str, profile_id: str, pin: str) -> bool:
+        """Constant-time check of *pin* against the profile's stored PIN.
+        ``False`` when the profile has no PIN or does not exist."""
+        with self._lock:
+            acct = self._data["accounts"].get(account_id)
+            profile = acct["profiles"].get(profile_id) if acct else None
+            stored = dict(profile["pin"]) if profile and "pin" in profile else None
+        if stored is None or not _PIN_RE.match(pin or ""):
+            return False
+        return _accounts.verify_password(pin, stored["salt"], stored["iterations"], stored["hash"])
+
+    def verify_account_password(self, account_id: str, password: str) -> bool:
+        """Whether *password* is *account_id*'s password (constant-time)."""
+        with self._lock:
+            acct = self._data["accounts"].get(account_id)
+            if acct is None:
+                return False
+            salt, iterations, digest = acct["pw_salt"], acct["iterations"], acct["pw_hash"]
+        return _accounts.verify_password(password or "", salt, iterations, digest)
+
+    def set_avatar(self, account_id: str, profile_id: str, shape: str) -> bool:
+        """Set one of *account_id*'s profiles' avatar to a built-in *shape*.
+
+        :returns: ``True`` when the profile existed under this account.
+        :raises ValueError: If *shape* is not one of :data:`AVATAR_SHAPES`.
+        """
+        if shape not in AVATAR_SHAPES:
+            raise ValueError("Pick one of the pictures shown.")
+        with self._lock:
+            acct = self._data["accounts"].get(account_id)
+            if acct is None or profile_id not in acct["profiles"]:
+                return False
+            acct["profiles"][profile_id]["avatar"] = shape
+            self._save()
+            return True
 
     def rename_profile(self, account_id: str, profile_id: str, name: str) -> bool:
         """Rename one of *account_id*'s own profiles.

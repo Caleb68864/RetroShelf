@@ -117,7 +117,7 @@ def test_account_pages_have_no_js_or_banned_css():
             assert _html_violations(client.get(page).text) == [], page
         register_admin(client, "admin", "hunter2000")
         _make_second_account(client, "bob", "passwordb")
-        for page in ("/account", "/profiles", "/"):
+        for page in ("/account", "/profiles", "/admin", "/"):
             assert _html_violations(client.get(page).text) == [], page
 
 
