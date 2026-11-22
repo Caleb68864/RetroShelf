@@ -64,3 +64,59 @@ def test_prune_spares_an_in_progress_build_but_not_a_stale_one(tmp_path):
     reader.prune_reader_cache(str(tmp_path), 0)
     assert live.exists()
     assert not stale.exists() and not done.exists()
+
+
+# -- obfuscated fonts are not DRM --------------------------------------------
+def _epub_with_encryption(enc_xml: bytes) -> bytes:
+    import io
+    import zipfile
+    from tests.test_reader_shelve import make_epub
+    src = zipfile.ZipFile(io.BytesIO(make_epub(chapters=1, image=False)))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for info in src.infolist():
+            z.writestr(info, src.read(info))
+        z.writestr("META-INF/encryption.xml", enc_xml)
+    return out.getvalue()
+
+
+def _enc(alg: str, uri: str) -> bytes:
+    return f"""<?xml version="1.0"?>
+<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+  xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+ <enc:EncryptedData><enc:EncryptionMethod Algorithm="{alg}"/>
+  <enc:CipherData><enc:CipherReference URI="{uri}"/></enc:CipherData>
+ </enc:EncryptedData></encryption>""".encode()
+
+
+def _extract(data: bytes):
+    import os
+    import tempfile
+    d = tempfile.mkdtemp()
+    tmp = os.path.join(d, "t")
+    os.makedirs(os.path.join(tmp, "chapters"))
+    os.makedirs(os.path.join(tmp, "images"))
+    path = os.path.join(d, "b.epub")
+    with open(path, "wb") as f:
+        f.write(data)
+    return reader._extract_epub(path, "k", {"t": "x"}, tmp)
+
+
+def test_font_obfuscation_only_is_readable():
+    for alg in ("http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC"):
+        manifest = _extract(_epub_with_encryption(_enc(alg, "OEBPS/fonts/Body%20Text.otf")))
+        assert manifest.chapters
+
+
+def test_real_drm_is_still_refused():
+    import pytest
+    from app.errors import ReaderError
+    cases = [
+        _enc("http://www.w3.org/2001/04/xmlenc#aes128-cbc", "OEBPS/ch0.xhtml"),
+        _enc("http://www.idpf.org/2008/embedding", "OEBPS/ch0.xhtml"),  # not a font
+        b"<encryption/>",
+        b"not xml",
+    ]
+    for enc in cases:
+        with pytest.raises(ReaderError, match="DRM"):
+            _extract(_epub_with_encryption(enc))

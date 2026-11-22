@@ -807,6 +807,42 @@ def _read_member_capped(zf: zipfile.ZipFile, name: str, member_cap: int, budget:
     return b"".join(chunks)
 
 
+# encryption.xml algorithms that only obfuscate embedded fonts (OCF 3.0
+# "IDPF font obfuscation" and Adobe's older scheme). They are not DRM.
+_FONT_OBFUSCATION_ALGORITHMS = frozenset({
+    "http://www.idpf.org/2008/embedding",
+    "http://ns.adobe.com/pdf/enc#RC",
+})
+_FONT_EXTENSIONS = (".otf", ".ttf", ".woff", ".woff2", ".eot")
+
+
+def _only_font_obfuscation(data: bytes) -> bool:
+    """Return whether ``encryption.xml`` *data* declares only font obfuscation.
+
+    ``True`` only when it parses, lists at least one ``EncryptedData``, and
+    every entry uses a font-obfuscation algorithm on a font file. Anything
+    else (real DRM, an unknown algorithm, an unparsable file) is ``False``,
+    so the book is refused as before.
+    """
+    try:
+        root = fromstring(data)
+    except (ParseError, ValueError):
+        return False
+    entries = [el for el in root.iter() if _local_name(el.tag) == "encrypteddata"]
+    if not entries:
+        return False
+    for entry in entries:
+        algorithms = [el.get("Algorithm", "") for el in entry.iter()
+                      if _local_name(el.tag) == "encryptionmethod"]
+        uris = [el.get("URI", "") for el in entry.iter()
+                if _local_name(el.tag) == "cipherreference"]
+        if not algorithms or any(a not in _FONT_OBFUSCATION_ALGORITHMS for a in algorithms):
+            return False
+        if not uris or any(not unquote(u).lower().endswith(_FONT_EXTENSIONS) for u in uris):
+            return False
+    return True
+
+
 def _parse_container(data: bytes) -> str:
     """Parse ``META-INF/container.xml`` and return the OPF's zip path.
 
@@ -1344,7 +1380,11 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
 
         # DRM'd content cannot be sanitized or rendered; fail fast with a
         # distinct, friendly message steering back to the iBooks path.
-        if "META-INF/encryption.xml" in names:
+        # Font obfuscation (IDPF/Adobe) also lives in encryption.xml but is
+        # not DRM: the reader never serves fonts, so such a book is readable.
+        if "META-INF/encryption.xml" in names and not _only_font_obfuscation(
+            _read_member_capped(zf, "META-INF/encryption.xml", MAX_METADATA_MEMBER_BYTES, budget)
+        ):
             raise ReaderError("This book is protected (DRM) and can't be read in the browser")
 
         if "META-INF/container.xml" not in names:

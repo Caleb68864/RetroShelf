@@ -231,6 +231,15 @@ setting where that fits, without touching existing data.
   `app/store.py`; tests `test_duplicate_shelf_names_*` in
   `tests/test_shelves.py`.
 
+- [x] **Books with obfuscated fonts are readable** (same branch). Decided by
+  agent 2026-11-21 (owner may revisit): any `META-INF/encryption.xml` used to
+  be treated as DRM. Now a book whose `encryption.xml` lists only IDPF or
+  Adobe font obfuscation on font files opens, because the reader never
+  serves fonts. Real DRM, unknown algorithms, obfuscation on a non-font,
+  and unparsable files are refused as before. `_only_font_obfuscation` in
+  `app/reader.py`; tests `test_font_obfuscation_only_is_readable`,
+  `test_real_drm_is_still_refused`.
+
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").
