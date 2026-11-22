@@ -194,6 +194,15 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   elements are now moved into Atom first. Test:
   `test_feed_without_the_atom_namespace_still_parses_its_entries` in
   `tests/test_opds.py`.
+- [x] **Relative links resolve against the post-redirect feed URL** (done
+  2026-11-21, same branch). `fetch_feed` followed redirects but resolved
+  the feed's relative links against the URL it started from, so a feed
+  moved by a 302 linked to the wrong paths. The new
+  `KavitaClient.fetch_feed_and_url` also returns the final URL.
+  `_load_feed` caches it on `Feed.base_url`, and `/feed` (entries and pager),
+  `/search` and `/random` resolve against it. Tests:
+  `test_redirected_feed_resolves_relative_links_against_the_final_url`,
+  `test_fetch_feed_and_url_reports_the_final_url`.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)

@@ -1675,8 +1675,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
-        body = await kc(request).fetch_feed(url)
+        body, final_url = await kc(request).fetch_feed_and_url(url)
         feed = opds.parse(body)
+        feed.base_url = final_url  # relative links resolve against it
         cache.put(cache_key, feed)
         return feed
 
@@ -1799,10 +1800,11 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                     continue
                 visited.add(url)
                 try:
-                    parsed = opds.parse(await kc(request).fetch_feed(url))
+                    body, final_url = await kc(request).fetch_feed_and_url(url)
+                    parsed = opds.parse(body)
                 except RetroShelfError:
                     continue                     # bad branch — try another
-                vm = _to_view_model(parsed, codec(request), kc(request), base_url=url)
+                vm = _to_view_model(parsed, codec(request), kc(request), base_url=final_url)
                 books = [e for e in vm if not e["is_nav"]]
                 if books:
                     return RedirectResponse(random.choice(books)["detail_url"], status_code=303)
@@ -1812,7 +1814,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 for entry in parsed.entries:
                     if entry.is_navigation and entry.nav_href:
                         try:
-                            frontier.append(kc(request).resolve_url(entry.nav_href, base=url))
+                            frontier.append(kc(request).resolve_url(entry.nav_href, base=final_url))
                         except RetroShelfError:
                             continue
         return _error_response(request, "No luck",
@@ -1904,8 +1906,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """
         url = kc(request).resolve_url(codec(request).decode(fid))  # decode + re-validate SSRF
         parsed = await _load_feed(request, url, fid)
+        base = parsed.base_url or url  # after redirects
         entries = _to_view_model(
-            parsed, codec(request), kc(request), base_url=url,
+            parsed, codec(request), kc(request), base_url=base,
             downloaded=store(request).downloaded_keys(profile_id=current_profile_id(request)))
         sort = sort if sort in _SORT_KEYS else ""   # normalize unknown → upstream order
         entries = _sorted_page(entries, sort)
@@ -1917,7 +1920,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             if not href:
                 return None
             try:
-                target = kc(request).resolve_url(href, base=url)
+                target = kc(request).resolve_url(href, base=base)
             except SsrfError:
                 return None
             return f"/feed/{codec(request).encode(target)}{suffix}"
@@ -2074,9 +2077,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             """Search one library; never raises — failures become error groups."""
             try:
                 su = await _resolve_search_url(request, q, source.url)
-                body = await kc(request).fetch_feed(su)
+                body, final_url = await kc(request).fetch_feed_and_url(su)
                 ents = _to_view_model(opds.parse(body), codec(request), kc(request),
-                                      base_url=su, downloaded=downloaded)
+                                      base_url=final_url, downloaded=downloaded)
                 return {"name": source.name, "entries": ents, "error": False}
             except RetroShelfError as exc:
                 log.info("search failed in %r for %r: %s", source.name, q, cfg.mask(str(exc)))

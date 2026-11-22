@@ -311,6 +311,9 @@ class Feed:
     search_url: str | None = None
     start_url: str | None = None
     self_url: str | None = None
+    #: The URL the document was finally served from (after redirects), for
+    #: resolving its relative links. Set by the caller, not by :func:`parse`.
+    base_url: str | None = None
 
 
 def _all_text(el: Element | None) -> str:

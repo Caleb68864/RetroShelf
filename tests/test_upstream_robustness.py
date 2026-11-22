@@ -242,3 +242,48 @@ def test_feed_without_http_charset_uses_its_xml_encoding():
     # No declaration at all: UTF-8, as before.
     plain = "<feed>é</feed>".encode()
     assert _decode_feed(plain, httpx.Response(200, content=plain)) == "<feed>é</feed>"
+
+
+# -- 10. relative links resolve against the post-redirect feed URL -----------
+MOVED_FEED = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+<title>Moved</title><link rel="next" href="page2"/>
+<entry><title>Moved Book</title>
+<link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="dl/1.epub"/>
+</entry></feed>"""
+
+
+def _moved_handler(request):
+    p = request.url.path
+    if p == "/api/opds/SECRETKEY":
+        return httpx.Response(200, text=ROOT_XML)
+    if p == "/old/feed":
+        return httpx.Response(302, headers={"Location": "/new/shelf/feed"})
+    if p == "/new/shelf/feed":
+        return httpx.Response(200, text=MOVED_FEED)
+    return httpx.Response(404)
+
+
+def test_redirected_feed_resolves_relative_links_against_the_final_url():
+    import re
+    with make_client(_moved_handler) as client:
+        ids = client.app.state.ids
+        page = client.get(f"/feed/{_enc(client, 'http://kavita:5000/old/feed')}").text
+        rec = json.loads(ids.decode(re.search(r'/book/([\w\-.]+)"', page).group(1)))
+        assert rec["u"] == "http://kavita:5000/new/shelf/dl/1.epub"
+        decoded = [ids.decode(f) for f in re.findall(r'/feed/([\w\-.]+)', page)]
+        assert "http://kavita:5000/new/shelf/page2" in decoded
+
+
+def test_fetch_feed_and_url_reports_the_final_url():
+    import asyncio
+    from app.config import load_config
+    from app.kavita import KavitaClient
+    from tests.test_app import ENV
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(_moved_handler)) as http:
+            kc = KavitaClient(load_config(ENV), http)
+            return await kc.fetch_feed_and_url("http://kavita:5000/old/feed")
+
+    body, final = asyncio.run(run())
+    assert "Moved Book" in body and final == "http://kavita:5000/new/shelf/feed"

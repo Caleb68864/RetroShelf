@@ -282,6 +282,17 @@ class KavitaClient:
     async def fetch_feed(self, url: str) -> str:
         """Fetch an OPDS feed URL and return its full body as text.
 
+        See :meth:`fetch_feed_and_url`, which also returns the final URL.
+        """
+        body, _final = await self.fetch_feed_and_url(url)
+        return body
+
+    async def fetch_feed_and_url(self, url: str) -> tuple[str, str]:
+        """Fetch an OPDS feed; return ``(body, final_url)``.
+
+        *final_url* is the URL the body was served from after any redirects,
+        which is what the feed's relative links must be resolved against.
+
         The URL is passed through :meth:`resolve_url` before the request is
         made, so SSRF protection is always applied.  Any secret values in
         error messages are masked via :meth:`~app.config.Config.mask` before
@@ -290,8 +301,8 @@ class KavitaClient:
         :param url: The OPDS feed URL to retrieve.  May be absolute or
             root-relative; must resolve to the configured Kavita origin.
         :type url: str
-        :returns: The response body decoded as text (UTF-8 by default).
-        :rtype: str
+        :returns: The body decoded as text, and the final URL.
+        :rtype: tuple[str, str]
         :raises SsrfError: If *url* fails the SSRF guard in
             :meth:`resolve_url`.
         :raises KavitaError: If the HTTP transport raises
@@ -329,7 +340,7 @@ class KavitaClient:
                 body = await self._read_capped(resp, MAX_FEED_BYTES, safe)
             finally:
                 await resp.aclose()
-            return _decode_feed(body, resp)
+            return _decode_feed(body, resp), safe
         raise KavitaError(self._cfg.mask(f"Too many redirects fetching {url!r}"))
 
     async def _read_capped(self, resp: httpx.Response, limit: int, safe: str) -> bytes:
