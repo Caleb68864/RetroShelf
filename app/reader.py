@@ -376,6 +376,32 @@ def _text_block(text: str) -> Element:
     return p
 
 
+def _deeper_than(root: Element, limit: int) -> bool:
+    """Return whether any element sits more than *limit* levels below *root*
+    (iterative, so a hostile depth cannot overflow the stack)."""
+    stack = [(root, 0)]
+    while stack:
+        el, depth = stack.pop()
+        if depth > limit:
+            return True
+        stack.extend((child, depth + 1) for child in el)
+    return False
+
+
+def _dropped_notices(images: int = 0, nesting_chapters: int = 0, pages: int = 0) -> list[str]:
+    """Plain-text :attr:`Manifest.notices` for content shelving left out."""
+    notes = []
+    if pages:
+        notes.append(f"{pages} page{'s' if pages != 1 else ''} of this comic could not be shown.")
+    if images:
+        notes.append(f"{images} image{'s' if images != 1 else ''} in this book could not be "
+                     "shown (unreadable, too large, or past the image limit).")
+    if nesting_chapters:
+        notes.append(f"Some very deeply nested content in {nesting_chapters} "
+                     f"chapter{'s' if nesting_chapters != 1 else ''} was left out.")
+    return notes
+
+
 def _find_body(root: Element) -> Element:
     """Return the ``body`` element under *root*, or *root* itself if absent.
 
@@ -449,6 +475,7 @@ def sanitize_chapter(
     resolve_image: Callable[[str], int | None],
     resolve_link: Callable[[str], int | None],
     anchors: dict[str, int] | None = None,
+    dropped: set[str] | None = None,
 ) -> list[str]:
     """Sanitize an XHTML chapter into an ordered list of safe HTML blocks.
 
@@ -489,6 +516,8 @@ def sanitize_chapter(
         return _escaped_text_fallback(_decode_chapter_text(source))
 
     body = _find_body(root)
+    if dropped is not None and _deeper_than(body, MAX_NESTING_DEPTH + 1):
+        dropped.add("nesting")  # the render walk will leave the excess out
 
     blocks: list[str] = []
     for child in _top_level_block_elements(body):
@@ -623,6 +652,22 @@ class ChapterMeta:
     title: str
     blocks: int
     chars: int
+    #: ``False`` for an EPUB spine item marked ``linear="no"`` (answer keys,
+    #: pop-up notes): reachable from the contents and links, skipped by
+    #: Prev/Next. Additive; older manifests load as linear.
+    linear: bool = True
+
+
+def in_main_flow(chapter: ChapterMeta) -> bool:
+    """Return whether Prev/Next and "start reading" should land on *chapter*."""
+    return chapter.blocks > 0 and chapter.linear
+
+
+def first_readable_chapter(chapters: list[ChapterMeta]) -> int:
+    """Index of the first main-flow chapter, else the first non-empty one,
+    else ``0`` (a book whose every spine item is non-linear still opens)."""
+    return next((i for i, c in enumerate(chapters) if in_main_flow(c)),
+                next((i for i, c in enumerate(chapters) if c.blocks > 0), 0))
 
 
 @dataclass
@@ -898,6 +943,19 @@ def _parse_opf(data: bytes) -> tuple[dict[str, tuple[str, str, str]], list[str],
         elif name == "spine":
             ncx_idref = el.get("toc")
     return manifest, spine, ncx_idref
+
+
+def _nonlinear_idrefs(data: bytes) -> set[str]:
+    """Return the spine idrefs marked ``linear="no"`` in OPF *data*."""
+    try:
+        root = fromstring(data)
+    except (ParseError, ValueError):
+        return set()
+    return {
+        el.get("idref") for el in root.iter()
+        if _local_name(el.tag) == "itemref" and el.get("idref")
+        and (el.get("linear") or "").strip().lower() == "no"
+    }
 
 
 def _titles_from_nav(data: bytes, nav_dir: str) -> dict[str, str]:
@@ -1190,8 +1248,12 @@ def _write_reader_image(images_dir: str, idx: int, served_bytes: bytes, content_
 def _extract_images(
     zf: zipfile.ZipFile, names: set[str], manifest_items: dict[str, tuple[str, str, str]],
     opf_dir: str, tmp_dir: str, budget: _UnpackBudget,
+    skipped: list[int] | None = None,
 ) -> dict[str, int]:
     """Extract and downscale every image manifest item into ``images/``.
+
+    *skipped*, if given, gets one entry per image item that was not shelved
+    (past :data:`MAX_IMAGES`, unreadable, or undecodable).
 
     A no-op (returns an empty map) when Pillow is unavailable — per the
     shelving contract, an EPUB shelved without Pillow is text-only and
@@ -1221,13 +1283,15 @@ def _extract_images(
         if path is None or path not in names or path in index_by_path:
             continue
         if attempts >= MAX_IMAGES:
-            break
+            if skipped is not None:
+                skipped.append(1)
+            continue
         attempts += 1
         raw = _read_image_member(zf, path, budget)
-        if raw is None:
-            continue
-        transcoded = _transcode_reader_image(raw)
+        transcoded = _transcode_reader_image(raw) if raw is not None else None
         if transcoded is None:
+            if skipped is not None:
+                skipped.append(1)
             continue
         out_bytes, out_ct = transcoded
         idx = len(index_by_path)
@@ -1293,7 +1357,9 @@ def _manifest_to_dict(manifest: Manifest) -> dict:
         "title": manifest.title,
         "author": manifest.author,
         "chapters": [
-            {"title": c.title, "blocks": c.blocks, "chars": c.chars} for c in manifest.chapters
+            {"title": c.title, "blocks": c.blocks, "chars": c.chars,
+             **({} if c.linear else {"linear": False})}
+            for c in manifest.chapters
         ],
         "images": manifest.images,
         "total_chars": manifest.total_chars,
@@ -1314,7 +1380,8 @@ def _manifest_from_dict(data: dict) -> Manifest:
         "no manifest".
     """
     chapters = [
-        ChapterMeta(title=str(c["title"]), blocks=int(c["blocks"]), chars=int(c["chars"]))
+        ChapterMeta(title=str(c["title"]), blocks=int(c["blocks"]), chars=int(c["chars"]),
+                    linear=c.get("linear", True) is not False)
         for c in data["chapters"]
     ]
     return Manifest(
@@ -1407,7 +1474,9 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
         if len(spine_idrefs) > MAX_SPINE_ITEMS:
             raise ReaderError(f"This book has too many chapters (limit {MAX_SPINE_ITEMS})")
 
+        nonlinear = _nonlinear_idrefs(opf_bytes)
         chapter_paths: list[str] = []
+        linear_flags: list[bool] = []
         for idref in spine_idrefs:
             item = manifest_items.get(idref)
             if not item:
@@ -1415,6 +1484,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
             path = _norm_zip_path(opf_dir, item[0])
             if path is not None and path in names:
                 chapter_paths.append(path)
+                linear_flags.append(idref not in nonlinear)
 
         if not chapter_paths:
             raise ReaderError("This book has no readable content")
@@ -1449,7 +1519,10 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
                 ncx_toc = _toc_entries_from_ncx(ncx_bytes, ncx_dir)
         toc = _build_toc(nav_toc, ncx_toc, chapter_index_by_path)
 
-        image_index_by_path = _extract_images(zf, names, manifest_items, opf_dir, tmp_dir, budget)
+        skipped_images: list[int] = []
+        image_index_by_path = _extract_images(zf, names, manifest_items, opf_dir, tmp_dir, budget,
+                                              skipped=skipped_images)
+        nesting_chapters = 0
 
         chapters_meta: list[ChapterMeta] = []
         total_chars = 0
@@ -1457,12 +1530,15 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
             raw = _read_member_capped(zf, path, MAX_CHAPTER_BYTES, budget)
             chapter_dir = posixpath.dirname(path)
             anchors: dict[str, int] = {}
+            dropped: set[str] = set()
             blocks = sanitize_chapter(
                 raw,
                 resolve_image=_resolver(chapter_dir, image_index_by_path),
                 resolve_link=_resolver(chapter_dir, chapter_index_by_path),
                 anchors=anchors,
+                dropped=dropped,
             )
+            nesting_chapters += "nesting" in dropped
             title = (
                 nav_titles.get(path)
                 or ncx_titles.get(path)
@@ -1473,7 +1549,8 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
             total_chars += chars
             with open(os.path.join(tmp_dir, "chapters", f"{i}.json"), "w", encoding="utf-8") as f:
                 json.dump({"blocks": blocks, "anchors": anchors}, f)
-            chapters_meta.append(ChapterMeta(title=title, blocks=len(blocks), chars=chars))
+            chapters_meta.append(ChapterMeta(title=title, blocks=len(blocks), chars=chars,
+                                             linear=linear_flags[i]))
 
     manifest = Manifest(
         version=2,
@@ -1485,6 +1562,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
         total_chars=total_chars,
         created=time.time(),
         toc=toc,
+        notices=_dropped_notices(images=len(skipped_images), nesting_chapters=nesting_chapters),
     )
     with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(_manifest_to_dict(manifest), f)
@@ -2059,6 +2137,7 @@ async def _extract_html_book(
             _find_body(root), lambda s: image_index_by_src.get(s)
         )
         images = len(image_index_by_src)
+        skipped_html_images = len(set(img_srcs) - set(image_index_by_src)) if _PIL_AVAILABLE else 0
     else:
         # Plain text: one chapter via the sanitizer's escaped-text fallback
         # (blank-line-split <p> blocks). No images, no headings.
@@ -2071,6 +2150,7 @@ async def _extract_html_book(
             [(0, str(record.get("t") or "") or None, blocks, anchors)] if blocks else []
         )
         images = 0
+        skipped_html_images = 0
 
     chapters_meta: list[ChapterMeta] = []
     toc: list[tuple[int, str, int]] = []
@@ -2097,6 +2177,7 @@ async def _extract_html_book(
         total_chars=total_chars,
         created=time.time(),
         toc=toc,
+        notices=_dropped_notices(images=skipped_html_images),
     )
     with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(_manifest_to_dict(manifest), f)
@@ -2772,6 +2853,7 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
             notices.append(f"This comic has {len(pages)} pages; only the first "
                            f"{MAX_CBZ_PAGES} can be shown in the browser.")
         pages = pages[:MAX_CBZ_PAGES]
+        skipped_pages = 0
 
         comic_title = _cbz_title_from_comicinfo(zf, names, budget)
 
@@ -2782,11 +2864,10 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
         total_chars = 0
         for member in pages:
             raw = _read_image_member(zf, member, budget)
-            if raw is None:
-                continue  # oversized/unreadable page: skip, never fail the comic
-            transcoded = _transcode_reader_image(raw)
+            transcoded = _transcode_reader_image(raw) if raw is not None else None
             if transcoded is None:
-                continue  # undecodable page: skip
+                skipped_pages += 1  # unreadable/oversized/undecodable: skip, never fail
+                continue
             out_bytes, out_ct = transcoded
             idx = len(chapters_meta)
             _write_reader_image(images_dir, idx, out_bytes, out_ct)
@@ -2816,7 +2897,7 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
         created=time.time(),
         toc=toc,
         kind="comic",
-        notices=notices,
+        notices=notices + _dropped_notices(pages=skipped_pages),
     )
     with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(_manifest_to_dict(manifest), f)

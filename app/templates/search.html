@@ -27,6 +27,7 @@
         <ul class="list">
         {% for e in g.entries %}{{ entry_item(e) }}{% endfor %}
         </ul>
+        {% if g.more_url %}<p class="pager"><a href="{{ g.more_url }}">More from {{ g.name }} &raquo;</a></p>{% endif %}
       {% endif %}
     {% endfor %}
     {% if total == 0 %}
@@ -40,6 +41,10 @@
       <ul class="list">
       {% for e in g.entries %}{{ entry_item(e) }}{% endfor %}
       </ul>
+      <p class="pager">
+        {% if g.prev_url %}<a class="button small" href="{{ g.prev_url }}">&laquo; Earlier results</a>{% endif %}
+        {% if g.more_url %}<a class="button small" href="{{ g.more_url }}">More results &raquo;</a>{% endif %}
+      </p>
     {% else %}
       <p class="muted">No results for &ldquo;{{ query }}&rdquo;.</p>
     {% endif %}

@@ -227,3 +227,54 @@ def test_config_cover_fields_from_env():
     assert cfg.cache_dir == "/tmp/my-cache"
     assert cfg.cover_max_edge == 640
     assert cfg.cover_jpeg_quality == 70
+
+
+# -- LRU eviction and settings-aware keys (decided by agent 2026-11-21) ------
+def test_prune_evicts_least_recently_used_not_oldest_written(tmp_path):
+    import time
+    from app import download
+    from app.download import stream_cover
+
+    cache = str(tmp_path)
+    urls = [f"http://kavita/lru{i}.jpg" for i in range(3)]
+    for i, url in enumerate(urls):
+        _run(stream_cover(_MockKC(_mock_resp(_make_jpeg(40 + i, 40))), url, cache_dir=cache,
+                          cover_max_edge=320, cover_jpeg_quality=80))
+    covers = os.path.join(cache, "covers")
+    old = time.time() - 1000
+    for i, url in enumerate(urls):  # written in order 0, 1, 2
+        p = os.path.join(covers, download._cover_cache_key(url))
+        for f in (p, p + ".ct"):
+            if os.path.exists(f):
+                os.utime(f, (old + i, old + i))
+    # Re-read the oldest-written one: a cache hit (no upstream left in the queue).
+    _run(stream_cover(_MockKC(), urls[0], cache_dir=cache, cover_max_edge=320,
+                      cover_jpeg_quality=80))
+    one = os.path.getsize(os.path.join(covers, download._cover_cache_key(urls[1])))
+    download._prune_cover_cache(covers, limit=sum(
+        os.path.getsize(os.path.join(covers, n)) for n in os.listdir(covers)) - one)
+    left = set(os.listdir(covers))
+    assert download._cover_cache_key(urls[0]) in left       # recently used: kept
+    assert download._cover_cache_key(urls[1]) not in left   # least recently used: gone
+    assert download._cover_cache_key(urls[1]) + ".ct" not in left
+
+
+def test_changing_cover_max_edge_does_not_serve_the_old_size(tmp_path):
+    from app.download import stream_cover
+    url = "http://kavita/edge.jpg"
+    big = _make_jpeg(800, 800)
+    r1 = _run(stream_cover(_MockKC(_mock_resp(big)), url, cache_dir=str(tmp_path),
+                           cover_max_edge=320, cover_jpeg_quality=80))
+    r2 = _run(stream_cover(_MockKC(_mock_resp(big)), url, cache_dir=str(tmp_path),
+                           cover_max_edge=100, cover_jpeg_quality=80))
+    assert max(Image.open(io.BytesIO(r1.body)).size) == 320
+    assert max(Image.open(io.BytesIO(r2.body)).size) == 100
+
+
+def test_default_settings_keep_the_original_cache_key():
+    import hashlib
+    from app.download import _cover_cache_key
+    url = "http://kavita/x.jpg"
+    assert _cover_cache_key(url) == hashlib.sha256(url.encode()).hexdigest()
+    assert _cover_cache_key(url, 320, 80) == _cover_cache_key(url)
+    assert _cover_cache_key(url, 100, 80) != _cover_cache_key(url)

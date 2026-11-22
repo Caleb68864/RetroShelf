@@ -268,6 +268,47 @@ setting where that fits, without touching existing data.
   has it, else the tiny 404. A HEAD is never recorded as a download. Tests:
   `tests/test_head_proxy.py`.
 
+- [x] **`linear="no"` spine items are out of the main flow** (on
+  `feat/owner-decisions-batch2`). Decided by agent 2026-11-21 (owner may
+  revisit): an EPUB spine item marked `linear="no"` (answer keys, pop-up
+  notes) keeps its place and index, so saved positions and bookmarks are
+  unaffected. Prev/Next and "start reading" skip it, while the contents
+  page, in-book links and direct URLs still reach it. A book whose every
+  item is non-linear opens at the first non-empty one. Additive
+  `ChapterMeta.linear` (older manifests load as linear);
+  `in_main_flow`/`first_readable_chapter` in `app/reader.py`. Tests:
+  `tests/test_reader_nonlinear.py`.
+
+- [x] **Dropped content carries a notice** (same branch). Decided by agent
+  2026-11-21 (owner may revisit): shelving used to leave content out
+  silently. It now adds a `Manifest.notices` line, shown on the contents
+  page and first page, for EPUB or HTML-book images that could not be
+  shelved (unreadable, undecodable, over the pixel cap, or past
+  `MAX_IMAGES`), comic pages that could not be decoded, and EPUB chapters
+  nested past `MAX_NESTING_DEPTH`. The caps themselves are unchanged. Tests:
+  `tests/test_reader_dropped_notices.py`.
+
+- [x] **Cover cache: least-recently-used, settings-aware** (same branch).
+  Decided by agent 2026-11-21 (owner may revisit):
+  - A cache hit refreshes the cover's mtime, so `_prune_cover_cache` evicts
+    the least recently used cover, not the oldest written. A cover and its
+    `.ct` sidecar are counted and removed together.
+  - The cache key includes `COVER_MAX_EDGE`/`COVER_JPEG_QUALITY`, so
+    changing either stops serving covers sized for the old value. Stale
+    entries age out by LRU.
+  - The default settings (320/80) keep the original `sha256(url)` key, so
+    existing caches stay valid on upgrade.
+  - Tests are the last three in `tests/test_covers.py`.
+
+- [x] **Search results page** (same branch). Decided by agent 2026-11-21
+  (owner may revisit): search used to show only the library's first page of
+  results. Each results group now carries the library's own
+  `rel="next"`/`"previous"` links as "More results"/"Earlier results".
+  Under a fan-out search it reads "More from <library>". The links continue
+  a one-library search through a signed, SSRF-checked `page=` id. A forged
+  id, or a page from another library, restarts at page one. Sorting is
+  unchanged (current page only). Tests: `tests/test_search_paging.py`.
+
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").

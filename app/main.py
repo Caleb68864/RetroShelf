@@ -65,6 +65,8 @@ from .reader import (
     SEARCH_MIN_QUERY,
     SPLIT_TARGETS,
     Manifest,
+    first_readable_chapter,
+    in_main_flow,
     load_chapter,
     load_chapter_anchors,
     load_manifest,
@@ -2050,8 +2052,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         })
 
     @app.get("/search", response_class=HTMLResponse)
-    async def search(request: Request, q: str = "", feed: str = "") -> HTMLResponse:
-        """GET ``/search?q=QUERY[&feed=FID]`` — render the search results page.
+    async def search(request: Request, q: str = "", feed: str = "",
+                     page: str = "") -> HTMLResponse:
+        """GET ``/search?q=QUERY[&feed=FID][&page=PID]`` — render the search results page.
+
+        *page* is a bridge id for a results page the library linked as
+        ``rel="next"``/``"previous"``; each results group offers those as
+        "More results"/"Earlier results" links (one library at a time).
 
         Searches within one library (the *feed* bridge id, or the primary feed
         when omitted), using that feed's OpenSearch template. If the endpoint is
@@ -2072,17 +2079,34 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         # concurrently and must not each re-read (and re-lock) the store.
         downloaded = store(request).downloaded_keys(profile_id=current_profile_id(request))
 
-        async def _search_one(source: FeedSource) -> dict:
+        def _page_link(source: FeedSource, href: str | None, base: str) -> str | None:
+            # A results-page link the library gave us, re-validated and
+            # wrapped as a continuation of this one-library search.
+            if not href:
+                return None
+            try:
+                target = kc(request).resolve_url(href, base=base)
+            except SsrfError:
+                return None
+            fid = codec(request).encode(kc(request).resolve_url(source.url))
+            return (f"/search?q={quote(q)}&feed={quote(fid)}"
+                    f"&page={quote(codec(request).encode(target))}")
+
+        async def _search_one(source: FeedSource, page_url: str | None = None) -> dict:
             """Search one library; never raises — failures become error groups."""
             try:
-                su = await _resolve_search_url(request, q, source.url)
+                su = page_url or await _resolve_search_url(request, q, source.url)
                 body, final_url = await kc(request).fetch_feed_and_url(su)
-                ents = _to_view_model(opds.parse(body), codec(request), kc(request),
+                parsed = opds.parse(body)
+                ents = _to_view_model(parsed, codec(request), kc(request),
                                       base_url=final_url, downloaded=downloaded)
-                return {"name": source.name, "entries": ents, "error": False}
+                return {"name": source.name, "entries": ents, "error": False,
+                        "more_url": _page_link(source, parsed.next_url, final_url),
+                        "prev_url": _page_link(source, parsed.prev_url, final_url)}
             except RetroShelfError as exc:
                 log.info("search failed in %r for %r: %s", source.name, q, cfg.mask(str(exc)))
-                return {"name": source.name, "entries": [], "error": True}
+                return {"name": source.name, "entries": [], "error": True,
+                        "more_url": None, "prev_url": None}
 
         groups: list[dict] = []
         feed_name = None
@@ -2100,8 +2124,18 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                     target = cfg.feeds[0]
             feed_name = target.name
             search_feed = codec(request).encode(kc(request).resolve_url(target.url))
+            page_url = None
+            if page:
+                # Only a page of the library being searched; anything else
+                # (bad id, other library) quietly restarts at page one.
+                try:
+                    candidate = kc(request).resolve_url(codec(request).decode(page))
+                    if _feed_for_url(candidate) is target:
+                        page_url = candidate
+                except RetroShelfError:
+                    page_url = None
             if q:
-                groups = [await _search_one(target)]
+                groups = [await _search_one(target, page_url)]
 
         total = sum(len(g["entries"]) for g in groups)
         return templates.TemplateResponse(request, "search.html", {
@@ -2540,7 +2574,9 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         try:
             url = kc(request).resolve_url(codec(request).decode(cid))
             if request.method == "HEAD":
-                return await head_cover(kc(request), url, cache_dir=cfg.cache_dir)
+                return await head_cover(kc(request), url, cache_dir=cfg.cache_dir,
+                                        cover_max_edge=cfg.cover_max_edge,
+                                        cover_jpeg_quality=cfg.cover_jpeg_quality)
             return await stream_cover(
                 kc(request), url,
                 cache_dir=cfg.cache_dir,
@@ -2705,7 +2741,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         # Open at the first chapter that actually has content: a leading
         # spine item that sanitized to zero blocks (e.g. a cover-only page
         # shelved without Pillow) would 404 the very first page otherwise.
-        first = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
+        first = first_readable_chapter(manifest.chapters)
         return RedirectResponse(f"/read/{bid}/{first}/1", status_code=303)
 
     @app.get("/read/{bid}/toc", response_class=HTMLResponse)
@@ -2743,7 +2779,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         # "Start over" targets the first chapter that actually has content, so a
         # leading spine item that sanitized to zero blocks can never 404 it —
         # same rule read_book applies to the bare-open redirect above.
-        first = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
+        first = first_readable_chapter(manifest.chapters)
         return templates.TemplateResponse(request, "toc.html", {
             "book_title": manifest.title, "bid": bid, "chapters": chapters,
             "start_url": f"/read/{bid}/{first}/1", "notices": manifest.notices,
@@ -2941,7 +2977,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         rec, key, manifest = opened
         if chapter < 0 or chapter >= len(manifest.chapters):
             return _error_response(request, "Not found", "That chapter does not exist.", 404)
-        first_chapter = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
+        first_chapter = first_readable_chapter(manifest.chapters)
         target = _split_target(request)
         blocks = load_chapter(cfg.cache_dir, key, chapter)
         parts = parts_for([len(b) for b in blocks], target)
@@ -2970,7 +3006,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         def _adjacent_chapter(step: int) -> int | None:
             c = chapter + step
             while 0 <= c < len(manifest.chapters):
-                if manifest.chapters[c].blocks > 0:
+                if in_main_flow(manifest.chapters[c]):
                     return c
                 c += step
             return None
