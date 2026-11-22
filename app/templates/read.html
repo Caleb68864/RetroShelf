@@ -6,6 +6,7 @@
 </div>
 
 <h2 class="chaptertitle">{{ chapter_title }}</h2>
+{% for n in notices %}<p class="notice">{{ n }}</p>{% endfor %}
 
 {# Trusted seam: content_html is sanitize_chapter's own output (SS-01), with
    every {IMG:n}/{CH:i} placeholder already resolved to a plain /read/{bid}/...

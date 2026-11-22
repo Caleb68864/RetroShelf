@@ -664,6 +664,9 @@ class Manifest:
     created: float
     toc: list[tuple[int, str, int]] = field(default_factory=list)
     kind: str = "book"
+    #: Plain-text notes about what shelving left out (a truncated comic,
+    #: skipped images...), shown on the contents page and the first page.
+    notices: list[str] = field(default_factory=list)
 
 
 class _UnpackBudget:
@@ -1297,6 +1300,7 @@ def _manifest_to_dict(manifest: Manifest) -> dict:
         "created": manifest.created,
         "toc": [[d, t, i] for d, t, i in manifest.toc],
         "kind": manifest.kind,
+        "notices": list(manifest.notices),
     }
 
 
@@ -1336,6 +1340,8 @@ def _manifest_from_dict(data: dict) -> Manifest:
         # ``kind`` and MUST load as an ordinary book, so any missing/unknown
         # value degrades to ``"book"`` rather than raising. [cbz-reader]
         kind="comic" if data.get("kind") == "comic" else "book",
+        # Additive: older manifests have none.
+        notices=[str(n) for n in data.get("notices", []) if isinstance(n, str)][:10],
     )
 
 
@@ -2703,6 +2709,13 @@ def _cbz_title_from_comicinfo(zf: zipfile.ZipFile, names: set[str], budget: _Unp
     return series or title
 
 
+def _is_mac_resource_fork(name: str) -> bool:
+    """Return whether zip member *name* is macOS archiver junk (``__MACOSX/``
+    or an AppleDouble ``._name`` file), never a real page."""
+    parts = name.split("/")
+    return "__MACOSX" in parts[:-1] or parts[-1].startswith("._")
+
+
 def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manifest:
     """Parse the spooled CBZ at *spool_path* into *tmp_dir*'s shelved form.
 
@@ -2748,11 +2761,16 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
             (
                 n for n in names
                 if _is_safe_member(n) and n.lower().endswith(_CBZ_IMAGE_EXTS)
+                and not _is_mac_resource_fork(n)
             ),
             key=_natural_sort_key,
         )
         if not pages:
             raise ReaderError("This comic has no readable pages")
+        notices: list[str] = []
+        if len(pages) > MAX_CBZ_PAGES:
+            notices.append(f"This comic has {len(pages)} pages; only the first "
+                           f"{MAX_CBZ_PAGES} can be shown in the browser.")
         pages = pages[:MAX_CBZ_PAGES]
 
         comic_title = _cbz_title_from_comicinfo(zf, names, budget)
@@ -2798,6 +2816,7 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
         created=time.time(),
         toc=toc,
         kind="comic",
+        notices=notices,
     )
     with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(_manifest_to_dict(manifest), f)

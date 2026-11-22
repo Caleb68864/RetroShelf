@@ -240,6 +240,17 @@ setting where that fits, without touching existing data.
   `app/reader.py`; tests `test_font_obfuscation_only_is_readable`,
   `test_real_drm_is_still_refused`.
 
+- [x] **CBZ: macOS junk ignored, truncation shown** (same branch). Decided by
+  agent 2026-11-21 (owner may revisit): `__MACOSX/` entries and AppleDouble
+  `._name` files are never treated as pages, so they no longer use up
+  `MAX_CBZ_PAGES` (800). A comic cut at the cap carries a notice ("This
+  comic has N pages; only the first 800 can be shown in the browser."). The
+  cap itself is unchanged. Notices are a new additive `Manifest.notices`
+  field (older manifests load with none), shown on the contents page and
+  the book's first page. Tests in `tests/test_reader_followups.py` and
+  `test_truncation_notice_shows_on_contents_and_first_page_only` in
+  `tests/test_reader_cbz.py`.
+
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").

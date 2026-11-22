@@ -2,6 +2,7 @@
 {% block title %}{{ book_title }} - Contents - RetroShelf{% endblock %}
 {% block content %}
 <div class="sectionhead">&gt;&gt; {{ book_title }} &mdash; Contents</div>
+{% for n in notices %}<p class="notice">{{ n }}</p>{% endfor %}
 
 <ul class="list toc">
 {% for c in chapters %}
