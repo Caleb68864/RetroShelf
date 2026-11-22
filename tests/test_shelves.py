@@ -181,3 +181,28 @@ def test_empty_shelf_name_is_rejected_with_message():
         r = client.get(f"/shelves/create?name=%20%20&t={tok}", follow_redirects=False)
         assert r.status_code == 303 and "err=" in r.headers["location"]
         assert "no shelves yet" in client.get("/shelves").text.lower()
+
+
+def test_blank_rename_reports_an_error_like_create():
+    """A blank rename is refused with the same ``?err=`` message as a blank
+    create, instead of silently redirecting as if it worked."""
+    with make_client(make_handler()) as client:
+        tok = _token(client)
+        client.get(f"/shelves/create?name=Keep&t={tok}", follow_redirects=False)
+        sid = _shelf_id(client)
+        create = client.get(f"/shelves/create?name=%20%20&t={tok}", follow_redirects=False)
+        rename = client.get(f"/shelves/rename/{sid}?name=%20%20&t={tok}",
+                            follow_redirects=False)
+        assert rename.status_code == 303
+        assert "err=" in create.headers["location"]
+        assert rename.headers["location"] == create.headers["location"]
+        page = client.get(rename.headers["location"]).text
+        assert "Shelf name must not be empty." in page
+        assert "Keep" in page  # the old name is kept
+
+
+def test_rename_of_unknown_shelf_still_just_redirects():
+    with make_client(make_handler()) as client:
+        tok = _token(client)
+        resp = client.get(f"/shelves/rename/ghost?name=New&t={tok}", follow_redirects=False)
+        assert resp.status_code == 303 and resp.headers["location"] == "/shelves"

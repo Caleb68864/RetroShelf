@@ -1940,10 +1940,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :raises BadIdError: If *bid* cannot be decoded or the JSON record is
             malformed.
         """
-        try:
-            rec = json.loads(codec(request).decode(bid))
-        except (ValueError, TypeError) as exc:
-            raise BadIdError("Malformed book id") from exc
+        rec = _decode_book_record(request, bid)
         fmt = format_of(rec.get("m", "")) or "epub"
         badge = _badge_for(fmt)
         cover_url = None
@@ -2161,10 +2158,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         refusal = _require_site_token(request)
         if refusal is not None:
             return refusal
-        try:
-            rec = json.loads(codec(request).decode(bid))
-        except (ValueError, TypeError) as exc:
-            raise BadIdError("Malformed book id") from exc
+        rec = _decode_book_record(request, bid)
         rec["feed_name"] = _feed_for_url(kc(request).resolve_url(rec["u"])).name
         store(request).add_favorite(rec, profile_id=current_profile_id(request))
         return RedirectResponse(_back_to(request, default="/list"), status_code=303)
@@ -2206,7 +2200,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         refusal = _require_site_token(request)
         if refusal is not None:
             return refusal
-        store(request).rename_shelf(shelf_id, name, profile_id=current_profile_id(request))
+        try:
+            store(request).rename_shelf(shelf_id, name, profile_id=current_profile_id(request))
+        except ValueError as exc:  # blank name: same message as create
+            return RedirectResponse(f"/shelves?err={quote(str(exc))}", status_code=303)
         return RedirectResponse("/shelves", status_code=303)
 
     @app.get("/shelves/delete/{shelf_id}")
@@ -2245,10 +2242,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         refusal = _require_site_token(request)
         if refusal is not None:
             return refusal
-        try:
-            rec = json.loads(codec(request).decode(bid))
-        except (ValueError, TypeError) as exc:
-            raise BadIdError("Malformed book id") from exc
+        rec = _decode_book_record(request, bid)
         rec["feed_name"] = _feed_for_url(kc(request).resolve_url(rec["u"])).name
         store(request).add_to_shelf(shelf_id, rec, profile_id=current_profile_id(request))
         return RedirectResponse(_back_to(request, default="/shelves"), status_code=303)
@@ -2544,13 +2538,14 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         :returns: The decoded book record.
         :rtype: dict
         :raises BadIdError: If *bid* cannot be decoded, or does not decode to
-            a JSON object.
+            a JSON object carrying a non-empty ``u`` URL string (every record
+            :func:`_record_id` mints has one).
         """
         try:
             rec = json.loads(codec(request).decode(bid))
         except (ValueError, TypeError) as exc:
             raise BadIdError("Malformed book id") from exc
-        if not isinstance(rec, dict):
+        if not isinstance(rec, dict) or not isinstance(rec.get("u"), str) or not rec["u"]:
             raise BadIdError("Malformed book id")
         return rec
 

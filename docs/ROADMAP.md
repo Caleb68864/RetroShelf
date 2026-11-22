@@ -1,7 +1,7 @@
 # RetroShelf Roadmap
 
 Status of every design in `docs/plans/`, checked against the code and git log
-(last audit: 2026-11-16). Keep this file current when an item lands.
+(last audit: 2026-11-21). Keep this file current when an item lands.
 
 ## Done
 
@@ -104,6 +104,23 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   `/login`), and gets the usual "Your current password is wrong." (400). Test:
   `test_over_long_current_password_is_capped_like_login` in
   `tests/test_password_change_throttle.py`.
+
+### Small fixes (found 2026-11-21)
+- [x] **Blank shelf rename reports an error** (done 2026-11-21 on
+  `fix/shelf-rename-and-bad-ids`). `/shelves/rename/{id}` with a blank name
+  used to redirect to `/shelves` as if it worked. `Store.rename_shelf` now
+  raises the same `ValueError` as `create_shelf`, and the route redirects to
+  `/shelves?err=Shelf name must not be empty.`, exactly as create does. Tests:
+  `test_blank_rename_reports_an_error_like_create` in `tests/test_shelves.py`.
+- [x] **Book ids that are not a book record get "Malformed book id"** (done
+  2026-11-21, same branch). A signed id whose JSON is not an object, or has no
+  non-empty `u` URL, raised `KeyError`/`TypeError` (500) in `/star/{bid}`,
+  `/shelf/{id}/add/{bid}` and `/book/{bid}`. All three now use
+  `_decode_book_record` in `app/main.py`, which also requires `u`, so they
+  return the usual 404 "That link is not valid or has expired." (the reader
+  routes share it). Ids are MAC-signed, so this is hardening. Tests:
+  `tests/test_bad_book_ids.py`.
+- Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
