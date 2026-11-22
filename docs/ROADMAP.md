@@ -3,6 +3,22 @@
 Status of every design in `docs/plans/`, checked against the code and git log
 (last audit: 2026-11-21). Keep this file current when an item lands.
 
+## Hard constraint: old iPads (owner, 2026-11-21)
+RetroShelf must keep working on iOS 5.1.1-12 Safari (see the README). Every
+feature is server-rendered HTML forms and links. That rules out:
+- `<script>`, `on*=` attributes, `javascript:` URLs, fetch/XHR, `<svg>` and
+  `<canvas>`;
+- CSS grid, custom properties, modern flexbox (`-webkit-box` only),
+  `position: sticky`, `:is`/`:has`/`:where`, `gap`, `object-fit` and
+  `vw`/`vh`;
+- WebP, AVIF, SVG or JS assets.
+
+`tests/test_old_ipad_guard.py` scans every template and stylesheet, the
+static assets, and the HTML served by the browse, shelf, search, OPDS,
+reader, setup/login and signed-in account pages, and fails on any of these.
+A deferred feature that cannot be done well without JS is marked blocked
+rather than compromised.
+
 ## Done
 
 ### Base app (`docs/plans/2026-06-07-retroshelf-design.md`)
