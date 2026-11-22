@@ -27,11 +27,35 @@
       <input type="text" name="name" maxlength="40" value="{{ p.name }}">
       <button class="button small" type="submit">Rename</button>
     </form>
+    <form class="authform" method="post" action="/account">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="set_pin">
+      <input type="hidden" name="profile_id" value="{{ p.id }}">
+      {% if p.has_pin %}<p><label>Current PIN (or your password)<br>
+        <input type="password" name="current" maxlength="256" autocomplete="off"></label></p>{% endif %}
+      <p><label>{{ "New PIN" if p.has_pin else "PIN (optional, 4-8 digits)" }}<br>
+        <input type="password" name="pin" maxlength="8" pattern="[0-9]*" autocomplete="off"></label>
+      <label>Again<br>
+        <input type="password" name="confirm" maxlength="8" pattern="[0-9]*" autocomplete="off"></label></p>
+      <button class="button small" type="submit">{{ "Change PIN" if p.has_pin else "Set PIN" }}</button>
+    </form>
+    {% if p.has_pin %}
+    <form class="authform" method="post" action="/account">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="clear_pin">
+      <input type="hidden" name="profile_id" value="{{ p.id }}">
+      <p><label>Current PIN (or your password)<br>
+        <input type="password" name="current" maxlength="256" autocomplete="off"></label></p>
+      <button class="button small" type="submit">Remove PIN</button>
+    </form>
+    {% endif %}
     {% if can_delete %}
     <form class="authform" method="post" action="/account">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <input type="hidden" name="action" value="delete_profile">
       <input type="hidden" name="profile_id" value="{{ p.id }}">
+      {% if p.has_pin %}<p><label>PIN (or your password) to delete<br>
+        <input type="password" name="current" maxlength="256" autocomplete="off"></label></p>{% endif %}
       <button class="button small" type="submit">Delete</button>
     </form>
     {% endif %}

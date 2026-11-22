@@ -326,7 +326,21 @@ setting where that fits, without touching existing data.
   unchanged (current page only). Tests: `tests/test_search_paging.py`.
 
 ### Deferred by design (not scheduled)
-- Per-profile PIN (accounts plan, "Exclusions").
+- [x] **Per-profile PIN** (built 2026-11-21 on `feat/deferred-features-2`;
+  accounts plan, "Exclusions"). Opt-in per profile, set on `/account` with
+  plain password-type fields (`pattern="[0-9]*"` brings up the iPad number
+  pad).
+  - 4-8 digits, hashed with the same PBKDF2 as passwords. The digits are
+    never stored, and the hash never leaves the store (views only carry
+    `has_pin`).
+  - Selecting a pinned profile on `/profiles` needs its PIN. Changing or
+    removing the PIN, or deleting the profile, needs the current PIN or the
+    account password (for a forgotten PIN).
+  - Wrong tries are limited by a separate `LoginThrottle`: 5 per profile
+    and 5 per address in 15 minutes.
+  - It keeps one family member out of another's profile on a shared
+    account; it is not a substitute for separate accounts.
+  - Tests: `tests/test_profile_pin.py`.
 - [x] **Admin dashboard** (built 2026-11-21 on `feat/deferred-features-2`;
   accounts plan, "Exclusions"). `/admin` is plain HTML tables and forms,
   linked from `/account` for admins. It shows the accounts (admin flag,

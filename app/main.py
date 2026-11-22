@@ -1255,7 +1255,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             return RedirectResponse("/login", status_code=303)
         acct = sess["account"]
         profiles = [{"id": pid, "name": p["name"], "color": p["color"],
-                     "avatar_url": _avatar_url(p)}
+                     "avatar_url": _avatar_url(p), "has_pin": bool(p.get("has_pin"))}
                     for pid, p in acct["profiles"].items()]
         return templates.TemplateResponse(request, "profiles.html", {
             "csrf": _csrf_field(request), "profiles": profiles,
@@ -1283,7 +1283,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             # No successful mutation reaches _fail, so the session's account
             # snapshot is an accurate profile list to re-render.
             profiles = [{"id": pid, "name": p["name"], "color": p["color"],
-                         "avatar_url": _avatar_url(p)}
+                         "avatar_url": _avatar_url(p), "has_pin": bool(p.get("has_pin"))}
                         for pid, p in acct["profiles"].items()]
             return templates.TemplateResponse(request, "profiles.html", {
                 "csrf": _csrf_field(request), "profiles": profiles,
@@ -1304,9 +1304,41 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         profile_id = form.get("profile_id") or ""
         if not store(request).profile_belongs(account_id, profile_id):
             return _fail("That profile is not available.")
+        if acct["profiles"].get(profile_id, {}).get("has_pin"):
+            refusal = _pin_check(request, account_id, profile_id, form.get("pin") or "",
+                                 allow_password=False)
+            if refusal:
+                return _fail(refusal)
         resp: Response = RedirectResponse("/", status_code=303)
         _mint_session(request, resp, account_id, profile_id, acct["token_version"])
         return resp
+
+    def pin_throttle(request: Request) -> LoginThrottle:
+        """The PIN-attempt throttle, separate from the login one: at most 5
+        wrong tries per profile (and per address) in 15 minutes."""
+        th = getattr(request.app.state, "pin_throttle", None)
+        if th is None:
+            th = request.app.state.pin_throttle = LoginThrottle(hard_max_ip=5)
+        return th
+
+    def _pin_check(request: Request, account_id: str, profile_id: str, value: str, *,
+                   allow_password: bool) -> str | None:
+        """Check a profile PIN (or, with *allow_password*, the account
+        password instead, for a forgotten PIN). Returns an error message, or
+        ``None`` when it passes. Rate-limited per profile and per address."""
+        th = pin_throttle(request)
+        key = f"pin:{account_id}:{profile_id}"
+        ip = _client_ip(request)
+        if th.locked(key) or th.locked(ip):
+            return "Too many wrong tries. Wait 15 minutes and try again."
+        ok = store(request).verify_pin(account_id, profile_id, value) or (
+            allow_password and store(request).verify_account_password(account_id, value))
+        if not ok:
+            th.record_failure(key, key)
+            th.record_failure("", ip)
+            return "That PIN is wrong."
+        th.record_success(key, key)
+        return None
 
     def _account_context(request: Request, account: dict, *,
                          error: str | None = None, message: str | None = None) -> dict:
@@ -1314,6 +1346,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         current_pid = current_profile_id(request)
         profiles = [{"id": pid, "name": p["name"], "color": p["color"],
                      "current": pid == current_pid, "avatar": p.get("avatar") or AVATAR_SHAPES[0],
+                     "has_pin": bool(p.get("has_pin")),
                      "avatar_url": _avatar_url(p)}
                     for pid, p in account["profiles"].items()]
         return {
@@ -1488,10 +1521,42 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 return _render(error="That profile is not available.", status=400)
             return _render(message="Profile renamed.")
 
+        def _profile_has_pin(pid: str) -> bool:
+            fresh = store(request).get_account(account_id) or acct
+            return bool(fresh["profiles"].get(pid, {}).get("has_pin"))
+
+        if action in ("set_pin", "clear_pin"):
+            profile_id = form.get("profile_id") or ""
+            if not store(request).profile_belongs(account_id, profile_id):
+                return _render(error="That profile is not available.", status=400)
+            # Changing or removing an existing PIN needs that PIN, or the
+            # account password if it was forgotten.
+            if _profile_has_pin(profile_id):
+                refusal = _pin_check(request, account_id, profile_id,
+                                     form.get("current") or "", allow_password=True)
+                if refusal:
+                    return _render(error=refusal, status=400)
+            if action == "clear_pin":
+                store(request).clear_pin(account_id, profile_id)
+                return _render(message="PIN removed.")
+            pin, confirm = form.get("pin") or "", form.get("confirm") or ""
+            if pin != confirm:
+                return _render(error="The two PINs do not match.", status=400)
+            try:
+                store(request).set_pin(account_id, profile_id, pin)
+            except ValueError as exc:
+                return _render(error=str(exc), status=400)
+            return _render(message="PIN set.")
+
         if action == "delete_profile":
             profile_id = form.get("profile_id") or ""
             if not store(request).profile_belongs(account_id, profile_id):
                 return _render(error="That profile is not available.", status=400)
+            if _profile_has_pin(profile_id):
+                refusal = _pin_check(request, account_id, profile_id,
+                                     form.get("current") or "", allow_password=True)
+                if refusal:
+                    return _render(error=refusal, status=400)
             try:
                 store(request).delete_profile(account_id, profile_id)
             except ValueError as exc:

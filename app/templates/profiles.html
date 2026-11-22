@@ -13,6 +13,8 @@
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <input type="hidden" name="action" value="select">
       <input type="hidden" name="profile_id" value="{{ p.id }}">
+      {% if p.has_pin %}<p><label>PIN for {{ p.name }}<br>
+        <input type="password" name="pin" maxlength="8" pattern="[0-9]*" autocomplete="off"></label></p>{% endif %}
       <button class="button big" type="submit"><img class="avatar" src="{{ p.avatar_url }}" width="48" height="48" alt=""> {{ p.name }}</button>
     </form>
   </li>
