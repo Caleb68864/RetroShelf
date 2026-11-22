@@ -337,8 +337,24 @@ setting where that fits, without touching existing data.
   resumes at its own place. Stored as a `device_reading` section, written
   only once used and capped at 20 devices per profile. Tests:
   `tests/test_per_device_positions.py`.
-- EPUB CSS passthrough; EPUB3 media/fixed-layout (EPUB reader plan,
-  "Exclusions").
+- [x] **EPUB CSS, safe subset** (built 2026-11-21 on `feat/deferred-features`;
+  EPUB reader plan, "Exclusions"). Opt-in `EPUB_CSS=1` (default off).
+  - `app/epub_css.py` keeps only `text-align`, `font-style`, `font-weight`,
+    `font-variant`, `text-decoration`, `text-transform`, `vertical-align`,
+    `text-indent` and `margin-*` (bounded em/%), and `font-size` (60-200%,
+    relative only), from the book's stylesheets and `style` attributes.
+  - Positioning, floats, display, transforms, colours, backgrounds, font
+    families, `url()`, absolute and viewport units are all stripped, so the
+    reader's themes, fonts and text size stay in charge and old Safari lays
+    out safely.
+  - Only `tag`, `.class` and `tag.class` selectors are used. At-rules,
+    combinators, pseudo-classes and `html`/`body` rules are ignored.
+  - Output is an inline `style` on allowlisted elements.
+  - An EPUB shelved with the other setting is re-shelved on its next open.
+    EPUBs shelved before this change stay as they are until they leave the
+    cache.
+  - Tests: `tests/test_epub_css.py`.
+- EPUB3 media/fixed-layout (EPUB reader plan, "Exclusions").
 - [x] **Reader image max-edge setting** (built 2026-11-21 on
   `feat/deferred-features`; EPUB reader plan, open question 2).
   `READER_IMAGE_MAX_EDGE` env var (256-4096, default 1024, so nothing changes

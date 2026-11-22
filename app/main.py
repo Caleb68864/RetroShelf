@@ -635,6 +635,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     # The reader's image edge is read deep inside (threaded) shelving; it is
     # process-wide, like the cache it governs.
     reader_module.READER_IMAGE_MAX_EDGE = cfg.reader_image_max_edge
+    reader_module.EPUB_CSS_ENABLED = cfg.epub_css
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     # -- middleware: optional access key + IP allowlist ----------------------
