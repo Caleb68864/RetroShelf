@@ -18,6 +18,7 @@ Design (verified — see vault/MOC - FastAPI Streaming and Range):
 from __future__ import annotations
 
 import ipaddress
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import urljoin, urlsplit
@@ -75,10 +76,15 @@ def _is_internal_literal(host: str) -> bool:
             or addr.is_unspecified or addr.is_reserved or addr.is_multicast)
 
 
+_XML_DECL_ENCODING = re.compile(
+    rb"""\A(?:\xef\xbb\xbf)?\s*<\?xml[^>]*?\bencoding\s*=\s*["']([A-Za-z][A-Za-z0-9._-]{0,39})["']""")
+
+
 def _decode_feed(body: bytes, resp: httpx.Response) -> str:
     """Decode an OPDS feed body to ``str`` without ever raising.
 
-    Prefers the charset the server declared, falls back to UTF-8, and replaces
+    Prefers the charset the server declared, then the XML declaration's
+    ``encoding``, then UTF-8, and replaces
     undecodable bytes rather than failing the whole page — a single bad byte in
     one book blurb must not take a shelf offline.
 
@@ -87,7 +93,12 @@ def _decode_feed(body: bytes, resp: httpx.Response) -> str:
     :returns: The decoded document text.
     :rtype: str
     """
-    encoding = resp.charset_encoding or "utf-8"
+    encoding = resp.charset_encoding
+    if not encoding:
+        # No charset in Content-Type: the document's own XML declaration is
+        # the next authority (an ISO-8859-1 feed would be garbled as UTF-8).
+        m = _XML_DECL_ENCODING.match(body)
+        encoding = m.group(1).decode("ascii") if m else "utf-8"
     try:
         return body.decode(encoding, errors="replace")
     except LookupError:  # server named a charset Python doesn't know

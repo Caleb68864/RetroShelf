@@ -181,6 +181,13 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   `Content-Range`. Without a `Range` header a 416 is still a failure. Test:
   `test_unsatisfiable_range_is_relayed_as_416` in
   `tests/test_upstream_robustness.py`.
+- [x] **A feed with no HTTP charset is decoded by its XML declaration**
+  (done 2026-11-21, same branch). `_decode_feed` in `app/kavita.py` used
+  UTF-8 whenever `Content-Type` named no charset, and `opds.parse` then
+  stripped the document's own `encoding=`, so ISO-8859-1 feeds showed
+  garbled titles. The XML declaration's encoding is now used when the
+  server sends none; a server charset still wins. Test:
+  `test_feed_without_http_charset_uses_its_xml_encoding`.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)

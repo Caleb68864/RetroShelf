@@ -219,3 +219,26 @@ def test_unsatisfiable_range_is_relayed_as_416():
         assert r.headers.get("content-range") == "bytes */10"
         # Without a Range header a 416 is still an upstream failure.
         assert client.get(f"/download/{did}").status_code == 502
+
+
+# -- 9. a feed with no HTTP charset is decoded by its XML declaration --------
+LATIN1_FEED = ('<?xml version="1.0" encoding="ISO-8859-1"?>'
+               '<feed xmlns="http://www.w3.org/2005/Atom"><title>Café Books</title>'
+               '<entry><title>Résumé</title></entry></feed>').encode("latin-1")
+
+
+def test_feed_without_http_charset_uses_its_xml_encoding():
+    from app import opds
+    from app.kavita import _decode_feed
+    resp = httpx.Response(200, content=LATIN1_FEED, headers={"Content-Type": "application/atom+xml"})
+    feed = opds.parse(_decode_feed(LATIN1_FEED, resp))
+    assert feed.title == "Café Books"
+    assert feed.entries[0].title == "Résumé"
+    # The HTTP charset still wins when the server sends one.
+    utf8 = "<?xml version='1.0' encoding='ISO-8859-1'?><feed/>".encode()
+    resp = httpx.Response(200, content=utf8,
+                          headers={"Content-Type": "application/atom+xml; charset=utf-8"})
+    assert _decode_feed(utf8, resp).startswith("<?xml")
+    # No declaration at all: UTF-8, as before.
+    plain = "<feed>é</feed>".encode()
+    assert _decode_feed(plain, httpx.Response(200, content=plain)) == "<feed>é</feed>"
