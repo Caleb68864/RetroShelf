@@ -300,6 +300,15 @@ setting where that fits, without touching existing data.
     existing caches stay valid on upgrade.
   - Tests are the last three in `tests/test_covers.py`.
 
+- [x] **Search results page** (same branch). Decided by agent 2026-11-21
+  (owner may revisit): search used to show only the library's first page of
+  results. Each results group now carries the library's own
+  `rel="next"`/`"previous"` links as "More results"/"Earlier results".
+  Under a fan-out search it reads "More from <library>". The links continue
+  a one-library search through a signed, SSRF-checked `page=` id. A forged
+  id, or a page from another library, restarts at page one. Sorting is
+  unchanged (current page only). Tests: `tests/test_search_paging.py`.
+
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").
