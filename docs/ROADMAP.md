@@ -279,6 +279,15 @@ setting where that fits, without touching existing data.
   `in_main_flow`/`first_readable_chapter` in `app/reader.py`. Tests:
   `tests/test_reader_nonlinear.py`.
 
+- [x] **Dropped content carries a notice** (same branch). Decided by agent
+  2026-11-21 (owner may revisit): shelving used to leave content out
+  silently. It now adds a `Manifest.notices` line, shown on the contents
+  page and first page, for EPUB or HTML-book images that could not be
+  shelved (unreadable, undecodable, over the pixel cap, or past
+  `MAX_IMAGES`), comic pages that could not be decoded, and EPUB chapters
+  nested past `MAX_NESTING_DEPTH`. The caps themselves are unchanged. Tests:
+  `tests/test_reader_dropped_notices.py`.
+
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").
