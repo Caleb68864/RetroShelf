@@ -325,7 +325,7 @@ setting where that fits, without touching existing data.
   id, or a page from another library, restarts at page one. Sorting is
   unchanged (current page only). Tests: `tests/test_search_paging.py`.
 
-### Deferred by design (not scheduled)
+### Formerly deferred (built 2026-11-21/22; what cannot work on old iPads is marked Blocked)
 - [x] **Per-profile PIN** (built 2026-11-21 on `feat/deferred-features-2`;
   accounts plan, "Exclusions"). Opt-in per profile, set on `/account` with
   plain password-type fields (`pattern="[0-9]*"` brings up the iPad number
