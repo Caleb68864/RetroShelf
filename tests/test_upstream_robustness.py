@@ -201,3 +201,89 @@ def test_search_results_resolve_relative_links_against_the_search_url():
         rec = json.loads(client.app.state.ids.decode(bid))
         search_req = next(q for q in seen if "/search" in q.url.path)
         assert rec["u"] == urljoin(str(search_req.url), "dl/1.epub")
+
+
+# -- 8. an upstream 416 on a Range request is relayed, not a 502 -------------
+def test_unsatisfiable_range_is_relayed_as_416():
+    def handler(request):
+        if request.url.path == "/api/opds/SECRETKEY":
+            return httpx.Response(200, text=ROOT_XML)
+        if request.url.path == "/book.pdf":
+            return httpx.Response(416, headers={"Content-Range": "bytes */10"})
+        return httpx.Response(404)
+
+    with make_client(handler) as client:
+        did = _enc(client, "http://kavita:5000/book.pdf")
+        r = client.get(f"/download/{did}", headers={"Range": "bytes=100-"})
+        assert r.status_code == 416
+        assert r.headers.get("content-range") == "bytes */10"
+        # Without a Range header a 416 is still an upstream failure.
+        assert client.get(f"/download/{did}").status_code == 502
+
+
+# -- 9. a feed with no HTTP charset is decoded by its XML declaration --------
+LATIN1_FEED = ('<?xml version="1.0" encoding="ISO-8859-1"?>'
+               '<feed xmlns="http://www.w3.org/2005/Atom"><title>Café Books</title>'
+               '<entry><title>Résumé</title></entry></feed>').encode("latin-1")
+
+
+def test_feed_without_http_charset_uses_its_xml_encoding():
+    from app import opds
+    from app.kavita import _decode_feed
+    resp = httpx.Response(200, content=LATIN1_FEED, headers={"Content-Type": "application/atom+xml"})
+    feed = opds.parse(_decode_feed(LATIN1_FEED, resp))
+    assert feed.title == "Café Books"
+    assert feed.entries[0].title == "Résumé"
+    # The HTTP charset still wins when the server sends one.
+    utf8 = "<?xml version='1.0' encoding='ISO-8859-1'?><feed/>".encode()
+    resp = httpx.Response(200, content=utf8,
+                          headers={"Content-Type": "application/atom+xml; charset=utf-8"})
+    assert _decode_feed(utf8, resp).startswith("<?xml")
+    # No declaration at all: UTF-8, as before.
+    plain = "<feed>é</feed>".encode()
+    assert _decode_feed(plain, httpx.Response(200, content=plain)) == "<feed>é</feed>"
+
+
+# -- 10. relative links resolve against the post-redirect feed URL -----------
+MOVED_FEED = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+<title>Moved</title><link rel="next" href="page2"/>
+<entry><title>Moved Book</title>
+<link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="dl/1.epub"/>
+</entry></feed>"""
+
+
+def _moved_handler(request):
+    p = request.url.path
+    if p == "/api/opds/SECRETKEY":
+        return httpx.Response(200, text=ROOT_XML)
+    if p == "/old/feed":
+        return httpx.Response(302, headers={"Location": "/new/shelf/feed"})
+    if p == "/new/shelf/feed":
+        return httpx.Response(200, text=MOVED_FEED)
+    return httpx.Response(404)
+
+
+def test_redirected_feed_resolves_relative_links_against_the_final_url():
+    import re
+    with make_client(_moved_handler) as client:
+        ids = client.app.state.ids
+        page = client.get(f"/feed/{_enc(client, 'http://kavita:5000/old/feed')}").text
+        rec = json.loads(ids.decode(re.search(r'/book/([\w\-.]+)"', page).group(1)))
+        assert rec["u"] == "http://kavita:5000/new/shelf/dl/1.epub"
+        decoded = [ids.decode(f) for f in re.findall(r'/feed/([\w\-.]+)', page)]
+        assert "http://kavita:5000/new/shelf/page2" in decoded
+
+
+def test_fetch_feed_and_url_reports_the_final_url():
+    import asyncio
+    from app.config import load_config
+    from app.kavita import KavitaClient
+    from tests.test_app import ENV
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(_moved_handler)) as http:
+            kc = KavitaClient(load_config(ENV), http)
+            return await kc.fetch_feed_and_url("http://kavita:5000/old/feed")
+
+    body, final = asyncio.run(run())
+    assert "Moved Book" in body and final == "http://kavita:5000/new/shelf/feed"

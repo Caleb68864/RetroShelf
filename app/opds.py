@@ -311,6 +311,9 @@ class Feed:
     search_url: str | None = None
     start_url: str | None = None
     self_url: str | None = None
+    #: The URL the document was finally served from (after redirects), for
+    #: resolving its relative links. Set by the caller, not by :func:`parse`.
+    base_url: str | None = None
 
 
 def _all_text(el: Element | None) -> str:
@@ -403,6 +406,15 @@ def parse(xml_text: str | bytes) -> Feed:
 
     if root.tag != f"{ATOM}feed" and root.tag != "feed":
         raise OpdsParseError(f"Root element is not an Atom <feed> (got {root.tag!r})")
+
+    if root.tag == "feed":
+        # A namespace-less feed is accepted, but every lookup below is
+        # Atom-qualified; move its un-namespaced elements into Atom so it
+        # does not parse as an empty page. Namespaced children (dc:, opds:)
+        # keep their own namespace.
+        for el in root.iter():
+            if isinstance(el.tag, str) and not el.tag.startswith("{"):
+                el.tag = f"{ATOM}{el.tag}"
 
     feed = Feed(title=_text(root, "title"))
 

@@ -329,6 +329,13 @@ async def stream_download(
         connection fails.
     """
     resp = await kc.open_stream(url, range_header=range_header)
+    if resp.status_code == 416:
+        # Relay "Range Not Satisfiable" (with its ``bytes */size`` range) so
+        # Safari's ranged PDF reads recover, instead of a 502 error page.
+        content_range = resp.headers.get("content-range")
+        await resp.aclose()
+        return Response(status_code=416,
+                        headers={"Content-Range": content_range} if content_range else None)
     headers = build_headers(filename=filename, disposition=disposition, upstream=resp)
     return StreamingResponse(
         resp.aiter_raw(),

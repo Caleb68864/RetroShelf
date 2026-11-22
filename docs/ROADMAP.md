@@ -166,6 +166,57 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
     length (`İ`).
   - EPUB and PDF extraction run in a worker thread (`asyncio.to_thread`), as
     CBZ already did, so shelving a big book no longer stalls every request.
+- [x] **HTML book image fetches are time-bounded** (done 2026-11-21 on
+  `fix/upstream-and-reader-followups`). The shared client has no read
+  timeout, so one stalled image hung the shelve and its per-book lock, and
+  every later open of that book, forever. `_fetch_capped_image` in
+  `app/reader.py` now runs under `IMAGE_FETCH_TIMEOUT`, which reuses
+  `FEED_READ_TIMEOUT` (30 s, not configurable, like the feed timeout). A
+  timeout drops that image only. Test: `tests/test_reader_followups.py`.
+- [x] **An unsatisfiable Range is relayed as 416** (done 2026-11-21, same
+  branch). An upstream 416 to a forwarded `Range` header (Safari's ranged
+  PDF reads) became a 502 "Library unavailable" page. `open_stream` in
+  `app/kavita.py` now returns a 416 when a range was sent, and
+  `stream_download` in `app/download.py` relays it with its
+  `Content-Range`. Without a `Range` header a 416 is still a failure. Test:
+  `test_unsatisfiable_range_is_relayed_as_416` in
+  `tests/test_upstream_robustness.py`.
+- [x] **A feed with no HTTP charset is decoded by its XML declaration**
+  (done 2026-11-21, same branch). `_decode_feed` in `app/kavita.py` used
+  UTF-8 whenever `Content-Type` named no charset, and `opds.parse` then
+  stripped the document's own `encoding=`, so ISO-8859-1 feeds showed
+  garbled titles. The XML declaration's encoding is now used when the
+  server sends none; a server charset still wins. Test:
+  `test_feed_without_http_charset_uses_its_xml_encoding`.
+- [x] **A `<feed>` without the Atom namespace parses** (done 2026-11-21, same
+  branch). `opds.parse` accepted a namespace-less root but looked every
+  child up Atom-qualified, so the page came out empty. Its un-namespaced
+  elements are now moved into Atom first. Test:
+  `test_feed_without_the_atom_namespace_still_parses_its_entries` in
+  `tests/test_opds.py`.
+- [x] **Relative links resolve against the post-redirect feed URL** (done
+  2026-11-21, same branch). `fetch_feed` followed redirects but resolved
+  the feed's relative links against the URL it started from, so a feed
+  moved by a 302 linked to the wrong paths. The new
+  `KavitaClient.fetch_feed_and_url` also returns the final URL.
+  `_load_feed` caches it on `Feed.base_url`, and `/feed` (entries and pager),
+  `/search` and `/random` resolve against it. Tests:
+  `test_redirected_feed_resolves_relative_links_against_the_final_url`,
+  `test_fetch_feed_and_url_reports_the_final_url`.
+- [x] **Reader placeholders cannot be forged across an unwrapped element**
+  (done 2026-11-21, same branch). Text pieces were neutralized one at a
+  time, so `{<x/>IMG:0}` joined into a real-looking `{IMG:0}`, which was then
+  substituted as visible link text. This was cosmetic only, with no
+  injection. `_render_children` now re-neutralizes the text between tags of
+  its joined output. Test:
+  `test_placeholder_cannot_be_forged_across_an_unwrapped_element` in
+  `tests/test_reader_followups.py`.
+- [x] **Reader cache pruning spares in-progress builds** (done 2026-11-21,
+  same branch). `prune_reader_cache` skipped only dot-names, so under disk
+  pressure it could delete a live `{key}.tmp-{pid}` build directory and fail
+  that open. A `.tmp-` directory younger than `_BUILD_DIR_GRACE` (1 h) is now
+  left alone; an older one, left over from a crash, is still pruned. Test:
+  `test_prune_spares_an_in_progress_build_but_not_a_stale_one`.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)

@@ -18,6 +18,7 @@ Design (verified — see vault/MOC - FastAPI Streaming and Range):
 from __future__ import annotations
 
 import ipaddress
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import urljoin, urlsplit
@@ -75,10 +76,15 @@ def _is_internal_literal(host: str) -> bool:
             or addr.is_unspecified or addr.is_reserved or addr.is_multicast)
 
 
+_XML_DECL_ENCODING = re.compile(
+    rb"""\A(?:\xef\xbb\xbf)?\s*<\?xml[^>]*?\bencoding\s*=\s*["']([A-Za-z][A-Za-z0-9._-]{0,39})["']""")
+
+
 def _decode_feed(body: bytes, resp: httpx.Response) -> str:
     """Decode an OPDS feed body to ``str`` without ever raising.
 
-    Prefers the charset the server declared, falls back to UTF-8, and replaces
+    Prefers the charset the server declared, then the XML declaration's
+    ``encoding``, then UTF-8, and replaces
     undecodable bytes rather than failing the whole page — a single bad byte in
     one book blurb must not take a shelf offline.
 
@@ -87,7 +93,12 @@ def _decode_feed(body: bytes, resp: httpx.Response) -> str:
     :returns: The decoded document text.
     :rtype: str
     """
-    encoding = resp.charset_encoding or "utf-8"
+    encoding = resp.charset_encoding
+    if not encoding:
+        # No charset in Content-Type: the document's own XML declaration is
+        # the next authority (an ISO-8859-1 feed would be garbled as UTF-8).
+        m = _XML_DECL_ENCODING.match(body)
+        encoding = m.group(1).decode("ascii") if m else "utf-8"
     try:
         return body.decode(encoding, errors="replace")
     except LookupError:  # server named a charset Python doesn't know
@@ -271,6 +282,17 @@ class KavitaClient:
     async def fetch_feed(self, url: str) -> str:
         """Fetch an OPDS feed URL and return its full body as text.
 
+        See :meth:`fetch_feed_and_url`, which also returns the final URL.
+        """
+        body, _final = await self.fetch_feed_and_url(url)
+        return body
+
+    async def fetch_feed_and_url(self, url: str) -> tuple[str, str]:
+        """Fetch an OPDS feed; return ``(body, final_url)``.
+
+        *final_url* is the URL the body was served from after any redirects,
+        which is what the feed's relative links must be resolved against.
+
         The URL is passed through :meth:`resolve_url` before the request is
         made, so SSRF protection is always applied.  Any secret values in
         error messages are masked via :meth:`~app.config.Config.mask` before
@@ -279,8 +301,8 @@ class KavitaClient:
         :param url: The OPDS feed URL to retrieve.  May be absolute or
             root-relative; must resolve to the configured Kavita origin.
         :type url: str
-        :returns: The response body decoded as text (UTF-8 by default).
-        :rtype: str
+        :returns: The body decoded as text, and the final URL.
+        :rtype: tuple[str, str]
         :raises SsrfError: If *url* fails the SSRF guard in
             :meth:`resolve_url`.
         :raises KavitaError: If the HTTP transport raises
@@ -318,7 +340,7 @@ class KavitaClient:
                 body = await self._read_capped(resp, MAX_FEED_BYTES, safe)
             finally:
                 await resp.aclose()
-            return _decode_feed(body, resp)
+            return _decode_feed(body, resp), safe
         raise KavitaError(self._cfg.mask(f"Too many redirects fetching {url!r}"))
 
     async def _read_capped(self, resp: httpx.Response, limit: int, safe: str) -> bytes:
@@ -417,6 +439,10 @@ class KavitaClient:
                     )
                 safe = self.resolve_url(location, base=safe)  # SSRF re-check
                 continue
+            if resp.status_code == 416 and range_header:
+                # "Range Not Satisfiable" is an answer to the client's Range
+                # header, not an upstream failure: hand it back for relay.
+                return resp
             if resp.status_code >= 400:
                 await resp.aclose()  # discard body unread (see redirect note above)
                 raise KavitaError(

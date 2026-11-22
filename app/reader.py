@@ -40,7 +40,7 @@ from xml.sax.saxutils import escape, quoteattr
 from defusedxml.ElementTree import ParseError, fromstring
 
 from .errors import PdfNoTextError, ReaderError, SsrfError
-from .kavita import KavitaClient
+from .kavita import FEED_READ_TIMEOUT, KavitaClient
 from .store import book_key as _store_book_key
 
 try:
@@ -154,6 +154,11 @@ def _neutralize_placeholders(text: str) -> str:
     return text
 
 
+# A run of text outside any tag in rendered output (attribute values are
+# quoteattr-escaped, so they never contain a raw ``<`` or ``>``).
+_TEXT_BETWEEN_TAGS = re.compile(r"(^|>)([^<]*)")
+
+
 def _escape_text(text: str) -> str:
     """HTML-escape *text* and neutralize forgeable placeholder sequences.
 
@@ -195,7 +200,12 @@ def _render_children(
         )
         if child.tail:
             parts.append(_escape_text(child.tail))
-    return "".join(parts)
+    # Each text piece was neutralized on its own, but an unwrapped or dropped
+    # child between two of them (``{<x/>IMG:0}``) can join them into a forged
+    # placeholder. Re-check the text between tags of the joined result; real
+    # placeholders only ever sit inside attribute values, never there.
+    return _TEXT_BETWEEN_TAGS.sub(
+        lambda m: m.group(1) + _neutralize_placeholders(m.group(2)), "".join(parts))
 
 
 def _render_element(
@@ -1828,7 +1838,25 @@ def _html_chapter_title(title: str | None, index: int, record: dict) -> str:
     return f"Section {index + 1}"
 
 
+# The shared client has no read timeout (book downloads must not be cut off),
+# so each HTML-book image fetch is bounded like a feed fetch. Without it one
+# stalled image hangs the shelve, and its per-book lock, forever.
+IMAGE_FETCH_TIMEOUT = FEED_READ_TIMEOUT
+
+
 async def _fetch_capped_image(kc: KavitaClient, url: str) -> bytes | None:
+    """Fetch *url* within :data:`IMAGE_FETCH_TIMEOUT`, or return ``None``.
+
+    See :func:`_fetch_capped_image_unbounded`; a timeout drops the image.
+    """
+    try:
+        return await asyncio.wait_for(_fetch_capped_image_unbounded(kc, url),
+                                      timeout=IMAGE_FETCH_TIMEOUT)
+    except asyncio.TimeoutError:
+        return None
+
+
+async def _fetch_capped_image_unbounded(kc: KavitaClient, url: str) -> bytes | None:
     """Fetch *url* into memory, capped at :data:`MAX_IMAGE_SRC_BYTES`.
 
     *url* must already be an SSRF-validated absolute URL (see
@@ -2965,6 +2993,11 @@ def search_book(
     return hits
 
 
+# How long a ``.tmp-`` build directory is presumed live (see
+# :func:`prune_reader_cache`): well past a full download plus extraction.
+_BUILD_DIR_GRACE = 3600.0
+
+
 def prune_reader_cache(cache_dir: str, limit: int) -> None:
     """Delete the oldest shelved books until ``{cache_dir}/reader`` fits
     under *limit* bytes.
@@ -2987,6 +3020,11 @@ def prune_reader_cache(cache_dir: str, limit: int) -> None:
                 if not item.is_dir() or item.name.startswith("."):
                     continue
                 mtime = item.stat().st_mtime
+                # A ``{key}.tmp-{pid}`` build directory is a shelve in
+                # progress: deleting it would fail that open. Only one left
+                # over from a crash (older than the grace period) is pruned.
+                if ".tmp-" in item.name and time.time() - mtime < _BUILD_DIR_GRACE:
+                    continue
                 manifest_path = os.path.join(item.path, "manifest.json")
                 if os.path.exists(manifest_path):
                     mtime = os.path.getmtime(manifest_path)

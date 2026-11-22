@@ -270,3 +270,19 @@ def test_published_feed_scrubs_xml_illegal_control_chars():
     assert entry.title == "BadTitleEnd"
     assert entry.author == "Author"
     assert entry.summary == "line1 line2more"
+
+
+def test_feed_without_the_atom_namespace_still_parses_its_entries():
+    """A root ``<feed>`` with no xmlns was accepted but parsed as empty."""
+    from app import opds
+    xml = """<?xml version="1.0"?><feed><title>Bare</title>
+    <link rel="next" href="/p2"/>
+    <entry><title>Bare Book</title><author><name>Ann</name></author>
+    <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/b.epub"/>
+    </entry></feed>"""
+    feed = opds.parse(xml)
+    assert feed.title == "Bare"
+    assert feed.next_url == "/p2"
+    assert [e.title for e in feed.entries] == ["Bare Book"]
+    assert feed.entries[0].author == "Ann"
+    assert feed.entries[0].supported_acquisition is not None
