@@ -28,8 +28,10 @@ import re
 import shutil
 import time
 import zipfile
+import zlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from html.entities import name2codepoint
 from html.parser import HTMLParser
 from urllib.parse import unquote
 from xml.etree.ElementTree import Element, tostring  # noqa: S405 - build/serialize only; all parsing goes through defusedxml
@@ -299,6 +301,71 @@ def _escaped_text_fallback(source: str) -> list[str]:
     return blocks
 
 
+_NAMED_ENTITY = re.compile(r"&([A-Za-z][A-Za-z0-9]{1,31});")
+_NAMED_ENTITY_B = re.compile(rb"&([A-Za-z][A-Za-z0-9]{1,31});")
+_XML_ENTITIES = frozenset({"amp", "lt", "gt", "quot", "apos"})
+
+
+def _numeric_entities(source: str | bytes) -> str | bytes:
+    """Rewrite HTML named entities (``&nbsp;``) as numeric references.
+
+    An XHTML 1.1 / EPUB2 chapter may use them legally (its DTD declares them),
+    but expat never loads the DTD, so they fail to parse. The five XML
+    entities and unknown names are left alone. Works on ``bytes`` too, so the
+    document's declared encoding still applies (ASCII-compatible encodings).
+    """
+    if isinstance(source, bytes):
+        def sub_b(m: re.Match) -> bytes:
+            name = m.group(1).decode("ascii")
+            if name in _XML_ENTITIES or name not in name2codepoint:
+                return m.group(0)
+            return b"&#%d;" % name2codepoint[name]
+        return _NAMED_ENTITY_B.sub(sub_b, source)
+
+    def sub(m: re.Match) -> str:
+        name = m.group(1)
+        if name in _XML_ENTITIES or name not in name2codepoint:
+            return m.group(0)
+        return f"&#{name2codepoint[name]};"
+    return _NAMED_ENTITY.sub(sub, source)
+
+
+def _parse_xhtml(source: str | bytes) -> Element | None:
+    """Parse a chapter, honouring its declared encoding, or return ``None``.
+
+    Bytes go to the parser as-is so an ``encoding=`` declaration or BOM is
+    respected (ISO-8859-1, UTF-16). On failure, one retry with HTML named
+    entities rewritten as numeric references.
+    """
+    try:
+        return fromstring(source)
+    except (ParseError, ValueError):
+        pass
+    fixed = _numeric_entities(source)
+    if fixed == source:
+        return None
+    try:
+        return fromstring(fixed)
+    except (ParseError, ValueError):
+        return None
+
+
+def _decode_chapter_text(source: str | bytes) -> str:
+    """Decode *source* for the plain-text fallback, honouring a UTF-16 BOM."""
+    if isinstance(source, str):
+        return source
+    if source.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return source.decode("utf-16", errors="replace")
+    return source.decode("utf-8", errors="replace")
+
+
+def _text_block(text: str) -> Element:
+    """A synthetic ``<p>`` holding loose text found between block elements."""
+    p = Element("p")
+    p.text = text.strip()
+    return p
+
+
 def _find_body(root: Element) -> Element:
     """Return the ``body`` element under *root*, or *root* itself if absent.
 
@@ -335,6 +402,10 @@ def _top_level_block_elements(container: Element, depth: int = 0):
     :param depth: Current descent depth, bounded by :data:`_MAX_FLATTEN_DEPTH`.
     :returns: An iterator of the elements to render as top-level blocks.
     """
+    # Loose text directly in <body> (before the first element, or between
+    # elements) becomes its own <p> block rather than being dropped.
+    if depth == 0 and container.text and container.text.strip():
+        yield _text_block(container.text)
     for child in container:
         name = _local_name(child.tag)
         transparent = (
@@ -342,11 +413,16 @@ def _top_level_block_elements(container: Element, depth: int = 0):
             and depth < _MAX_FLATTEN_DEPTH
             and not (child.text and child.text.strip())
             and len(child)  # has element children to surface
+            # Text between its children (``<div><b>x</b> rest</div>``) means
+            # they are inline content, so render the wrapper whole.
+            and not any(g.tail and g.tail.strip() for g in child)
         )
         if transparent:
             yield from _top_level_block_elements(child, depth + 1)
         else:
             yield child
+        if child.tail and child.tail.strip():
+            yield _text_block(child.tail)
 
 
 # An HTML id worth turning into an in-chapter footnote/anchor link. Restricted
@@ -398,12 +474,9 @@ def sanitize_chapter(
     :returns: An ordered list of block-level HTML fragment strings.
         Empty or whitespace-only blocks are skipped.
     """
-    text = source.decode("utf-8", errors="replace") if isinstance(source, bytes) else source
-
-    try:
-        root = fromstring(text)
-    except (ParseError, ValueError):
-        return _escaped_text_fallback(text)
+    root = _parse_xhtml(source)
+    if root is None:
+        return _escaped_text_fallback(_decode_chapter_text(source))
 
     body = _find_body(root)
 
@@ -705,7 +778,8 @@ def _read_member_capped(zf: zipfile.ZipFile, name: str, member_cap: int, budget:
                 if total > member_cap:
                     raise ReaderError(f"This book's {shown!r} entry exceeds the size cap")
                 chunks.append(chunk)
-    except (zipfile.BadZipFile, OSError) as exc:
+    except (zipfile.BadZipFile, OSError, zlib.error, EOFError) as exc:
+        # zlib.error / EOFError: a damaged or truncated deflate stream.
         raise ReaderError(f"Could not read {shown!r} from this book") from exc
     except RuntimeError as exc:
         # zipfile raises plain RuntimeError (NotImplementedError, its
@@ -990,9 +1064,8 @@ def _title_from_heading(source: bytes) -> str | None:
     :returns: The heading's text, or ``None`` if *source* does not parse
         or contains no heading.
     """
-    try:
-        root = fromstring(source)
-    except (ParseError, ValueError):
+    root = _parse_xhtml(source)
+    if root is None:
         return None
     for el in root.iter():
         if _local_name(el.tag) in _HEADING_TAGS:
@@ -1148,8 +1221,8 @@ def _read_image_member(zf: zipfile.ZipFile, name: str, budget: _UnpackBudget) ->
                     too_large = True
                     break
                 chunks.append(chunk)
-    except (zipfile.BadZipFile, OSError, RuntimeError):
-        # An unreadable/zip-encrypted image is skipped, not fatal: the OCF
+    except (zipfile.BadZipFile, OSError, RuntimeError, zlib.error, EOFError):
+        # An unreadable/zip-encrypted/corrupt image is skipped, not fatal: the OCF
         # encryption.xml check and the chapter reads already surface real DRM.
         budget.add(total)
         return None
@@ -1253,7 +1326,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
     budget = _UnpackBudget(MAX_UNPACKED_BYTES)
     try:
         zf = zipfile.ZipFile(spool_path)
-    except (zipfile.BadZipFile, OSError) as exc:
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as exc:
         raise ReaderError("This does not look like a valid EPUB file") from exc
 
     with zf:
@@ -1503,7 +1576,9 @@ _MAX_HTML_DEPTH = MAX_NESTING_DEPTH
 # XML 1.0 forbids most C0 control characters even when escaped; strip them from
 # text/attribute content so the normalized document always parses. Tab, LF and
 # CR are allowed.
-_XML_BAD_CHARS = re.compile("[^\t\n\r\x20-\U0010ffff]")
+# Everything outside the XML 1.0 ``Char`` production, including the
+# non-characters U+FFFE/U+FFFF and lone surrogates.
+_XML_BAD_CHARS = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 
 
 def _scrub_xml(text: str) -> str:
@@ -2078,9 +2153,9 @@ async def _extract_epub_shelf(
     :data:`_ShelfExtractor`.
 
     EPUB parsing reads only the local spool file (its images come from the
-    zip), so it does no network I/O and *kc* is unused; the parse stays
-    synchronous — this wrapper exists solely to satisfy the awaitable
-    extractor contract that HTML shelving needs for remote image fetches.
+    zip), so it does no network I/O and *kc* is unused. The parse runs in a
+    worker thread via :func:`asyncio.to_thread`, as for CBZ, so a book with
+    many images does not stall the event loop.
 
     :param kc: Unused (EPUB images come from the spooled archive).
     :param spool_path: Path to the fully-downloaded EPUB on disk.
@@ -2089,7 +2164,9 @@ async def _extract_epub_shelf(
     :param tmp_dir: The in-progress shelving directory.
     :returns: The completed :class:`Manifest`.
     """
-    return _extract_epub(spool_path, key, record, tmp_dir)
+    # Off the event loop: a book can carry up to MAX_IMAGES images to decode
+    # and re-encode, which would otherwise stall every other request.
+    return await asyncio.to_thread(_extract_epub, spool_path, key, record, tmp_dir)
 
 
 async def shelve_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifest:
@@ -2401,7 +2478,8 @@ async def _extract_pdf_shelf(
     :param tmp_dir: The in-progress shelving directory.
     :returns: The completed :class:`Manifest`.
     """
-    return _extract_pdf(spool_path, key, record, tmp_dir)
+    # Off the event loop: text extraction over thousands of pages is CPU-bound.
+    return await asyncio.to_thread(_extract_pdf, spool_path, key, record, tmp_dir)
 
 
 async def shelve_pdf_book(kc: KavitaClient, record: dict, cache_dir: str) -> Manifest:
@@ -2593,7 +2671,7 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
     budget = _UnpackBudget(MAX_CBZ_UNPACKED_BYTES)
     try:
         zf = zipfile.ZipFile(spool_path)
-    except (zipfile.BadZipFile, OSError) as exc:
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as exc:
         raise ReaderError("This does not look like a valid CBZ comic") from exc
 
     with zf:
@@ -2664,9 +2742,8 @@ async def _extract_cbz_shelf(
     """Awaitable adapter making the synchronous CBZ extractor a
     :data:`_ShelfExtractor`, run **off the event loop**.
 
-    Unlike the EPUB/PDF adapters (whose local work is light and inline), comic
-    extraction decodes and re-encodes hundreds of images — tens of seconds of
-    CPU. Running that inline would freeze the whole single-threaded server for
+    Like the EPUB/PDF adapters: comic extraction decodes and re-encodes
+    hundreds of images — tens of seconds of CPU. Running that inline would freeze the whole single-threaded server for
     every other request for the duration, so it is dispatched to a worker thread
     via :func:`asyncio.to_thread`; *kc* is unused (a CBZ's pages come from the
     spooled archive, so there is no network I/O).
@@ -2815,6 +2892,17 @@ def _block_plain_text(block: str) -> str:
     return html.unescape(_TAG_RE.sub("", block))
 
 
+def _fold_same_length(text: str) -> str:
+    """Lower-case *text* one character at a time, keeping its length.
+
+    ``str.lower()`` can lengthen a string (``"\u0130"`` becomes two
+    characters), which would shift every offset found in the lowered copy
+    against the original. A character whose lower-case form is longer is
+    kept as-is.
+    """
+    return "".join(c if len(lc := c.lower()) != 1 else lc for c in text)
+
+
 def search_book(
     cache_dir: str,
     book_key: str,
@@ -2848,7 +2936,7 @@ def search_book(
     q = query.strip()[:SEARCH_MAX_QUERY_CHARS]
     if len(q) < SEARCH_MIN_QUERY:
         return []
-    needle = q.lower()
+    needle = _fold_same_length(q)
     hits: list[SearchHit] = []
     for chapter in range(chapter_count):
         try:
@@ -2857,13 +2945,13 @@ def search_book(
             continue
         for block_index, block in enumerate(blocks):
             text = _block_plain_text(block)
-            low = text.lower()
+            low = _fold_same_length(text)
             start = 0
             while True:
                 pos = low.find(needle, start)
                 if pos < 0:
                     break
-                end = pos + len(q)
+                end = pos + len(needle)
                 hits.append(SearchHit(
                     chapter=chapter,
                     block=block_index,

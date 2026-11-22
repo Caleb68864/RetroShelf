@@ -145,6 +145,27 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
     still counts as EPUB, as on `/book`.
   - Search results resolve relative links against the search URL, not the
     library root.
+- [x] **Reader robustness** (done 2026-11-21, same branch; found by a bug hunt
+  of `app/reader.py`). Tests in `tests/test_reader_robustness.py`, each
+  failing on the old code except one regression guard:
+  - A damaged deflate stream (`zlib.error`/`EOFError`) in an EPUB chapter is
+    a `ReaderError`, and a damaged CBZ page or EPUB image is skipped. An
+    unsupported zip version (`NotImplementedError` from `ZipFile`) is a
+    `ReaderError`. Each used to be a 500.
+  - EPUB2/XHTML 1.1 chapters using HTML named entities (`&nbsp;`, `&mdash;`)
+    parse. They used to render as escaped source text with no title.
+    `_parse_xhtml` retries with the names rewritten as numeric references.
+  - A chapter's declared encoding or BOM is honoured (ISO-8859-1, UTF-16),
+    because the bytes go to the parser undecoded.
+  - Loose text directly in `<body>`, after a top-level element, or between
+    the inline children of a `<div>` is kept. It used to be dropped, and a
+    body of bare text gave a zero-block chapter.
+  - `_scrub_xml` removes U+FFFE/U+FFFF and lone surrogates, so one stray
+    non-character no longer fails a whole HTML book.
+  - In-book find snippets stay aligned when `lower()` changes a string's
+    length (`İ`).
+  - EPUB and PDF extraction run in a worker thread (`asyncio.to_thread`), as
+    CBZ already did, so shelving a big book no longer stalls every request.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)
