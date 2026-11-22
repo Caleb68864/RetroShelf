@@ -203,6 +203,14 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   `/search` and `/random` resolve against it. Tests:
   `test_redirected_feed_resolves_relative_links_against_the_final_url`,
   `test_fetch_feed_and_url_reports_the_final_url`.
+- [x] **Reader placeholders cannot be forged across an unwrapped element**
+  (done 2026-11-21, same branch). Text pieces were neutralized one at a
+  time, so `{<x/>IMG:0}` joined into a real-looking `{IMG:0}`, which was then
+  substituted as visible link text. This was cosmetic only, with no
+  injection. `_render_children` now re-neutralizes the text between tags of
+  its joined output. Test:
+  `test_placeholder_cannot_be_forged_across_an_unwrapped_element` in
+  `tests/test_reader_followups.py`.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)

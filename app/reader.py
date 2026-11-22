@@ -154,6 +154,11 @@ def _neutralize_placeholders(text: str) -> str:
     return text
 
 
+# A run of text outside any tag in rendered output (attribute values are
+# quoteattr-escaped, so they never contain a raw ``<`` or ``>``).
+_TEXT_BETWEEN_TAGS = re.compile(r"(^|>)([^<]*)")
+
+
 def _escape_text(text: str) -> str:
     """HTML-escape *text* and neutralize forgeable placeholder sequences.
 
@@ -195,7 +200,12 @@ def _render_children(
         )
         if child.tail:
             parts.append(_escape_text(child.tail))
-    return "".join(parts)
+    # Each text piece was neutralized on its own, but an unwrapped or dropped
+    # child between two of them (``{<x/>IMG:0}``) can join them into a forged
+    # placeholder. Re-check the text between tags of the joined result; real
+    # placeholders only ever sit inside attribute values, never there.
+    return _TEXT_BETWEEN_TAGS.sub(
+        lambda m: m.group(1) + _neutralize_placeholders(m.group(2)), "".join(parts))
 
 
 def _render_element(

@@ -28,3 +28,22 @@ def test_stalled_html_image_fetch_times_out(monkeypatch):
 def test_image_fetch_timeout_reuses_the_feed_read_timeout():
     from app.kavita import FEED_READ_TIMEOUT
     assert reader.IMAGE_FETCH_TIMEOUT == FEED_READ_TIMEOUT
+
+
+def _sanitize(src, resolve_image=lambda h: None):
+    return reader.sanitize_chapter(src, resolve_image=resolve_image,
+                                   resolve_link=lambda h: None)
+
+
+def test_placeholder_cannot_be_forged_across_an_unwrapped_element():
+    for forged, token in (("{<foo/>IMG:0}", "{IMG:0}"), ("{<x/>FRAG:abc}", "{FRAG:abc}"),
+                          ("{<span>IMG:0}</span>", "{IMG:0}"), ("{<x/>CH:1}", "{CH:1}")):
+        joined = "".join(_sanitize(f"<html><body><p>{forged}</p></body></html>"))
+        assert token not in joined, forged
+
+
+def test_real_image_placeholder_survives():
+    joined = "".join(_sanitize('<html><body><p>See <img src="a.png" alt="A"/> {</p></body></html>',
+                               resolve_image=lambda h: 0))
+    assert 'src="{IMG:0}"' in joined
+
