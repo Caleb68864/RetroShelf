@@ -67,16 +67,26 @@ def _safe_image_type(content_type: str | None) -> str:
     return base if base.startswith("image/") else "application/octet-stream"
 
 
-def _cover_cache_key(url: str) -> str:
-    """Return the cover cache filename key for *url* (its SHA-256 hex digest).
+# The transcode settings whose cache keys stay the original ``sha256(url)``,
+# so upgrading never throws away a cache built with the default settings.
+_DEFAULT_COVER_PARAMS = (320, 80)
+
+
+def _cover_cache_key(url: str, cover_max_edge: int = 320, cover_jpeg_quality: int = 80) -> str:
+    """Return the cover cache filename key for *url* (a SHA-256 hex digest).
 
     Hashing means the upstream URL — embedded ``apiKey`` included — never
-    appears in a cache filename.
+    appears in a cache filename. The transcode settings are part of the key,
+    so changing ``COVER_MAX_EDGE`` or ``COVER_JPEG_QUALITY`` stops serving
+    covers sized for the old value; the stale entries age out through
+    :func:`_prune_cover_cache`. The defaults keep the original key.
 
     :param url: The fully-qualified upstream cover URL.
     :rtype: str
     """
-    return hashlib.sha256(url.encode()).hexdigest()
+    if (cover_max_edge, cover_jpeg_quality) == _DEFAULT_COVER_PARAMS:
+        return hashlib.sha256(url.encode()).hexdigest()
+    return hashlib.sha256(f"{url}\x00{cover_max_edge}\x00{cover_jpeg_quality}".encode()).hexdigest()
 
 
 async def _read_capped(resp: httpx.Response, limit: int) -> bytes:
@@ -101,7 +111,9 @@ async def _read_capped(resp: httpx.Response, limit: int) -> bytes:
 
 
 def _prune_cover_cache(cache_covers: str, limit: int) -> None:
-    """Delete the oldest cached covers until the directory fits under *limit*.
+    """Delete the least recently used covers until the directory fits under
+    *limit*. A cache hit refreshes a cover's mtime (see :func:`_touch`), so
+    mtime order is use order. A cover and its ``.ct`` sidecar go together.
 
     Best-effort and never fatal: a cache that cannot be pruned is a disk-space
     problem, not a reason to fail the request that is currently in flight.
@@ -112,23 +124,28 @@ def _prune_cover_cache(cache_covers: str, limit: int) -> None:
     try:
         entries = []
         total = 0
+        sizes: dict[str, int] = {}
+        mtimes: dict[str, float] = {}
         with os.scandir(cache_covers) as it:
             for item in it:
                 if not item.is_file():
                     continue
                 stat = item.stat()
-                entries.append((stat.st_mtime, stat.st_size, item.path))
+                base = item.path[:-3] if item.path.endswith(".ct") else item.path
+                sizes[base] = sizes.get(base, 0) + stat.st_size
+                if base == item.path:
+                    mtimes[base] = stat.st_mtime
                 total += stat.st_size
         if total <= limit:
             return
+        # An orphan sidecar (no payload) sorts first; it is pure waste.
+        entries = [(mtimes.get(b, 0.0), sizes[b], b) for b in sizes]
         for _mtime, size, path in sorted(entries):
-            try:
-                os.remove(path)
-                # The sidecar content-type file shares the fate of its payload.
-                if not path.endswith(".ct"):
-                    os.remove(path + ".ct")
-            except OSError:
-                pass
+            for victim in (path, path + ".ct"):
+                try:
+                    os.remove(victim)
+                except OSError:
+                    pass
             total -= size
             if total <= limit:
                 return
@@ -346,10 +363,21 @@ async def stream_download(
     )
 
 
-def _cover_cache_paths(cache_dir: str, url: str) -> tuple[str, str]:
+def _cover_cache_paths(cache_dir: str, url: str, cover_max_edge: int = 320,
+                       cover_jpeg_quality: int = 80) -> tuple[str, str]:
     """Return ``(image_path, content_type_path)`` of *url*'s cached cover."""
-    path = os.path.join(cache_dir, "covers", _cover_cache_key(url))
+    key = _cover_cache_key(url, cover_max_edge, cover_jpeg_quality)
+    path = os.path.join(cache_dir, "covers", key)
     return path, path + ".ct"
+
+
+def _touch(*paths: str) -> None:
+    """Mark a cache entry as just used (best-effort), for LRU pruning."""
+    for path in paths:
+        try:
+            os.utime(path)
+        except OSError:
+            pass
 
 
 async def head_download(
@@ -382,11 +410,12 @@ async def head_download(
         await resp.aclose()
 
 
-async def head_cover(kc: KavitaClient, url: str, *, cache_dir: str = "/cache") -> Response:
+async def head_cover(kc: KavitaClient, url: str, *, cache_dir: str = "/cache",
+                     cover_max_edge: int = 320, cover_jpeg_quality: int = 80) -> Response:
     """Answer a ``HEAD`` for a cover: ``200`` when it is cached or the library
     has it, else :class:`KavitaError` (the caller's tiny 404). The body is
     never read."""
-    cache_path, _ct_path = _cover_cache_paths(cache_dir, url)
+    cache_path, _ct_path = _cover_cache_paths(cache_dir, url, cover_max_edge, cover_jpeg_quality)
     headers = {"Cache-Control": "private, max-age=86400"}
     if os.path.exists(cache_path):
         return Response(status_code=200, media_type="image/jpeg", headers=headers)
@@ -428,7 +457,8 @@ async def stream_cover(
     :raises KavitaError: If the upstream fetch fails and the cache is cold.
     """
     cache_covers = os.path.join(cache_dir, "covers")
-    cache_path, cache_ct_path = _cover_cache_paths(cache_dir, url)
+    cache_path, cache_ct_path = _cover_cache_paths(cache_dir, url, cover_max_edge,
+                                                   cover_jpeg_quality)
 
     _resp_headers = {"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"}
 
@@ -442,6 +472,7 @@ async def stream_cover(
         try:
             with open(cache_path, "rb") as f:
                 data = f.read()
+            _touch(cache_path, cache_ct_path)  # LRU: a hit is a use
             ct = "image/jpeg"
             if os.path.exists(cache_ct_path):
                 with open(cache_ct_path) as f:
