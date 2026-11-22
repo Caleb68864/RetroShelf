@@ -211,6 +211,12 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   its joined output. Test:
   `test_placeholder_cannot_be_forged_across_an_unwrapped_element` in
   `tests/test_reader_followups.py`.
+- [x] **Reader cache pruning spares in-progress builds** (done 2026-11-21,
+  same branch). `prune_reader_cache` skipped only dot-names, so under disk
+  pressure it could delete a live `{key}.tmp-{pid}` build directory and fail
+  that open. A `.tmp-` directory younger than `_BUILD_DIR_GRACE` (1 h) is now
+  left alone; an older one, left over from a crash, is still pruned. Test:
+  `test_prune_spares_an_in_progress_build_but_not_a_stale_one`.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)

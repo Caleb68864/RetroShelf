@@ -47,3 +47,20 @@ def test_real_image_placeholder_survives():
                                resolve_image=lambda h: 0))
     assert 'src="{IMG:0}"' in joined
 
+
+def test_prune_spares_an_in_progress_build_but_not_a_stale_one(tmp_path):
+    import os
+    reader_dir = tmp_path / "reader"
+    live = reader_dir / "bookA.tmp-123"
+    stale = reader_dir / "bookB.tmp-456"
+    done = reader_dir / "bookC"
+    for d in (live, stale, done):
+        (d / "chapters").mkdir(parents=True)
+        (d / "chapters" / "0.json").write_bytes(b"x" * 1000)
+    (done / "manifest.json").write_text("{}")
+    old = time.time() - 2 * 3600
+    os.utime(stale, (old, old))
+    os.utime(done / "manifest.json", (old - 10, old - 10))
+    reader.prune_reader_cache(str(tmp_path), 0)
+    assert live.exists()
+    assert not stale.exists() and not done.exists()

@@ -2993,6 +2993,11 @@ def search_book(
     return hits
 
 
+# How long a ``.tmp-`` build directory is presumed live (see
+# :func:`prune_reader_cache`): well past a full download plus extraction.
+_BUILD_DIR_GRACE = 3600.0
+
+
 def prune_reader_cache(cache_dir: str, limit: int) -> None:
     """Delete the oldest shelved books until ``{cache_dir}/reader`` fits
     under *limit* bytes.
@@ -3015,6 +3020,11 @@ def prune_reader_cache(cache_dir: str, limit: int) -> None:
                 if not item.is_dir() or item.name.startswith("."):
                     continue
                 mtime = item.stat().st_mtime
+                # A ``{key}.tmp-{pid}`` build directory is a shelve in
+                # progress: deleting it would fail that open. Only one left
+                # over from a crash (older than the grace period) is pruned.
+                if ".tmp-" in item.name and time.time() - mtime < _BUILD_DIR_GRACE:
+                    continue
                 manifest_path = os.path.join(item.path, "manifest.json")
                 if os.path.exists(manifest_path):
                     mtime = os.path.getmtime(manifest_path)
