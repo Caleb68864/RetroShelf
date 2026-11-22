@@ -1,7 +1,7 @@
 # RetroShelf Roadmap
 
 Status of every design in `docs/plans/`, checked against the code and git log
-(last audit: 2026-11-21). Keep this file current when an item lands.
+(last audit: 2026-11-22). Keep this file current when an item lands.
 
 ## Hard constraint: old iPads (owner, 2026-11-21)
 RetroShelf must keep working on iOS 5.1.1-12 Safari (see the README). Every
@@ -393,7 +393,27 @@ setting where that fits, without touching existing data.
     EPUBs shelved before this change stay as they are until they leave the
     cache.
   - Tests: `tests/test_epub_css.py`.
-- EPUB3 media/fixed-layout (EPUB reader plan, "Exclusions").
+- [x] **EPUB3 media and fixed layout: the doable part** (built 2026-11-22 on
+  `feat/epub3-media-fixed-layout`; EPUB reader plan, "Exclusions").
+  - A book with audio or video (a `<audio>`/`<video>` element, an
+    `audio/*`/`video/*` manifest item, or a media overlay) gets a notice
+    pointing to iBooks. Each clip is replaced in place by an inline note
+    such as "[Audio clip: not playable in the browser reader]" instead of
+    vanishing.
+  - A fixed-layout book (EPUB3 `rendition:layout` `pre-paginated`, or
+    Apple's `com.apple.ibooks.display-options.xml` `fixed-layout`) gets a
+    notice that its text and pictures are shown reflowed.
+  - Tests: `tests/test_epub3_media_layout.py`.
+- **Blocked: playing EPUB3 audio/video in the reader.** iOS 5 Safari's
+  inline `<audio>`/`<video>` needs a user tap on a native control and
+  often opens a full-screen player that drops the reader page. Media
+  overlays (read-aloud sync) need JS to highlight text as audio plays, and
+  JS is ruled out on these devices. "Open in iBooks" already plays them.
+- **Blocked: rendering fixed-layout pages as designed.** A fixed-layout
+  page is an absolutely positioned canvas sized for one viewport. Scaling it
+  to an iPad 1-3 screen needs either JS or CSS (viewport units,
+  transforms, positioning) that the old-iPad constraint rules out, and
+  reflowing is the only no-JS presentation. iBooks renders them natively.
 - [x] **Reader image max-edge setting** (built 2026-11-21 on
   `feat/deferred-features`; EPUB reader plan, open question 2).
   `READER_IMAGE_MAX_EDGE` env var (256-4096, default 1024, so nothing changes
