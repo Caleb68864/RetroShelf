@@ -88,6 +88,13 @@ _DROPPED_ELEMENTS = frozenset(
     }
 )
 
+# EPUB3 audio/video: replaced by a short inline note (see _render_element).
+_MEDIA_ELEMENTS = frozenset({"audio", "video"})
+_MEDIA_PLACEHOLDER = {
+    "audio": "<em>[Audio clip: not playable in the browser reader]</em>",
+    "video": "<em>[Video clip: not playable in the browser reader]</em>",
+}
+
 # Self-closing / no-content elements: rendered as a bare tag, never with a
 # closing tag or text content.
 _VOID_ELEMENTS = frozenset({"br", "hr"})
@@ -246,6 +253,11 @@ def _render_element(
         return ""
 
     tag = _local_name(element.tag)
+
+    if tag in _MEDIA_ELEMENTS:
+        # Audio/video cannot play in the reader (no JS; iOS 5 inline media is
+        # unreliable): leave a visible note where it was, never the element.
+        return _MEDIA_PLACEHOLDER[tag]
 
     if tag in _DROPPED_ELEMENTS:
         return ""
@@ -537,6 +549,8 @@ def sanitize_chapter(
     body = _find_body(root)
     if dropped is not None and _deeper_than(body, MAX_NESTING_DEPTH + 1):
         dropped.add("nesting")  # the render walk will leave the excess out
+    if dropped is not None and any(_local_name(el.tag) in _MEDIA_ELEMENTS for el in body.iter()):
+        dropped.add("media")
 
     blocks: list[str] = []
     for child in _top_level_block_elements(body):
@@ -1270,6 +1284,47 @@ def _write_reader_image(images_dir: str, idx: int, served_bytes: bytes, content_
         f.write(content_type)
 
 
+_IBOOKS_OPTIONS = "META-INF/com.apple.ibooks.display-options.xml"
+
+
+def _is_fixed_layout(opf_bytes: bytes, zf: zipfile.ZipFile, names: set[str],
+                     budget: _UnpackBudget) -> bool:
+    """Whether the EPUB declares a fixed (pre-paginated) layout: EPUB3
+    ``rendition:layout`` in the OPF, or Apple's iBooks display options."""
+    try:
+        root = fromstring(opf_bytes)
+    except (ParseError, ValueError):
+        root = None
+    if root is not None:
+        for el in root.iter():
+            if (_local_name(el.tag) == "meta" and el.get("property") == "rendition:layout"
+                    and (el.text or "").strip() == "pre-paginated"):
+                return True
+    if _IBOOKS_OPTIONS in names:
+        try:
+            opts = fromstring(_read_member_capped(zf, _IBOOKS_OPTIONS, MAX_METADATA_MEMBER_BYTES, budget))
+        except (ReaderError, ParseError, ValueError):
+            return False
+        for el in opts.iter():
+            if (_local_name(el.tag) == "option" and el.get("name") == "fixed-layout"
+                    and (el.text or "").strip().lower() == "true"):
+                return True
+    return False
+
+
+def _epub3_notices(fixed_layout: bool, has_media: bool) -> list[str]:
+    """Notices for EPUB3 features the browser reader cannot reproduce."""
+    notes = []
+    if fixed_layout:
+        notes.append("This is a fixed-layout book. The browser reader shows its text and "
+                     "pictures reflowed, so pages will not look as designed; use Open in "
+                     "iBooks for the original layout.")
+    if has_media:
+        notes.append("This book has audio or video, which the browser reader cannot play. "
+                     "Each clip is marked where it was; use Open in iBooks to play them.")
+    return notes
+
+
 def _book_styles(zf: zipfile.ZipFile, names: set[str],
                  manifest_items: dict[str, tuple[str, str, str]], opf_dir: str,
                  budget: _UnpackBudget) -> BookStyles:
@@ -1572,6 +1627,10 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
         image_index_by_path = _extract_images(zf, names, manifest_items, opf_dir, tmp_dir, budget,
                                               skipped=skipped_images)
         nesting_chapters = 0
+        # Audio/video in the manifest (incl. media overlays) or in a chapter.
+        has_media = any(mt.lower().startswith(("audio/", "video/")) or "media-overlay" in mt.lower()
+                        for _h, mt, _p in manifest_items.values())
+        fixed_layout = _is_fixed_layout(opf_bytes, zf, names, budget)
 
         chapters_meta: list[ChapterMeta] = []
         total_chars = 0
@@ -1594,6 +1653,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
             finally:
                 _BOOK_STYLES.reset(styles_token)
             nesting_chapters += "nesting" in dropped
+            has_media = has_media or "media" in dropped
             title = (
                 nav_titles.get(path)
                 or ncx_titles.get(path)
@@ -1618,7 +1678,8 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
         total_chars=total_chars,
         created=time.time(),
         toc=toc,
-        notices=_dropped_notices(images=len(skipped_images), nesting_chapters=nesting_chapters),
+        notices=_epub3_notices(fixed_layout, has_media)
+        + _dropped_notices(images=len(skipped_images), nesting_chapters=nesting_chapters),
         epub_css=EPUB_CSS_ENABLED,
     )
     with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
