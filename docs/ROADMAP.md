@@ -3,6 +3,22 @@
 Status of every design in `docs/plans/`, checked against the code and git log
 (last audit: 2026-11-21). Keep this file current when an item lands.
 
+## Hard constraint: old iPads (owner, 2026-11-21)
+RetroShelf must keep working on iOS 5.1.1-12 Safari (see the README). Every
+feature is server-rendered HTML forms and links. That rules out:
+- `<script>`, `on*=` attributes, `javascript:` URLs, fetch/XHR, `<svg>` and
+  `<canvas>`;
+- CSS grid, custom properties, modern flexbox (`-webkit-box` only),
+  `position: sticky`, `:is`/`:has`/`:where`, `gap`, `object-fit` and
+  `vw`/`vh`;
+- WebP, AVIF, SVG or JS assets.
+
+`tests/test_old_ipad_guard.py` scans every template and stylesheet, the
+static assets, and the HTML served by the browse, shelf, search, OPDS,
+reader, setup/login and signed-in account pages, and fails on any of these.
+A deferred feature that cannot be done well without JS is marked blocked
+rather than compromised.
+
 ## Done
 
 ### Base app (`docs/plans/2026-06-07-retroshelf-design.md`)
@@ -312,7 +328,38 @@ setting where that fits, without touching existing data.
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").
-- Per-device reading positions; EPUB CSS passthrough; EPUB3 media/fixed-layout
-  (EPUB reader plan, "Exclusions").
-- Reader image max-edge config knob (`READER_IMAGE_MAX_EDGE` in `app/reader.py`
-  is fixed at 1024): EPUB reader plan, open question 2.
+- [x] **Per-device reading positions** (built 2026-11-21 on
+  `feat/deferred-features`; EPUB reader plan, "Exclusions"). Opt-in
+  `PER_DEVICE_POSITIONS=1` (default off; nothing changes otherwise). Each
+  browser gets a random `rs_device` cookie: plain cookie, no JS. The
+  profile-wide position is still kept, so "Continue reading" works, and a
+  device that has not read a book yet resumes there. A device that has
+  resumes at its own place. Stored as a `device_reading` section, written
+  only once used and capped at 20 devices per profile. Tests:
+  `tests/test_per_device_positions.py`.
+- [x] **EPUB CSS, safe subset** (built 2026-11-21 on `feat/deferred-features`;
+  EPUB reader plan, "Exclusions"). Opt-in `EPUB_CSS=1` (default off).
+  - `app/epub_css.py` keeps only `text-align`, `font-style`, `font-weight`,
+    `font-variant`, `text-decoration`, `text-transform`, `vertical-align`,
+    `text-indent` and `margin-*` (bounded em/%), and `font-size` (60-200%,
+    relative only), from the book's stylesheets and `style` attributes.
+  - Positioning, floats, display, transforms, colours, backgrounds, font
+    families, `url()`, absolute and viewport units are all stripped, so the
+    reader's themes, fonts and text size stay in charge and old Safari lays
+    out safely.
+  - Only `tag`, `.class` and `tag.class` selectors are used. At-rules,
+    combinators, pseudo-classes and `html`/`body` rules are ignored.
+  - Output is an inline `style` on allowlisted elements.
+  - An EPUB shelved with the other setting is re-shelved on its next open.
+    EPUBs shelved before this change stay as they are until they leave the
+    cache.
+  - Tests: `tests/test_epub_css.py`.
+- EPUB3 media/fixed-layout (EPUB reader plan, "Exclusions").
+- [x] **Reader image max-edge setting** (built 2026-11-21 on
+  `feat/deferred-features`; EPUB reader plan, open question 2).
+  `READER_IMAGE_MAX_EDGE` env var (256-4096, default 1024, so nothing changes
+  unless set) in `app/config.py`, applied by `create_app`. Each manifest
+  records the edge its images were shelved at (`image_max_edge`; older ones
+  read as 1024). A book with images shelved at another edge is re-shelved
+  on its next open; chapter numbering, positions and bookmarks are
+  unaffected. Tests: `tests/test_reader_image_edge.py`.

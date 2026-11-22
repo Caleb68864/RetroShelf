@@ -218,6 +218,14 @@ def _as_bool(value: str | None, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _reader_image_max_edge(value: str | None) -> int:
+    """Parse ``READER_IMAGE_MAX_EDGE`` (default 1024, range 256–4096)."""
+    edge = _as_int(value, 1024, "READER_IMAGE_MAX_EDGE")
+    if not 256 <= edge <= 4096:
+        raise ConfigError(f"READER_IMAGE_MAX_EDGE must be between 256 and 4096, got {edge}")
+    return edge
+
+
 def _as_int(value: str | None, default: int, name: str) -> int:
     """Coerce an optional environment-variable string to :class:`int`.
 
@@ -407,6 +415,12 @@ class Config:
     cache_dir: str = "/cache"
     cover_max_edge: int = 320
     cover_jpeg_quality: int = 80
+    # In-browser reader images are downscaled to this longest edge (px).
+    reader_image_max_edge: int = 1024
+    # Opt-in: each browser (``rs_device`` cookie) resumes where *it* left off.
+    per_device_positions: bool = False
+    # Opt-in: keep a safe subset of each EPUB's own CSS (app/epub_css.py).
+    epub_css: bool = False
     # Opt-in multi-account login + profiles. Off (default) → no login, reading
     # state is global, and the optional access-key gate is unchanged. On → the
     # login page becomes the gate and reading state is per-profile.
@@ -525,6 +539,13 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     - ``CACHE_DIR`` — cover disk-cache root; default ``/cache``.
     - ``COVER_MAX_EDGE`` / ``COVER_JPEG_QUALITY`` — cover transcode bounds;
       defaults ``320`` / ``80``.
+    - ``READER_IMAGE_MAX_EDGE`` — longest edge (px) of in-browser reader
+      images, ``256``–``4096``; default ``1024``. Changing it re-shelves
+      books with images the next time they are opened.
+    - ``PER_DEVICE_POSITIONS`` — ``1`` to keep a reading position per
+      browser (``rs_device`` cookie) as well as per profile; default off.
+    - ``EPUB_CSS`` — ``1`` to keep a safe subset of each EPUB's own CSS
+      (alignment, italics, indents...); default off.
 
     :param env: Explicit environment mapping to use instead of
         ``os.environ``. Pass a plain ``dict`` in tests to keep them
@@ -597,6 +618,9 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         cache_dir=(e.get("CACHE_DIR") or "/cache").strip(),
         cover_max_edge=_as_int(e.get("COVER_MAX_EDGE"), 320, "COVER_MAX_EDGE"),
         cover_jpeg_quality=_as_int(e.get("COVER_JPEG_QUALITY"), 80, "COVER_JPEG_QUALITY"),
+        reader_image_max_edge=_reader_image_max_edge(e.get("READER_IMAGE_MAX_EDGE")),
+        per_device_positions=_as_bool(e.get("PER_DEVICE_POSITIONS"), False),
+        epub_css=_as_bool(e.get("EPUB_CSS"), False),
         extra_origins=extra_origins,
         upstream_user_agent=(e.get("UPSTREAM_USER_AGENT") or "").strip() or None,
         kavita_origin=kavita_origin,

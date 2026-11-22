@@ -18,6 +18,7 @@ rendered output or disk.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import html
 import io
 import json
@@ -39,6 +40,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 from defusedxml.ElementTree import ParseError, fromstring
 
+from .epub_css import BookStyles
 from .errors import PdfNoTextError, ReaderError, SsrfError
 from .kavita import FEED_READ_TIMEOUT, KavitaClient
 from .store import book_key as _store_book_key
@@ -115,6 +117,16 @@ MAX_NESTING_DEPTH = 100
 # prose would otherwise be rewritten into a spurious in-book link URL at serve
 # time (the charset guard keeps it from ever being an injection, but forging a
 # placeholder is exactly what this defense exists to prevent).
+# The current EPUB's safe stylesheet rules while its chapters are sanitized
+# (EPUB_CSS on), else ``None``. A ContextVar, so concurrent shelves in worker
+# threads never see each other's rules.
+_BOOK_STYLES: contextvars.ContextVar[BookStyles | None] = contextvars.ContextVar(
+    "_BOOK_STYLES", default=None)
+
+#: Opt-in (``EPUB_CSS=1``, applied by ``create_app``): keep a safe subset of
+#: each EPUB's own CSS. See :mod:`app.epub_css`.
+EPUB_CSS_ENABLED = False
+
 _PLACEHOLDER_PREFIXES = ("{IMG:", "{CH:", "{FRAG:")
 _ZERO_WIDTH_BREAK = "​"
 
@@ -276,8 +288,15 @@ def _render_element(
         return f"<{tag}/>"
 
     attrs = ""
+    styles = _BOOK_STYLES.get()
+    if styles is not None:
+        # Only allowlisted, pattern-checked declarations (app/epub_css.py);
+        # the value has no quote, angle bracket or brace.
+        style = styles.style_for(tag, element.get("class"), element.get("style"))
+        if style:
+            attrs += f' style="{style}"'
     if tag in ("td", "th"):
-        attrs = "".join(
+        attrs += "".join(
             f' {name}="{value}"'
             for name in _SPAN_ATTRS
             if (value := element.get(name)) is not None and _INT_RE.match(value)
@@ -709,6 +728,12 @@ class Manifest:
     created: float
     toc: list[tuple[int, str, int]] = field(default_factory=list)
     kind: str = "book"
+    #: The :data:`READER_IMAGE_MAX_EDGE` images were shelved at. A manifest
+    #: from before this field existed was shelved at the old fixed 1024.
+    image_max_edge: int = 1024
+    #: For an EPUB, whether it was shelved with EPUB_CSS on; ``None`` for
+    #: other formats and for manifests from before the setting existed.
+    epub_css: bool | None = None
     #: Plain-text notes about what shelving left out (a truncated comic,
     #: skipped images...), shown on the contents page and the first page.
     notices: list[str] = field(default_factory=list)
@@ -1245,6 +1270,26 @@ def _write_reader_image(images_dir: str, idx: int, served_bytes: bytes, content_
         f.write(content_type)
 
 
+def _book_styles(zf: zipfile.ZipFile, names: set[str],
+                 manifest_items: dict[str, tuple[str, str, str]], opf_dir: str,
+                 budget: _UnpackBudget) -> BookStyles:
+    """Collect the safe rules from every ``text/css`` manifest item, in
+    manifest order. An unreadable stylesheet is skipped."""
+    styles = BookStyles()
+    for href, media_type, _props in list(manifest_items.values())[:64]:
+        if media_type.lower() != "text/css":
+            continue
+        path = _norm_zip_path(opf_dir, href)
+        if path is None or path not in names:
+            continue
+        try:
+            css = _read_member_capped(zf, path, MAX_METADATA_MEMBER_BYTES, budget)
+        except ReaderError:
+            continue
+        styles.add_stylesheet(css.decode("utf-8", errors="replace"))
+    return styles
+
+
 def _extract_images(
     zf: zipfile.ZipFile, names: set[str], manifest_items: dict[str, tuple[str, str, str]],
     opf_dir: str, tmp_dir: str, budget: _UnpackBudget,
@@ -1367,6 +1412,8 @@ def _manifest_to_dict(manifest: Manifest) -> dict:
         "toc": [[d, t, i] for d, t, i in manifest.toc],
         "kind": manifest.kind,
         "notices": list(manifest.notices),
+        "image_max_edge": manifest.image_max_edge,
+        **({} if manifest.epub_css is None else {"epub_css": manifest.epub_css}),
     }
 
 
@@ -1409,6 +1456,8 @@ def _manifest_from_dict(data: dict) -> Manifest:
         kind="comic" if data.get("kind") == "comic" else "book",
         # Additive: older manifests have none.
         notices=[str(n) for n in data.get("notices", []) if isinstance(n, str)][:10],
+        image_max_edge=int(data.get("image_max_edge", 1024)),
+        epub_css=data["epub_css"] if isinstance(data.get("epub_css"), bool) else None,
     )
 
 
@@ -1526,18 +1575,24 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
 
         chapters_meta: list[ChapterMeta] = []
         total_chars = 0
+        book_styles = (_book_styles(zf, names, manifest_items, opf_dir, budget)
+                       if EPUB_CSS_ENABLED else None)
         for i, path in enumerate(chapter_paths):
             raw = _read_member_capped(zf, path, MAX_CHAPTER_BYTES, budget)
             chapter_dir = posixpath.dirname(path)
             anchors: dict[str, int] = {}
             dropped: set[str] = set()
-            blocks = sanitize_chapter(
-                raw,
-                resolve_image=_resolver(chapter_dir, image_index_by_path),
-                resolve_link=_resolver(chapter_dir, chapter_index_by_path),
-                anchors=anchors,
-                dropped=dropped,
-            )
+            styles_token = _BOOK_STYLES.set(book_styles)
+            try:
+                blocks = sanitize_chapter(
+                    raw,
+                    resolve_image=_resolver(chapter_dir, image_index_by_path),
+                    resolve_link=_resolver(chapter_dir, chapter_index_by_path),
+                    anchors=anchors,
+                    dropped=dropped,
+                )
+            finally:
+                _BOOK_STYLES.reset(styles_token)
             nesting_chapters += "nesting" in dropped
             title = (
                 nav_titles.get(path)
@@ -1554,6 +1609,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
 
     manifest = Manifest(
         version=2,
+        image_max_edge=READER_IMAGE_MAX_EDGE,
         book_key=key,
         title=str(record.get("t") or "") or "Untitled",
         author=str(record.get("a") or ""),
@@ -1563,6 +1619,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
         created=time.time(),
         toc=toc,
         notices=_dropped_notices(images=len(skipped_images), nesting_chapters=nesting_chapters),
+        epub_css=EPUB_CSS_ENABLED,
     )
     with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(_manifest_to_dict(manifest), f)
@@ -2169,6 +2226,7 @@ async def _extract_html_book(
 
     manifest = Manifest(
         version=2,
+        image_max_edge=READER_IMAGE_MAX_EDGE,
         book_key=key,
         title=str(record.get("t") or "") or "Untitled",
         author=str(record.get("a") or ""),
@@ -2602,6 +2660,7 @@ def _extract_pdf(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
 
     manifest = Manifest(
         version=2,
+        image_max_edge=READER_IMAGE_MAX_EDGE,
         book_key=key,
         title=str(record.get("t") or "") or "Untitled",
         author=str(record.get("a") or ""),
@@ -2888,6 +2947,7 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
 
     manifest = Manifest(
         version=2,
+        image_max_edge=READER_IMAGE_MAX_EDGE,
         book_key=key,
         title=str(record.get("t") or "") or comic_title or "Untitled",
         author=str(record.get("a") or ""),
@@ -2967,9 +3027,18 @@ def load_manifest(cache_dir: str, book_key: str) -> Manifest | None:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return _manifest_from_dict(data)
+        manifest = _manifest_from_dict(data)
     except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
         return None
+    # Images shelved at another READER_IMAGE_MAX_EDGE: treat as not shelved,
+    # so the next open rebuilds it (chapter numbering is unchanged, so saved
+    # positions and bookmarks still apply). Image-free books are kept.
+    if manifest.images and manifest.image_max_edge != READER_IMAGE_MAX_EDGE:
+        return None
+    # Likewise an EPUB shelved with the other EPUB_CSS setting.
+    if manifest.epub_css is not None and manifest.epub_css != EPUB_CSS_ENABLED:
+        return None
+    return manifest
 
 
 def load_chapter(cache_dir: str, book_key: str, i: int) -> list[str]:
