@@ -82,7 +82,7 @@ from .reader import (
 from . import reader as reader_module
 from .render import STATIC_DIR, templates
 from .security import access_key_ok, ip_allowed, sanitize_filename
-from .store import PROFILE_COLORS, Store, book_key
+from .store import AVATAR_SHAPES, PROFILE_COLORS, Store, book_key
 from .throttle import LoginThrottle
 
 log = logging.getLogger("retroshelf")
@@ -1253,7 +1253,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if sess is None:
             return RedirectResponse("/login", status_code=303)
         acct = sess["account"]
-        profiles = [{"id": pid, "name": p["name"], "color": p["color"]}
+        profiles = [{"id": pid, "name": p["name"], "color": p["color"],
+                     "avatar_url": _avatar_url(p)}
                     for pid, p in acct["profiles"].items()]
         return templates.TemplateResponse(request, "profiles.html", {
             "csrf": _csrf_field(request), "profiles": profiles,
@@ -1280,7 +1281,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         def _fail(msg: str) -> Response:
             # No successful mutation reaches _fail, so the session's account
             # snapshot is an accurate profile list to re-render.
-            profiles = [{"id": pid, "name": p["name"], "color": p["color"]}
+            profiles = [{"id": pid, "name": p["name"], "color": p["color"],
+                         "avatar_url": _avatar_url(p)}
                         for pid, p in acct["profiles"].items()]
             return templates.TemplateResponse(request, "profiles.html", {
                 "csrf": _csrf_field(request), "profiles": profiles,
@@ -1310,11 +1312,12 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         """Build the ``account.html`` template context for *account*."""
         current_pid = current_profile_id(request)
         profiles = [{"id": pid, "name": p["name"], "color": p["color"],
-                     "current": pid == current_pid}
+                     "current": pid == current_pid, "avatar": p.get("avatar") or AVATAR_SHAPES[0],
+                     "avatar_url": _avatar_url(p)}
                     for pid, p in account["profiles"].items()]
         return {
             "csrf": _csrf_field(request), "profiles": profiles,
-            "colors": PROFILE_COLORS, "username": account["username"],
+            "colors": PROFILE_COLORS, "avatars": AVATAR_SHAPES, "username": account["username"],
             "is_admin": account["is_admin"], "can_delete": len(profiles) > 1,
             "error": error, "message": message,
             "self_id": account["account_id"],
@@ -1386,6 +1389,16 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             except (ValueError, KeyError) as exc:
                 return _render(error=str(exc) or "Could not add that profile.", status=400)
             return _render(message="Profile added.")
+
+        if action == "set_avatar":
+            try:
+                ok = store(request).set_avatar(account_id, form.get("profile_id") or "",
+                                               form.get("avatar") or "")
+            except ValueError as exc:
+                return _render(error=str(exc), status=400)
+            if not ok:
+                return _render(error="That profile is not available.", status=400)
+            return _render(message="Picture changed.")
 
         if action == "rename_profile":
             profile_id = form.get("profile_id") or ""
@@ -3096,6 +3109,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             page.set_cookie(_DEVICE_COOKIE, new_device, max_age=31536000 * 5,
                             httponly=True, samesite="lax", path="/")
         return page
+
+
+def _avatar_url(profile: dict) -> str:
+    """The static built-in avatar for *profile* (shape + its colour)."""
+    shape = profile.get("avatar") if profile.get("avatar") in AVATAR_SHAPES else AVATAR_SHAPES[0]
+    color = profile.get("color") if profile.get("color") in PROFILE_COLORS else PROFILE_COLORS[0]
+    return f"/static/avatars/{shape}-{color}.png"
 
 
 def _safe_path(candidate: str | None, default: str = "/") -> str:

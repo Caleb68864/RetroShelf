@@ -13,7 +13,7 @@
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <input type="hidden" name="action" value="select">
       <input type="hidden" name="profile_id" value="{{ p.id }}">
-      <button class="button big" type="submit">{{ p.name }}</button>
+      <button class="button big" type="submit"><img class="avatar" src="{{ p.avatar_url }}" width="48" height="48" alt=""> {{ p.name }}</button>
     </form>
   </li>
 {% endfor %}

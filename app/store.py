@@ -83,6 +83,10 @@ _MAX_PROFILE_NAME = 40
 _PROFILE_COLORS = ("amber", "green", "cyan", "white", "magenta", "blue")
 #: Public, ordered tuple of the selectable profile accent colours (for forms).
 PROFILE_COLORS = _PROFILE_COLORS
+#: Built-in profile avatars: shapes drawn in the profile's colour, served as
+#: static PNGs (``app/static/avatars``, made by ``tools/make_avatars.py``).
+#: iOS 5 Safari cannot upload files, so there is no photo upload.
+AVATAR_SHAPES = ("circle", "square", "triangle", "diamond", "star", "moon", "heart", "book")
 _KDF_NAME = "pbkdf2_sha256"
 
 # The fixed profile id used when accounts are disabled (and for any state that
@@ -398,7 +402,10 @@ def _sanitize_profile(raw: object) -> dict | None:
     name = _clean_text(raw.get("name"), _MAX_PROFILE_NAME) or "Reader"
     color = raw.get("color") if raw.get("color") in _PROFILE_COLORS else _PROFILE_COLORS[0]
     created = _as_real_number(raw.get("created"))
-    return {"name": name, "color": color, "created": float(created) if created is not None else 0.0}
+    out = {"name": name, "color": color, "created": float(created) if created is not None else 0.0}
+    if raw.get("avatar") in AVATAR_SHAPES:
+        out["avatar"] = raw["avatar"]
+    return out
 
 
 def _sanitize_account(raw: object) -> dict | None:
@@ -1187,6 +1194,22 @@ class Store:
             }
             self._save()
             return profile_id
+
+    def set_avatar(self, account_id: str, profile_id: str, shape: str) -> bool:
+        """Set one of *account_id*'s profiles' avatar to a built-in *shape*.
+
+        :returns: ``True`` when the profile existed under this account.
+        :raises ValueError: If *shape* is not one of :data:`AVATAR_SHAPES`.
+        """
+        if shape not in AVATAR_SHAPES:
+            raise ValueError("Pick one of the pictures shown.")
+        with self._lock:
+            acct = self._data["accounts"].get(account_id)
+            if acct is None or profile_id not in acct["profiles"]:
+                return False
+            acct["profiles"][profile_id]["avatar"] = shape
+            self._save()
+            return True
 
     def rename_profile(self, account_id: str, profile_id: str, name: str) -> bool:
         """Rename one of *account_id*'s own profiles.

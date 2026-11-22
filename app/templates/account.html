@@ -9,7 +9,17 @@
 <ul class="list">
 {% for p in profiles %}
   <li class="item">
-    <p><strong>{{ p.name }}</strong>{% if p.current %} &mdash; current{% endif %}</p>
+    <p><img class="avatar" src="{{ p.avatar_url }}" width="48" height="48" alt="">
+      <strong>{{ p.name }}</strong>{% if p.current %} &mdash; current{% endif %}</p>
+    <form class="authform" method="post" action="/account">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="set_avatar">
+      <input type="hidden" name="profile_id" value="{{ p.id }}">
+      <select name="avatar" aria-label="Picture for {{ p.name }}">
+      {% for a in avatars %}<option value="{{ a }}"{% if a == p.avatar %} selected{% endif %}>{{ a }}</option>{% endfor %}
+      </select>
+      <button class="button small" type="submit">Set picture</button>
+    </form>
     <form class="authform" method="post" action="/account">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <input type="hidden" name="action" value="rename_profile">

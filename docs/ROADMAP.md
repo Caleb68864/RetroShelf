@@ -326,8 +326,21 @@ setting where that fits, without touching existing data.
   unchanged (current page only). Tests: `tests/test_search_paging.py`.
 
 ### Deferred by design (not scheduled)
-- Per-profile PIN; email password reset; per-profile avatars/theming; admin
-  dashboard (accounts plan, "Exclusions").
+- Per-profile PIN; admin dashboard (accounts plan, "Exclusions").
+- **Blocked: email password reset.** It needs a mail service and its
+  credentials. A forgotten password is handled by the admin reset (A1).
+- [x] **Per-profile avatars** (built 2026-11-21 on `feat/deferred-features-2`;
+  accounts plan, "Exclusions"). Eight built-in shapes (`AVATAR_SHAPES` in
+  `app/store.py`) drawn in the profile's colour, as 48x48 baseline PNGs in
+  `app/static/avatars/` (about 8 KB in all; regenerate with
+  `tools/make_avatars.py`). Chosen with a plain form on `/account` and shown
+  on `/account` and the `/profiles` picker. Profiles without one show the
+  circle. Per-profile theming is already covered by the profile colour plus
+  the existing per-device theme preferences.
+  - **Blocked: photo upload.** iOS 5 Safari has no working file input (it
+    arrived in iOS 6), and accepting uploads would need a multipart parser
+    the app deliberately avoids.
+  - Tests: `tests/test_avatars.py`.
 - [x] **Per-device reading positions** (built 2026-11-21 on
   `feat/deferred-features`; EPUB reader plan, "Exclusions"). Opt-in
   `PER_DEVICE_POSITIONS=1` (default off; nothing changes otherwise). Each
