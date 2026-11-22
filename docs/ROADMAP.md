@@ -217,7 +217,19 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   that open. A `.tmp-` directory younger than `_BUILD_DIR_GRACE` (1 h) is now
   left alone; an older one, left over from a crash, is still pruned. Test:
   `test_prune_spares_an_in_progress_build_but_not_a_stale_one`.
-- Owner decision, not scheduled: whether duplicate shelf names should be refused.
+
+### Decided by agent (2026-11-21, owner may revisit)
+Owner standing order 2026-11-21: take the conservative option, behind a
+setting where that fits, without touching existing data.
+
+- [x] **Duplicate shelf names are refused** (on `feat/owner-decisions-batch1`).
+  Decided by agent 2026-11-21 (owner may revisit): refuse a shelf name that
+  matches another of the profile's shelves, ignoring case, on create and
+  rename. Two shelves both called "To Read" can't be told apart on the
+  book page. Shelves that already share a name are left alone, and
+  re-casing a shelf's own name is allowed. `_refuse_duplicate_shelf_name` in
+  `app/store.py`; tests `test_duplicate_shelf_names_*` in
+  `tests/test_shelves.py`.
 
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin

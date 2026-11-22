@@ -434,6 +434,17 @@ def _public_account(account_id: str, account: dict) -> dict:
     }
 
 
+def _refuse_duplicate_shelf_name(shelves: dict, name: str, except_id: str | None = None) -> None:
+    """Raise ``ValueError`` if another shelf in *shelves* is already called
+    *name*, ignoring case. Shelves that already share a name (made before
+    this check) are left as they are; only new clashes are refused.
+    """
+    folded = name.casefold()
+    for sid, shelf in shelves.items():
+        if sid != except_id and str(shelf.get("name", "")).casefold() == folded:
+            raise ValueError("You already have a shelf with that name.")
+
+
 class Store:
     """JSON-backed store of favourites, history, bookmarks, and (opt-in) accounts."""
 
@@ -665,8 +676,9 @@ class Store:
         :param profile_id: The owning profile.
         :returns: The new shelf's opaque id.
         :rtype: str
-        :raises ValueError: If *name* is empty/blank or the profile already has
-            :data:`_MAX_SHELVES` shelves.
+        :raises ValueError: If *name* is empty/blank, another of the profile's
+            shelves already has it (case-insensitive), or the profile already
+            has :data:`_MAX_SHELVES` shelves.
         """
         clean = _clean_text(name, _MAX_SHELF_NAME).strip()
         if not clean:
@@ -675,6 +687,7 @@ class Store:
             shelves = self._pstate(profile_id)["shelves"]
             if len(shelves) >= _MAX_SHELVES:
                 raise ValueError("Too many shelves.")
+            _refuse_duplicate_shelf_name(shelves, clean)
             sid = _new_id()
             while sid in shelves:
                 sid = _new_id()
@@ -688,15 +701,18 @@ class Store:
 
         :returns: ``True`` when the shelf existed under this profile.
         :rtype: bool
-        :raises ValueError: If *name* is empty/blank (as :meth:`create_shelf`).
+        :raises ValueError: If *name* is empty/blank, or another of the
+            profile's shelves already has it (as :meth:`create_shelf`).
         """
         clean = _clean_text(name, _MAX_SHELF_NAME).strip()
         if not clean:
             raise ValueError("Shelf name must not be empty.")
         with self._lock:
-            shelf = self._pstate_ro(profile_id)["shelves"].get(shelf_id)
+            shelves = self._pstate_ro(profile_id)["shelves"]
+            shelf = shelves.get(shelf_id)
             if shelf is None:
                 return False
+            _refuse_duplicate_shelf_name(shelves, clean, except_id=shelf_id)
             shelf["name"] = clean
             self._save()
             return True
