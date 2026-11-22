@@ -166,6 +166,13 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
     length (`İ`).
   - EPUB and PDF extraction run in a worker thread (`asyncio.to_thread`), as
     CBZ already did, so shelving a big book no longer stalls every request.
+- [x] **HTML book image fetches are time-bounded** (done 2026-11-21 on
+  `fix/upstream-and-reader-followups`). The shared client has no read
+  timeout, so one stalled image hung the shelve and its per-book lock, and
+  every later open of that book, forever. `_fetch_capped_image` in
+  `app/reader.py` now runs under `IMAGE_FETCH_TIMEOUT`, which reuses
+  `FEED_READ_TIMEOUT` (30 s, not configurable, like the feed timeout). A
+  timeout drops that image only. Test: `tests/test_reader_followups.py`.
 - Owner decision, not scheduled: whether duplicate shelf names should be refused.
 
 ### Deferred by design (not scheduled)

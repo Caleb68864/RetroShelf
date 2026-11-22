@@ -40,7 +40,7 @@ from xml.sax.saxutils import escape, quoteattr
 from defusedxml.ElementTree import ParseError, fromstring
 
 from .errors import PdfNoTextError, ReaderError, SsrfError
-from .kavita import KavitaClient
+from .kavita import FEED_READ_TIMEOUT, KavitaClient
 from .store import book_key as _store_book_key
 
 try:
@@ -1828,7 +1828,25 @@ def _html_chapter_title(title: str | None, index: int, record: dict) -> str:
     return f"Section {index + 1}"
 
 
+# The shared client has no read timeout (book downloads must not be cut off),
+# so each HTML-book image fetch is bounded like a feed fetch. Without it one
+# stalled image hangs the shelve, and its per-book lock, forever.
+IMAGE_FETCH_TIMEOUT = FEED_READ_TIMEOUT
+
+
 async def _fetch_capped_image(kc: KavitaClient, url: str) -> bytes | None:
+    """Fetch *url* within :data:`IMAGE_FETCH_TIMEOUT`, or return ``None``.
+
+    See :func:`_fetch_capped_image_unbounded`; a timeout drops the image.
+    """
+    try:
+        return await asyncio.wait_for(_fetch_capped_image_unbounded(kc, url),
+                                      timeout=IMAGE_FETCH_TIMEOUT)
+    except asyncio.TimeoutError:
+        return None
+
+
+async def _fetch_capped_image_unbounded(kc: KavitaClient, url: str) -> bytes | None:
     """Fetch *url* into memory, capped at :data:`MAX_IMAGE_SRC_BYTES`.
 
     *url* must already be an SSRF-validated absolute URL (see
