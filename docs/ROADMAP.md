@@ -328,8 +328,17 @@ setting where that fits, without touching existing data.
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").
-- Per-device reading positions; EPUB CSS passthrough; EPUB3 media/fixed-layout
-  (EPUB reader plan, "Exclusions").
+- [x] **Per-device reading positions** (built 2026-11-21 on
+  `feat/deferred-features`; EPUB reader plan, "Exclusions"). Opt-in
+  `PER_DEVICE_POSITIONS=1` (default off; nothing changes otherwise). Each
+  browser gets a random `rs_device` cookie: plain cookie, no JS. The
+  profile-wide position is still kept, so "Continue reading" works, and a
+  device that has not read a book yet resumes there. A device that has
+  resumes at its own place. Stored as a `device_reading` section, written
+  only once used and capped at 20 devices per profile. Tests:
+  `tests/test_per_device_positions.py`.
+- EPUB CSS passthrough; EPUB3 media/fixed-layout (EPUB reader plan,
+  "Exclusions").
 - [x] **Reader image max-edge setting** (built 2026-11-21 on
   `feat/deferred-features`; EPUB reader plan, open question 2).
   `READER_IMAGE_MAX_EDGE` env var (256-4096, default 1024, so nothing changes

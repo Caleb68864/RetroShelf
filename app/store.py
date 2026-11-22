@@ -37,6 +37,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -283,7 +284,36 @@ def _empty_state() -> dict:
     :rtype: dict
     """
     return {"favorites": {}, "history": [], "reading": {}, "bookmarks": {},
-            "shelves": {}}
+            "shelves": {}, "device_reading": {}}
+
+
+# Per-device positions (opt-in PER_DEVICE_POSITIONS): a device id is the
+# random hex value of the ``rs_device`` cookie.
+_MAX_DEVICES = 20
+_DEVICE_ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
+
+
+def _clean_device_reading(raw: object) -> dict:
+    """Validate a ``device_reading`` section: ``{device: {book_key: pos}}``."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    for dev, books in list(raw.items())[:_MAX_DEVICES]:
+        if not (isinstance(dev, str) and _DEVICE_ID_RE.match(dev) and isinstance(books, dict)):
+            continue
+        clean: dict = {}
+        for k, v in list(books.items())[:_MAX_READING]:
+            if not isinstance(v, dict):
+                continue
+            nums = [_as_real_number(v.get(f)) for f in ("chapter", "block", "percent")]
+            if any(n is None or n < 0 for n in nums):
+                continue
+            clean[_cap_key(k)] = {"chapter": int(nums[0]), "block": int(nums[1]),
+                                  "percent": min(100, int(nums[2])),
+                                  "updated": float(_as_real_number(v.get("updated")) or 0.0)}
+        if clean:
+            out[dev] = clean
+    return out
 
 
 def _clean_state(data: dict) -> dict:
@@ -352,6 +382,7 @@ def _clean_state(data: dict) -> dict:
                 "items": items,
             }
         state["shelves"] = clean_shelves
+    state["device_reading"] = _clean_device_reading(data.get("device_reading"))
     return state
 
 
@@ -458,7 +489,7 @@ class Store:
         # accounts-off file is byte-identical to the pre-accounts format.
         self._data: dict = {
             "favorites": {}, "history": [], "reading": {}, "bookmarks": {},
-            "shelves": {}, "accounts": {}, _PROFILE_STATE_KEY: {},
+            "shelves": {}, "device_reading": {}, "accounts": {}, _PROFILE_STATE_KEY: {},
         }
         self._load()
 
@@ -547,6 +578,9 @@ class Store:
         # creates a shelf keeps exactly the pre-shelves sentinel file shape.
         if self._data["shelves"]:
             payload["shelves"] = self._data["shelves"]
+        # Likewise per-device positions (opt-in), only once one exists.
+        if self._data["device_reading"]:
+            payload["device_reading"] = self._data["device_reading"]
         if self._data["accounts"]:
             payload["accounts"] = self._data["accounts"]
         if self._data[_PROFILE_STATE_KEY]:
@@ -830,7 +864,7 @@ class Store:
 
     # -- Reading positions (SS-03) -------------------------------------------
     def set_position(self, record: dict, chapter: int, block: int, percent: int,
-                     profile_id: str = _SENTINEL_PROFILE) -> None:
+                     profile_id: str = _SENTINEL_PROFILE, device: str | None = None) -> None:
         """Record a book's current reading position.
 
         Called on every part view from the reader routes, so this is the
@@ -843,6 +877,8 @@ class Store:
             *chapter*.
         :param percent: Overall progress, 0-100 (see :func:`app.reader.percent_of`).
         :param profile_id: The profile whose position to record.
+        :param device: With per-device positions on, the reading device's id;
+            its own position is kept as well as the profile-wide one.
         """
         key = book_key(record.get("u", ""))
         with self._lock:
@@ -855,13 +891,37 @@ class Store:
             rec["updated"] = time.time()
             reading[key] = rec
             self._trim_mapping(reading, _MAX_READING, "updated")
+            if device and _DEVICE_ID_RE.match(device):
+                devices = self._pstate(profile_id).setdefault("device_reading", {})
+                books = devices.setdefault(device, {})
+                books[key] = {"chapter": rec["chapter"], "block": rec["block"],
+                              "percent": rec["percent"], "updated": rec["updated"]}
+                self._trim_mapping(books, _MAX_READING, "updated")
+                if len(devices) > _MAX_DEVICES:
+                    newest = sorted(devices, key=lambda d: max(
+                        (b.get("updated", 0) for b in devices[d].values()), default=0),
+                        reverse=True)[:_MAX_DEVICES]
+                    for d in list(devices):
+                        if d not in newest:
+                            del devices[d]
             self._save()
 
-    def get_position(self, book_key: str, profile_id: str = _SENTINEL_PROFILE) -> dict | None:
-        """:returns: The reading-position record for *book_key*, or ``None``."""
+    def get_position(self, book_key: str, profile_id: str = _SENTINEL_PROFILE,
+                     device: str | None = None) -> dict | None:
+        """:returns: The reading-position record for *book_key*, or ``None``.
+
+        With *device*, that device's own position wins when it has one; a
+        device that has not read the book yet gets the profile-wide one (the
+        last place it was read on any device).
+        """
         with self._lock:
-            entry = self._pstate_ro(profile_id)["reading"].get(book_key)
-            return dict(entry) if entry is not None else None
+            state = self._pstate_ro(profile_id)
+            entry = state["reading"].get(book_key)
+            mine = (state.get("device_reading", {}).get(device, {}).get(book_key)
+                    if device else None)
+            if mine is None:
+                return dict(entry) if entry is not None else None
+            return {**(entry or {"key": book_key}), **mine}
 
     def reading_list(self, limit: int = 4, profile_id: str = _SENTINEL_PROFILE) -> list[dict]:
         """:returns: The *limit* most-recently-updated reading positions."""

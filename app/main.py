@@ -87,6 +87,11 @@ from .throttle import LoginThrottle
 
 log = logging.getLogger("retroshelf")
 
+# Per-device reading positions (opt-in): a random id, never derived from
+# anything about the device or the user.
+_DEVICE_COOKIE = "rs_device"
+_DEVICE_ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
+
 # Routes that must never be gated by the access-key / IP-allowlist middleware
 # (the container HEALTHCHECK + the stylesheet). [M-7]
 _OPEN_PREFIXES = ("/health", "/static")
@@ -1984,7 +1989,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         read_hint = False
         if fmt in _READER_FORMATS:
             read_url = f"/read/{bid}"
-            pos = store(request).get_position(key, profile_id=pid)
+            pos = store(request).get_position(key, profile_id=pid, device=_device_id(request))
             if pos is None:
                 read_label = "Read here"
                 read_hint = True
@@ -2174,6 +2179,13 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 "cover_url": f"/cover/{codec(request).encode(rec['c'])}" if rec.get("c") else None,
             })
         return templates.TemplateResponse(request, "list.html", {"items": items})
+
+    def _device_id(request: Request) -> str | None:
+        """This browser's per-device id, when PER_DEVICE_POSITIONS is on."""
+        if not cfg.per_device_positions:
+            return None
+        value = request.cookies.get(_DEVICE_COOKIE) or ""
+        return value if _DEVICE_ID_RE.match(value) else None
 
     def _require_site_token(request: Request) -> Response | None:
         """Refuse a state-changing request that did not come from our own pages.
@@ -2729,7 +2741,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if isinstance(opened, Response):
             return opened
         rec, key, manifest = opened
-        pos = store(request).get_position(key, profile_id=current_profile_id(request))
+        pos = store(request).get_position(key, profile_id=current_profile_id(request),
+                                          device=_device_id(request))
         if pos is not None and 0 <= int(pos.get("chapter", 0)) < len(manifest.chapters):
             chapter = int(pos["chapter"])
             # A corrupt resume-chapter cache file must not make the book
@@ -2764,7 +2777,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         if isinstance(opened, Response):
             return opened
         rec, key, manifest = opened
-        pos = store(request).get_position(key, profile_id=current_profile_id(request))
+        pos = store(request).get_position(key, profile_id=current_profile_id(request),
+                                          device=_device_id(request))
         current_chapter = int(pos["chapter"]) if pos is not None else None
         # Prefer the book's hierarchical nav/NCX ToC (indented by depth);
         # fall back to the flat spine-chapter list for books without one
@@ -3041,8 +3055,11 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
                 next_url = f"/read/{bid}/{next_chapter}/1"
 
         pid = current_profile_id(request)
+        device, new_device = _device_id(request), None
+        if cfg.per_device_positions and device is None:
+            device = new_device = secrets.token_hex(16)
         store(request).set_position(rec, chapter, start, percent_of(manifest, chapter, start),
-                                    profile_id=pid)
+                                    profile_id=pid, device=device)
 
         marks = store(request).bookmarks(key, profile_id=pid)
         already_bookmarked = any(
@@ -3061,7 +3078,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         # split size is meaningless and there is no text to search). Bookmarks,
         # themes, and the ToC link stay useful and are kept. [cbz-reader]
         is_comic = manifest.kind == "comic"
-        return templates.TemplateResponse(request, "read.html", {
+        page = templates.TemplateResponse(request, "read.html", {
             "book_title": manifest.title, "bid": bid,
             "chapter": chapter, "part": part, "parts_count": len(parts),
             "chapter_title": manifest.chapters[chapter].title,
@@ -3074,6 +3091,10 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             # Shelving notes, on the book's first page only.
             "notices": manifest.notices if (chapter, part) == (first_chapter, 1) else [],
         })
+        if new_device:
+            page.set_cookie(_DEVICE_COOKIE, new_device, max_age=31536000 * 5,
+                            httponly=True, samesite="lax", path="/")
+        return page
 
 
 def _safe_path(candidate: str | None, default: str = "/") -> str:

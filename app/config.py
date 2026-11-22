@@ -417,6 +417,8 @@ class Config:
     cover_jpeg_quality: int = 80
     # In-browser reader images are downscaled to this longest edge (px).
     reader_image_max_edge: int = 1024
+    # Opt-in: each browser (``rs_device`` cookie) resumes where *it* left off.
+    per_device_positions: bool = False
     # Opt-in multi-account login + profiles. Off (default) → no login, reading
     # state is global, and the optional access-key gate is unchanged. On → the
     # login page becomes the gate and reading state is per-profile.
@@ -538,6 +540,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     - ``READER_IMAGE_MAX_EDGE`` — longest edge (px) of in-browser reader
       images, ``256``–``4096``; default ``1024``. Changing it re-shelves
       books with images the next time they are opened.
+    - ``PER_DEVICE_POSITIONS`` — ``1`` to keep a reading position per
+      browser (``rs_device`` cookie) as well as per profile; default off.
 
     :param env: Explicit environment mapping to use instead of
         ``os.environ``. Pass a plain ``dict`` in tests to keep them
@@ -611,6 +615,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         cover_max_edge=_as_int(e.get("COVER_MAX_EDGE"), 320, "COVER_MAX_EDGE"),
         cover_jpeg_quality=_as_int(e.get("COVER_JPEG_QUALITY"), 80, "COVER_JPEG_QUALITY"),
         reader_image_max_edge=_reader_image_max_edge(e.get("READER_IMAGE_MAX_EDGE")),
+        per_device_positions=_as_bool(e.get("PER_DEVICE_POSITIONS"), False),
         extra_origins=extra_origins,
         upstream_user_agent=(e.get("UPSTREAM_USER_AGENT") or "").strip() or None,
         kavita_origin=kavita_origin,
