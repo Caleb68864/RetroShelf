@@ -19,6 +19,7 @@ import os
 import random
 import re
 import secrets
+import shutil
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -1341,6 +1342,84 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             return RedirectResponse("/login", status_code=303)
         return templates.TemplateResponse(
             request, "account.html", _account_context(request, sess["account"]))
+
+    # -- Admin dashboard (plain HTML tables and forms) ----------------------
+    def _admin_session(request: Request) -> tuple[dict | None, Response | None]:
+        """``(session, None)`` for a signed-in admin, else ``(None, response)``:
+        404 with accounts off, the login page without a session, 403 for a
+        non-admin. Admin rights are re-read from the store on every request."""
+        if not cfg.accounts_enabled:
+            return None, _accounts_off_404(request)
+        sess = current_session(request)
+        if sess is None:
+            return None, RedirectResponse("/login", status_code=303)
+        if not sess["account"]["is_admin"]:
+            return None, _error_response(request, "Forbidden", "Only an admin can open this page.", 403)
+        return sess, None
+
+    def _admin_context(request: Request, *, message: str | None = None,
+                       error: str | None = None) -> dict:
+        accounts_rows = [{"username": a["username"], "is_admin": a["is_admin"],
+                          "profiles": len(a["profiles"])}
+                         for a in store(request).list_accounts()]
+        reader_books, reader_bytes = _dir_usage(os.path.join(cfg.cache_dir, "reader"), top_dirs=True)
+        cover_files, cover_bytes = _dir_usage(os.path.join(cfg.cache_dir, "covers"))
+        try:
+            state_bytes = os.path.getsize(cfg.state_path)
+        except OSError:
+            state_bytes = 0
+        settings = [
+            ("Libraries", ", ".join(f.name for f in cfg.feeds)),
+            ("Covers shown", "yes" if cfg.show_covers else "no"),
+            ("Cover size / JPEG quality", f"{cfg.cover_max_edge}px / {cfg.cover_jpeg_quality}"),
+            ("Reader image size", f"{cfg.reader_image_max_edge}px"),
+            ("Book CSS (EPUB_CSS)", "on" if cfg.epub_css else "off"),
+            ("Per-device positions", "on" if cfg.per_device_positions else "off"),
+            ("Access limited to", ", ".join(map(str, cfg.allowed_ips)) if cfg.allowed_ips else "any address"),
+        ]
+        return {
+            "csrf": _csrf_field(request), "accounts": accounts_rows,
+            "storage": [
+                ("Shelved books (reader cache)", reader_books, _human_size(reader_bytes)),
+                ("Cached covers", cover_files, _human_size(cover_bytes)),
+                ("Reading state file", 1 if state_bytes else 0, _human_size(state_bytes)),
+            ],
+            "settings": settings, "version": __version__,
+            "message": message, "error": error,
+        }
+
+    @app.get("/admin", response_class=HTMLResponse)
+    async def admin_get(request: Request) -> Response:
+        """GET ``/admin`` — the admin dashboard: accounts, storage, settings."""
+        _sess, refusal = _admin_session(request)
+        if refusal is not None:
+            return refusal
+        return templates.TemplateResponse(request, "admin.html", _admin_context(request))
+
+    @app.post("/admin")
+    async def admin_post(request: Request) -> Response:
+        """POST ``/admin`` — clear the reader or cover cache (admin, CSRF,
+        confirm box). Caches only: reading positions, bookmarks and shelves
+        live in the state file and are untouched."""
+        _sess, refusal = _admin_session(request)
+        if refusal is not None:
+            return refusal
+        form = await _form(request)
+        if not _csrf_ok(request, form):
+            return _csrf_refused(request)
+        action = form.get("action")
+        target = {"clear_reader_cache": "reader", "clear_cover_cache": "covers"}.get(action or "")
+        if target is None:
+            return templates.TemplateResponse(request, "admin.html", _admin_context(
+                request, error="Unknown action."), status_code=400)
+        if form.get("confirm") != "yes":
+            return templates.TemplateResponse(request, "admin.html", _admin_context(
+                request, error="Tick the box to confirm."), status_code=400)
+        removed = _clear_cache_dir(os.path.join(cfg.cache_dir, target))
+        log.info("admin cleared the %s cache (%d entries)", target, removed)
+        label = "reader" if target == "reader" else "cover"
+        return templates.TemplateResponse(request, "admin.html", _admin_context(
+            request, message=f"Cleared the {label} cache ({removed} entries)."))
 
     def _clear_login_tarpit(request: Request, username: str) -> None:
         """Clear *username*'s per-username login tarpit (case-insensitive).
@@ -3109,6 +3188,59 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             page.set_cookie(_DEVICE_COOKIE, new_device, max_age=31536000 * 5,
                             httponly=True, samesite="lax", path="/")
         return page
+
+
+def _dir_usage(path: str, top_dirs: bool = False) -> tuple[int, int]:
+    """``(count, bytes)`` under *path*: files, or with *top_dirs* the
+    top-level directories (one per shelved book). Never raises."""
+    count = total = 0
+    try:
+        with os.scandir(path) as it:
+            for item in it:
+                if item.name.startswith("."):
+                    continue
+                if top_dirs and item.is_dir():
+                    count += 1
+                    for root, _dirs, files in os.walk(item.path):
+                        for f in files:
+                            try:
+                                total += os.path.getsize(os.path.join(root, f))
+                            except OSError:
+                                pass
+                elif not top_dirs and item.is_file():
+                    count += 1
+                    try:
+                        total += item.stat().st_size
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    return count, total
+
+
+def _clear_cache_dir(path: str) -> int:
+    """Delete the entries of a cache directory; returns how many went.
+
+    Skips dot-names (in-flight spools) and ``.tmp-`` build directories, so a
+    book being shelved right now is not pulled from under it.
+    """
+    removed = 0
+    try:
+        with os.scandir(path) as it:
+            for item in it:
+                if item.name.startswith(".") or ".tmp-" in item.name:
+                    continue
+                try:
+                    if item.is_dir(follow_symlinks=False):
+                        shutil.rmtree(item.path, ignore_errors=True)
+                    else:
+                        os.remove(item.path)
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return removed
 
 
 def _avatar_url(profile: dict) -> str:

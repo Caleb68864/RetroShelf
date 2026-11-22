@@ -75,6 +75,7 @@
 </form>
 
 {% if is_admin %}
+<p><a class="button" href="/admin">Admin dashboard</a></p>
 <div class="sectionhead">&gt;&gt; Add an account (admin)</div>
 <form class="authform" method="post" action="/account">
   <input type="hidden" name="_csrf" value="{{ csrf }}">

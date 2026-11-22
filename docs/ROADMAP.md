@@ -326,7 +326,19 @@ setting where that fits, without touching existing data.
   unchanged (current page only). Tests: `tests/test_search_paging.py`.
 
 ### Deferred by design (not scheduled)
-- Per-profile PIN; admin dashboard (accounts plan, "Exclusions").
+- Per-profile PIN (accounts plan, "Exclusions").
+- [x] **Admin dashboard** (built 2026-11-21 on `feat/deferred-features-2`;
+  accounts plan, "Exclusions"). `/admin` is plain HTML tables and forms,
+  linked from `/account` for admins. It shows the accounts (admin flag,
+  profile count), storage (shelved books, cached covers, state file sizes),
+  the non-secret settings and the version.
+  - It can clear the reader or cover cache (CSRF plus a confirm box). Books
+    being built and in-flight spools are skipped, and positions, bookmarks
+    and shelves are never touched.
+  - Admin-only (403 otherwise, re-read from the store each request) and 404
+    with accounts off. Account changes stay on `/account`.
+  - Tests: `tests/test_admin_dashboard.py`; `/admin` is also in the
+    old-iPad guard.
 - **Blocked: email password reset.** It needs a mail service and its
   credentials. A forgotten password is handled by the admin reset (A1).
 - [x] **Per-profile avatars** (built 2026-11-21 on `feat/deferred-features-2`;

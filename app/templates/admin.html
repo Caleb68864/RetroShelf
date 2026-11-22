@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Admin - RetroShelf{% endblock %}
+{% block content %}
+<div class="sectionhead">&gt;&gt; Admin dashboard</div>
+{% if message %}<p class="done">{{ message }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<div class="sectionhead">&gt;&gt; Accounts</div>
+<table class="admintable">
+  <tr><th>Username</th><th>Admin</th><th>Profiles</th></tr>
+  {% for a in accounts %}
+  <tr><td>{{ a.username }}</td><td>{{ "yes" if a.is_admin else "no" }}</td><td>{{ a.profiles }}</td></tr>
+  {% endfor %}
+</table>
+<p><a href="/account">Add, reset or remove accounts &raquo;</a></p>
+
+<div class="sectionhead">&gt;&gt; Storage</div>
+<table class="admintable">
+  <tr><th>What</th><th>Count</th><th>Size</th></tr>
+  {% for name, count, size in storage %}
+  <tr><td>{{ name }}</td><td>{{ count }}</td><td>{{ size or "0 B" }}</td></tr>
+  {% endfor %}
+</table>
+
+<form class="authform" method="post" action="/admin">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="action" value="clear_reader_cache">
+  <p><label><input type="checkbox" name="confirm" value="yes"> Yes, clear it</label>
+    <button class="button small" type="submit">Clear reader cache</button></p>
+  <p class="muted">Books are prepared again the next time they are opened. Reading positions, bookmarks and shelves are kept.</p>
+</form>
+<form class="authform" method="post" action="/admin">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="action" value="clear_cover_cache">
+  <p><label><input type="checkbox" name="confirm" value="yes"> Yes, clear it</label>
+    <button class="button small" type="submit">Clear cover cache</button></p>
+</form>
+
+<div class="sectionhead">&gt;&gt; Settings</div>
+<table class="admintable">
+  {% for name, value in settings %}
+  <tr><th>{{ name }}</th><td>{{ value }}</td></tr>
+  {% endfor %}
+  <tr><th>Version</th><td>{{ version }}</td></tr>
+</table>
+<p class="muted">Settings come from the server's environment; change them there and restart.</p>
+
+<p><a href="/status">Library status &raquo;</a></p>
+<p><a class="back" href="/account">Back to account</a></p>
+{% endblock %}
