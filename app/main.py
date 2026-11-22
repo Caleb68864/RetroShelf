@@ -40,14 +40,13 @@ from .download import (
     EPUB_MIME,
     PDF_MIME,
     format_of,
+    head_cover,
+    head_download,
     stream_cover,
     stream_download,
 )
 from .download import (
     _safe_image_type,
-)
-from .download import (
-    build_headers as build_download_headers,
 )
 from .errors import (
     BadIdError,
@@ -2453,20 +2452,24 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         url = kc(request).resolve_url(raw)  # re-validate
         media_type, disposition, ext = _media_for_url(url, cfg, (record or {}).get("m"))
         filename = sanitize_filename(name_hint or (record or {}).get("t") or _basename(url), ext)
-        if request.method == "GET" and record is not None:
-            store(request).record_download(
-                {**record, "feed_name": _feed_for_url(url).name},
-                profile_id=current_profile_id(request))
-        if request.method == "HEAD":
-            # Answer header probes (e.g. `curl -I`, Safari) without fetching the
-            # body. Same headers a GET would produce.
-            headers = build_download_headers(filename=filename, disposition=disposition)
-            return Response(status_code=200, media_type=media_type, headers=headers)
         range_header = request.headers.get("range")
-        return await stream_download(
+        if request.method == "HEAD":
+            # Answer header probes (curl -I, Safari) with the library's real
+            # status and size, without reading the body.
+            return await head_download(
+                kc(request), url, media_type=media_type, filename=filename,
+                disposition=disposition, range_header=range_header)
+        resp = await stream_download(
             kc(request), url, media_type=media_type, filename=filename,
             disposition=disposition, range_header=range_header,
         )
+        # Record only once the library has actually started sending the book:
+        # a failed upstream (raised above) or a 416 is not a download.
+        if record is not None and 200 <= resp.status_code < 300:
+            store(request).record_download(
+                {**record, "feed_name": _feed_for_url(url).name},
+                profile_id=current_profile_id(request))
+        return resp
 
     @app.api_route("/download/{did}/{filename}", methods=["GET", "HEAD"])
     async def download_named(request: Request, did: str, filename: str) -> Response:
@@ -2537,8 +2540,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         try:
             url = kc(request).resolve_url(codec(request).decode(cid))
             if request.method == "HEAD":
-                return Response(status_code=200, media_type="image/jpeg",
-                                headers={"Cache-Control": "private, max-age=86400"})
+                return await head_cover(kc(request), url, cache_dir=cfg.cache_dir)
             return await stream_cover(
                 kc(request), url,
                 cache_dir=cfg.cache_dir,
@@ -2744,7 +2746,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         first = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
         return templates.TemplateResponse(request, "toc.html", {
             "book_title": manifest.title, "bid": bid, "chapters": chapters,
-            "start_url": f"/read/{bid}/{first}/1",
+            "start_url": f"/read/{bid}/{first}/1", "notices": manifest.notices,
         })
 
     @app.get("/read/{bid}/find", response_class=HTMLResponse)
@@ -2939,6 +2941,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         rec, key, manifest = opened
         if chapter < 0 or chapter >= len(manifest.chapters):
             return _error_response(request, "Not found", "That chapter does not exist.", 404)
+        first_chapter = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
         target = _split_target(request)
         blocks = load_chapter(cfg.cache_dir, key, chapter)
         parts = parts_for([len(b) for b in blocks], target)
@@ -3028,6 +3031,8 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
             "bookmark_count": len(marks),
             "is_comic": is_comic,
             "page_count": len(manifest.chapters),
+            # Shelving notes, on the book's first page only.
+            "notices": manifest.notices if (chapter, part) == (first_chapter, 1) else [],
         })
 
 

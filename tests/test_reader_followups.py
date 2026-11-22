@@ -64,3 +64,107 @@ def test_prune_spares_an_in_progress_build_but_not_a_stale_one(tmp_path):
     reader.prune_reader_cache(str(tmp_path), 0)
     assert live.exists()
     assert not stale.exists() and not done.exists()
+
+
+# -- obfuscated fonts are not DRM --------------------------------------------
+def _epub_with_encryption(enc_xml: bytes) -> bytes:
+    import io
+    import zipfile
+    from tests.test_reader_shelve import make_epub
+    src = zipfile.ZipFile(io.BytesIO(make_epub(chapters=1, image=False)))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for info in src.infolist():
+            z.writestr(info, src.read(info))
+        z.writestr("META-INF/encryption.xml", enc_xml)
+    return out.getvalue()
+
+
+def _enc(alg: str, uri: str) -> bytes:
+    return f"""<?xml version="1.0"?>
+<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+  xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+ <enc:EncryptedData><enc:EncryptionMethod Algorithm="{alg}"/>
+  <enc:CipherData><enc:CipherReference URI="{uri}"/></enc:CipherData>
+ </enc:EncryptedData></encryption>""".encode()
+
+
+def _extract(data: bytes):
+    import os
+    import tempfile
+    d = tempfile.mkdtemp()
+    tmp = os.path.join(d, "t")
+    os.makedirs(os.path.join(tmp, "chapters"))
+    os.makedirs(os.path.join(tmp, "images"))
+    path = os.path.join(d, "b.epub")
+    with open(path, "wb") as f:
+        f.write(data)
+    return reader._extract_epub(path, "k", {"t": "x"}, tmp)
+
+
+def test_font_obfuscation_only_is_readable():
+    for alg in ("http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC"):
+        manifest = _extract(_epub_with_encryption(_enc(alg, "OEBPS/fonts/Body%20Text.otf")))
+        assert manifest.chapters
+
+
+def test_real_drm_is_still_refused():
+    import pytest
+    from app.errors import ReaderError
+    cases = [
+        _enc("http://www.w3.org/2001/04/xmlenc#aes128-cbc", "OEBPS/ch0.xhtml"),
+        _enc("http://www.idpf.org/2008/embedding", "OEBPS/ch0.xhtml"),  # not a font
+        b"<encryption/>",
+        b"not xml",
+    ]
+    for enc in cases:
+        with pytest.raises(ReaderError, match="DRM"):
+            _extract(_epub_with_encryption(enc))
+
+
+# -- CBZ: macOS junk ignored, truncation noticed ------------------------------
+def _cbz(names):
+    import io
+    import zipfile
+    from PIL import Image
+    png = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(png, format="PNG")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for n in names:
+            z.writestr(n, png.getvalue() if not n.split("/")[-1].startswith("._")
+                       else b"\x00\x05\x16\x07junk")
+    return out.getvalue()
+
+
+def _extract_cbz(data: bytes):
+    import os
+    import tempfile
+    d = tempfile.mkdtemp()
+    tmp = os.path.join(d, "t")
+    os.makedirs(os.path.join(tmp, "chapters"))
+    os.makedirs(os.path.join(tmp, "images"))
+    path = os.path.join(d, "c.cbz")
+    with open(path, "wb") as f:
+        f.write(data)
+    return reader._extract_cbz(path, "k", {"t": "x"}, tmp)
+
+
+def test_cbz_ignores_macos_resource_forks_before_the_page_cap(monkeypatch):
+    monkeypatch.setattr(reader, "MAX_CBZ_PAGES", 2)
+    names = ["__MACOSX/._001.png", "__MACOSX/a/002.png", "._003.png", "001.png", "002.png"]
+    m = _extract_cbz(_cbz(names))
+    assert len(m.chapters) == 2
+    assert m.notices == []
+
+
+def test_cbz_truncated_by_the_page_cap_carries_a_notice(monkeypatch):
+    monkeypatch.setattr(reader, "MAX_CBZ_PAGES", 2)
+    m = _extract_cbz(_cbz(["001.png", "002.png", "003.png"]))
+    assert len(m.chapters) == 2
+    assert m.notices and "3 pages" in m.notices[0] and "first 2" in m.notices[0]
+    # Survives the manifest round trip; an old manifest loads with none.
+    d = reader._manifest_to_dict(m)
+    assert reader._manifest_from_dict(d).notices == m.notices
+    del d["notices"]
+    assert reader._manifest_from_dict(d).notices == []

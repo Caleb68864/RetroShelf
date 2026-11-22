@@ -206,3 +206,35 @@ def test_rename_of_unknown_shelf_still_just_redirects():
         tok = _token(client)
         resp = client.get(f"/shelves/rename/ghost?name=New&t={tok}", follow_redirects=False)
         assert resp.status_code == 303 and resp.headers["location"] == "/shelves"
+
+
+def test_duplicate_shelf_names_are_refused_case_insensitively():
+    st = _store()
+    sid = st.create_shelf("To Read")
+    other = st.create_shelf("Done")
+    for name in ("To Read", "to read", "  TO READ "):
+        try:
+            st.create_shelf(name)
+            assert False, f"duplicate {name!r} should be refused"
+        except ValueError as exc:
+            assert "already have a shelf" in str(exc)
+    try:
+        st.rename_shelf(other, "TO READ")
+        assert False, "rename onto an existing name should be refused"
+    except ValueError:
+        pass
+    assert st.shelf(other)["name"] == "Done"
+    # Renaming a shelf to a new casing of its own name is fine.
+    assert st.rename_shelf(sid, "to read") is True
+    # Other profiles have their own namespace.
+    st.create_shelf("To Read", profile_id="pB")
+
+
+def test_duplicate_shelf_name_route_shows_the_error():
+    with make_client(make_handler()) as client:
+        tok = _token(client)
+        client.get(f"/shelves/create?name=Keep&t={tok}", follow_redirects=False)
+        r = client.get(f"/shelves/create?name=keep&t={tok}", follow_redirects=False)
+        assert "err=" in r.headers["location"]
+        assert "already have a shelf" in client.get(r.headers["location"]).text
+        assert client.get("/shelves").text.count("/shelf/") == 1

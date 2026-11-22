@@ -427,3 +427,15 @@ def test_resume_reopens_at_last_read_page(tmp_path):
         r = client.get(f"/read/{bid}", follow_redirects=False)
         assert r.status_code == 303
         assert r.headers["location"] == f"/read/{bid}/2/1"
+
+
+def test_truncation_notice_shows_on_contents_and_first_page_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(reader, "MAX_CBZ_PAGES", 2)
+    handler, _calls = make_cbz_handler(make_cbz())  # three pages
+    with make_client(handler, str(tmp_path / "cache")) as client:
+        bid = _bid(client, url=CBZ_URL, media=CBZ_MEDIA, title="Test Comic")
+        client.get(f"/read/{bid}", follow_redirects=False)
+        notice = "only the first 2 can be shown"
+        assert notice in client.get(f"/read/{bid}/0/1").text
+        assert notice in client.get(f"/read/{bid}/toc").text
+        assert notice not in client.get(f"/read/{bid}/1/1").text

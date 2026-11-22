@@ -217,7 +217,56 @@ for good. The fix that suits a LAN tool is admin-driven management on `/account`
   that open. A `.tmp-` directory younger than `_BUILD_DIR_GRACE` (1 h) is now
   left alone; an older one, left over from a crash, is still pruned. Test:
   `test_prune_spares_an_in_progress_build_but_not_a_stale_one`.
-- Owner decision, not scheduled: whether duplicate shelf names should be refused.
+
+### Decided by agent (2026-11-21, owner may revisit)
+Owner standing order 2026-11-21: take the conservative option, behind a
+setting where that fits, without touching existing data.
+
+- [x] **Duplicate shelf names are refused** (on `feat/owner-decisions-batch1`).
+  Decided by agent 2026-11-21 (owner may revisit): refuse a shelf name that
+  matches another of the profile's shelves, ignoring case, on create and
+  rename. Two shelves both called "To Read" can't be told apart on the
+  book page. Shelves that already share a name are left alone, and
+  re-casing a shelf's own name is allowed. `_refuse_duplicate_shelf_name` in
+  `app/store.py`; tests `test_duplicate_shelf_names_*` in
+  `tests/test_shelves.py`.
+
+- [x] **Books with obfuscated fonts are readable** (same branch). Decided by
+  agent 2026-11-21 (owner may revisit): any `META-INF/encryption.xml` used to
+  be treated as DRM. Now a book whose `encryption.xml` lists only IDPF or
+  Adobe font obfuscation on font files opens, because the reader never
+  serves fonts. Real DRM, unknown algorithms, obfuscation on a non-font,
+  and unparsable files are refused as before. `_only_font_obfuscation` in
+  `app/reader.py`; tests `test_font_obfuscation_only_is_readable`,
+  `test_real_drm_is_still_refused`.
+
+- [x] **CBZ: macOS junk ignored, truncation shown** (same branch). Decided by
+  agent 2026-11-21 (owner may revisit): `__MACOSX/` entries and AppleDouble
+  `._name` files are never treated as pages, so they no longer use up
+  `MAX_CBZ_PAGES` (800). A comic cut at the cap carries a notice ("This
+  comic has N pages; only the first 800 can be shown in the browser."). The
+  cap itself is unchanged. Notices are a new additive `Manifest.notices`
+  field (older manifests load with none), shown on the contents page and
+  the book's first page. Tests in `tests/test_reader_followups.py` and
+  `test_truncation_notice_shows_on_contents_and_first_page_only` in
+  `tests/test_reader_cbz.py`.
+
+- [x] **Downloads are recorded only after success** (same branch). Decided by
+  agent 2026-11-21 (owner may revisit): `/download` used to add a book to
+  "recently sent" (and its "downloaded" tick) before contacting the library,
+  so a failed download still showed as sent. It now records only when the
+  library answers 2xx and the body starts streaming; a failure or a 416 is
+  not recorded. A transfer cut off mid-body still counts, since the response
+  has already started. Tests: `tests/test_download_records.py`.
+
+- [x] **HEAD on `/download` and `/cover` asks the library** (same branch).
+  Decided by agent 2026-11-21 (owner may revisit): HEAD used to answer 200
+  without contacting the library. It now opens the same upstream GET (Kavita
+  does not reliably answer HEAD) and closes it unread. `head_download`
+  relays the real status, `Content-Length` and range headers, and a missing
+  book is a 502. `head_cover` is 200 when the cover is cached or the library
+  has it, else the tiny 404. A HEAD is never recorded as a download. Tests:
+  `tests/test_head_proxy.py`.
 
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin

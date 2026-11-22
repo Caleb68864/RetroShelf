@@ -664,6 +664,9 @@ class Manifest:
     created: float
     toc: list[tuple[int, str, int]] = field(default_factory=list)
     kind: str = "book"
+    #: Plain-text notes about what shelving left out (a truncated comic,
+    #: skipped images...), shown on the contents page and the first page.
+    notices: list[str] = field(default_factory=list)
 
 
 class _UnpackBudget:
@@ -805,6 +808,42 @@ def _read_member_capped(zf: zipfile.ZipFile, name: str, member_cap: int, budget:
         raise ReaderError(f"Could not read {shown!r} from this book") from exc
     budget.add(total)
     return b"".join(chunks)
+
+
+# encryption.xml algorithms that only obfuscate embedded fonts (OCF 3.0
+# "IDPF font obfuscation" and Adobe's older scheme). They are not DRM.
+_FONT_OBFUSCATION_ALGORITHMS = frozenset({
+    "http://www.idpf.org/2008/embedding",
+    "http://ns.adobe.com/pdf/enc#RC",
+})
+_FONT_EXTENSIONS = (".otf", ".ttf", ".woff", ".woff2", ".eot")
+
+
+def _only_font_obfuscation(data: bytes) -> bool:
+    """Return whether ``encryption.xml`` *data* declares only font obfuscation.
+
+    ``True`` only when it parses, lists at least one ``EncryptedData``, and
+    every entry uses a font-obfuscation algorithm on a font file. Anything
+    else (real DRM, an unknown algorithm, an unparsable file) is ``False``,
+    so the book is refused as before.
+    """
+    try:
+        root = fromstring(data)
+    except (ParseError, ValueError):
+        return False
+    entries = [el for el in root.iter() if _local_name(el.tag) == "encrypteddata"]
+    if not entries:
+        return False
+    for entry in entries:
+        algorithms = [el.get("Algorithm", "") for el in entry.iter()
+                      if _local_name(el.tag) == "encryptionmethod"]
+        uris = [el.get("URI", "") for el in entry.iter()
+                if _local_name(el.tag) == "cipherreference"]
+        if not algorithms or any(a not in _FONT_OBFUSCATION_ALGORITHMS for a in algorithms):
+            return False
+        if not uris or any(not unquote(u).lower().endswith(_FONT_EXTENSIONS) for u in uris):
+            return False
+    return True
 
 
 def _parse_container(data: bytes) -> str:
@@ -1261,6 +1300,7 @@ def _manifest_to_dict(manifest: Manifest) -> dict:
         "created": manifest.created,
         "toc": [[d, t, i] for d, t, i in manifest.toc],
         "kind": manifest.kind,
+        "notices": list(manifest.notices),
     }
 
 
@@ -1300,6 +1340,8 @@ def _manifest_from_dict(data: dict) -> Manifest:
         # ``kind`` and MUST load as an ordinary book, so any missing/unknown
         # value degrades to ``"book"`` rather than raising. [cbz-reader]
         kind="comic" if data.get("kind") == "comic" else "book",
+        # Additive: older manifests have none.
+        notices=[str(n) for n in data.get("notices", []) if isinstance(n, str)][:10],
     )
 
 
@@ -1344,7 +1386,11 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
 
         # DRM'd content cannot be sanitized or rendered; fail fast with a
         # distinct, friendly message steering back to the iBooks path.
-        if "META-INF/encryption.xml" in names:
+        # Font obfuscation (IDPF/Adobe) also lives in encryption.xml but is
+        # not DRM: the reader never serves fonts, so such a book is readable.
+        if "META-INF/encryption.xml" in names and not _only_font_obfuscation(
+            _read_member_capped(zf, "META-INF/encryption.xml", MAX_METADATA_MEMBER_BYTES, budget)
+        ):
             raise ReaderError("This book is protected (DRM) and can't be read in the browser")
 
         if "META-INF/container.xml" not in names:
@@ -2663,6 +2709,13 @@ def _cbz_title_from_comicinfo(zf: zipfile.ZipFile, names: set[str], budget: _Unp
     return series or title
 
 
+def _is_mac_resource_fork(name: str) -> bool:
+    """Return whether zip member *name* is macOS archiver junk (``__MACOSX/``
+    or an AppleDouble ``._name`` file), never a real page."""
+    parts = name.split("/")
+    return "__MACOSX" in parts[:-1] or parts[-1].startswith("._")
+
+
 def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manifest:
     """Parse the spooled CBZ at *spool_path* into *tmp_dir*'s shelved form.
 
@@ -2708,11 +2761,16 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
             (
                 n for n in names
                 if _is_safe_member(n) and n.lower().endswith(_CBZ_IMAGE_EXTS)
+                and not _is_mac_resource_fork(n)
             ),
             key=_natural_sort_key,
         )
         if not pages:
             raise ReaderError("This comic has no readable pages")
+        notices: list[str] = []
+        if len(pages) > MAX_CBZ_PAGES:
+            notices.append(f"This comic has {len(pages)} pages; only the first "
+                           f"{MAX_CBZ_PAGES} can be shown in the browser.")
         pages = pages[:MAX_CBZ_PAGES]
 
         comic_title = _cbz_title_from_comicinfo(zf, names, budget)
@@ -2758,6 +2816,7 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
         created=time.time(),
         toc=toc,
         kind="comic",
+        notices=notices,
     )
     with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(_manifest_to_dict(manifest), f)
