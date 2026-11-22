@@ -623,6 +623,22 @@ class ChapterMeta:
     title: str
     blocks: int
     chars: int
+    #: ``False`` for an EPUB spine item marked ``linear="no"`` (answer keys,
+    #: pop-up notes): reachable from the contents and links, skipped by
+    #: Prev/Next. Additive; older manifests load as linear.
+    linear: bool = True
+
+
+def in_main_flow(chapter: ChapterMeta) -> bool:
+    """Return whether Prev/Next and "start reading" should land on *chapter*."""
+    return chapter.blocks > 0 and chapter.linear
+
+
+def first_readable_chapter(chapters: list[ChapterMeta]) -> int:
+    """Index of the first main-flow chapter, else the first non-empty one,
+    else ``0`` (a book whose every spine item is non-linear still opens)."""
+    return next((i for i, c in enumerate(chapters) if in_main_flow(c)),
+                next((i for i, c in enumerate(chapters) if c.blocks > 0), 0))
 
 
 @dataclass
@@ -898,6 +914,19 @@ def _parse_opf(data: bytes) -> tuple[dict[str, tuple[str, str, str]], list[str],
         elif name == "spine":
             ncx_idref = el.get("toc")
     return manifest, spine, ncx_idref
+
+
+def _nonlinear_idrefs(data: bytes) -> set[str]:
+    """Return the spine idrefs marked ``linear="no"`` in OPF *data*."""
+    try:
+        root = fromstring(data)
+    except (ParseError, ValueError):
+        return set()
+    return {
+        el.get("idref") for el in root.iter()
+        if _local_name(el.tag) == "itemref" and el.get("idref")
+        and (el.get("linear") or "").strip().lower() == "no"
+    }
 
 
 def _titles_from_nav(data: bytes, nav_dir: str) -> dict[str, str]:
@@ -1293,7 +1322,9 @@ def _manifest_to_dict(manifest: Manifest) -> dict:
         "title": manifest.title,
         "author": manifest.author,
         "chapters": [
-            {"title": c.title, "blocks": c.blocks, "chars": c.chars} for c in manifest.chapters
+            {"title": c.title, "blocks": c.blocks, "chars": c.chars,
+             **({} if c.linear else {"linear": False})}
+            for c in manifest.chapters
         ],
         "images": manifest.images,
         "total_chars": manifest.total_chars,
@@ -1314,7 +1345,8 @@ def _manifest_from_dict(data: dict) -> Manifest:
         "no manifest".
     """
     chapters = [
-        ChapterMeta(title=str(c["title"]), blocks=int(c["blocks"]), chars=int(c["chars"]))
+        ChapterMeta(title=str(c["title"]), blocks=int(c["blocks"]), chars=int(c["chars"]),
+                    linear=c.get("linear", True) is not False)
         for c in data["chapters"]
     ]
     return Manifest(
@@ -1407,7 +1439,9 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
         if len(spine_idrefs) > MAX_SPINE_ITEMS:
             raise ReaderError(f"This book has too many chapters (limit {MAX_SPINE_ITEMS})")
 
+        nonlinear = _nonlinear_idrefs(opf_bytes)
         chapter_paths: list[str] = []
+        linear_flags: list[bool] = []
         for idref in spine_idrefs:
             item = manifest_items.get(idref)
             if not item:
@@ -1415,6 +1449,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
             path = _norm_zip_path(opf_dir, item[0])
             if path is not None and path in names:
                 chapter_paths.append(path)
+                linear_flags.append(idref not in nonlinear)
 
         if not chapter_paths:
             raise ReaderError("This book has no readable content")
@@ -1473,7 +1508,8 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
             total_chars += chars
             with open(os.path.join(tmp_dir, "chapters", f"{i}.json"), "w", encoding="utf-8") as f:
                 json.dump({"blocks": blocks, "anchors": anchors}, f)
-            chapters_meta.append(ChapterMeta(title=title, blocks=len(blocks), chars=chars))
+            chapters_meta.append(ChapterMeta(title=title, blocks=len(blocks), chars=chars,
+                                             linear=linear_flags[i]))
 
     manifest = Manifest(
         version=2,

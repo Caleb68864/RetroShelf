@@ -268,6 +268,17 @@ setting where that fits, without touching existing data.
   has it, else the tiny 404. A HEAD is never recorded as a download. Tests:
   `tests/test_head_proxy.py`.
 
+- [x] **`linear="no"` spine items are out of the main flow** (on
+  `feat/owner-decisions-batch2`). Decided by agent 2026-11-21 (owner may
+  revisit): an EPUB spine item marked `linear="no"` (answer keys, pop-up
+  notes) keeps its place and index, so saved positions and bookmarks are
+  unaffected. Prev/Next and "start reading" skip it, while the contents
+  page, in-book links and direct URLs still reach it. A book whose every
+  item is non-linear opens at the first non-empty one. Additive
+  `ChapterMeta.linear` (older manifests load as linear);
+  `in_main_flow`/`first_readable_chapter` in `app/reader.py`. Tests:
+  `tests/test_reader_nonlinear.py`.
+
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").

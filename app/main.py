@@ -65,6 +65,8 @@ from .reader import (
     SEARCH_MIN_QUERY,
     SPLIT_TARGETS,
     Manifest,
+    first_readable_chapter,
+    in_main_flow,
     load_chapter,
     load_chapter_anchors,
     load_manifest,
@@ -2705,7 +2707,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         # Open at the first chapter that actually has content: a leading
         # spine item that sanitized to zero blocks (e.g. a cover-only page
         # shelved without Pillow) would 404 the very first page otherwise.
-        first = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
+        first = first_readable_chapter(manifest.chapters)
         return RedirectResponse(f"/read/{bid}/{first}/1", status_code=303)
 
     @app.get("/read/{bid}/toc", response_class=HTMLResponse)
@@ -2743,7 +2745,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         # "Start over" targets the first chapter that actually has content, so a
         # leading spine item that sanitized to zero blocks can never 404 it —
         # same rule read_book applies to the bare-open redirect above.
-        first = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
+        first = first_readable_chapter(manifest.chapters)
         return templates.TemplateResponse(request, "toc.html", {
             "book_title": manifest.title, "bid": bid, "chapters": chapters,
             "start_url": f"/read/{bid}/{first}/1", "notices": manifest.notices,
@@ -2941,7 +2943,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         rec, key, manifest = opened
         if chapter < 0 or chapter >= len(manifest.chapters):
             return _error_response(request, "Not found", "That chapter does not exist.", 404)
-        first_chapter = next((i for i, c in enumerate(manifest.chapters) if c.blocks > 0), 0)
+        first_chapter = first_readable_chapter(manifest.chapters)
         target = _split_target(request)
         blocks = load_chapter(cfg.cache_dir, key, chapter)
         parts = parts_for([len(b) for b in blocks], target)
@@ -2970,7 +2972,7 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         def _adjacent_chapter(step: int) -> int | None:
             c = chapter + step
             while 0 <= c < len(manifest.chapters):
-                if manifest.chapters[c].blocks > 0:
+                if in_main_flow(manifest.chapters[c]):
                     return c
                 c += step
             return None
