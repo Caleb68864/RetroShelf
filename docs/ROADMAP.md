@@ -251,6 +251,14 @@ setting where that fits, without touching existing data.
   `test_truncation_notice_shows_on_contents_and_first_page_only` in
   `tests/test_reader_cbz.py`.
 
+- [x] **Downloads are recorded only after success** (same branch). Decided by
+  agent 2026-11-21 (owner may revisit): `/download` used to add a book to
+  "recently sent" (and its "downloaded" tick) before contacting the library,
+  so a failed download still showed as sent. It now records only when the
+  library answers 2xx and the body starts streaming; a failure or a 416 is
+  not recorded. A transfer cut off mid-body still counts, since the response
+  has already started. Tests: `tests/test_download_records.py`.
+
 ### Deferred by design (not scheduled)
 - Per-profile PIN; email password reset; per-profile avatars/theming; admin
   dashboard (accounts plan, "Exclusions").

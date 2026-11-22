@@ -2453,20 +2453,23 @@ def _register_routes(app: FastAPI, cfg: Config) -> None:
         url = kc(request).resolve_url(raw)  # re-validate
         media_type, disposition, ext = _media_for_url(url, cfg, (record or {}).get("m"))
         filename = sanitize_filename(name_hint or (record or {}).get("t") or _basename(url), ext)
-        if request.method == "GET" and record is not None:
-            store(request).record_download(
-                {**record, "feed_name": _feed_for_url(url).name},
-                profile_id=current_profile_id(request))
         if request.method == "HEAD":
             # Answer header probes (e.g. `curl -I`, Safari) without fetching the
             # body. Same headers a GET would produce.
             headers = build_download_headers(filename=filename, disposition=disposition)
             return Response(status_code=200, media_type=media_type, headers=headers)
         range_header = request.headers.get("range")
-        return await stream_download(
+        resp = await stream_download(
             kc(request), url, media_type=media_type, filename=filename,
             disposition=disposition, range_header=range_header,
         )
+        # Record only once the library has actually started sending the book:
+        # a failed upstream (raised above) or a 416 is not a download.
+        if record is not None and 200 <= resp.status_code < 300:
+            store(request).record_download(
+                {**record, "feed_name": _feed_for_url(url).name},
+                profile_id=current_profile_id(request))
+        return resp
 
     @app.api_route("/download/{did}/{filename}", methods=["GET", "HEAD"])
     async def download_named(request: Request, did: str, filename: str) -> Response:
