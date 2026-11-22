@@ -314,5 +314,11 @@ setting where that fits, without touching existing data.
   dashboard (accounts plan, "Exclusions").
 - Per-device reading positions; EPUB CSS passthrough; EPUB3 media/fixed-layout
   (EPUB reader plan, "Exclusions").
-- Reader image max-edge config knob (`READER_IMAGE_MAX_EDGE` in `app/reader.py`
-  is fixed at 1024): EPUB reader plan, open question 2.
+- [x] **Reader image max-edge setting** (built 2026-11-21 on
+  `feat/deferred-features`; EPUB reader plan, open question 2).
+  `READER_IMAGE_MAX_EDGE` env var (256-4096, default 1024, so nothing changes
+  unless set) in `app/config.py`, applied by `create_app`. Each manifest
+  records the edge its images were shelved at (`image_max_edge`; older ones
+  read as 1024). A book with images shelved at another edge is re-shelved
+  on its next open; chapter numbering, positions and bookmarks are
+  unaffected. Tests: `tests/test_reader_image_edge.py`.

@@ -79,6 +79,7 @@ from .reader import (
     shelve_html_book,
     shelve_pdf_book,
 )
+from . import reader as reader_module
 from .render import STATIC_DIR, templates
 from .security import access_key_ok, ip_allowed, sanitize_filename
 from .store import PROFILE_COLORS, Store, book_key
@@ -626,6 +627,9 @@ def create_app(config: Config | None = None) -> FastAPI:
     cfg = config or load_config()
     app = FastAPI(title="RetroShelf", lifespan=lifespan)
     app.state.config = cfg
+    # The reader's image edge is read deep inside (threaded) shelving; it is
+    # process-wide, like the cache it governs.
+    reader_module.READER_IMAGE_MAX_EDGE = cfg.reader_image_max_edge
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     # -- middleware: optional access key + IP allowlist ----------------------

@@ -709,6 +709,9 @@ class Manifest:
     created: float
     toc: list[tuple[int, str, int]] = field(default_factory=list)
     kind: str = "book"
+    #: The :data:`READER_IMAGE_MAX_EDGE` images were shelved at. A manifest
+    #: from before this field existed was shelved at the old fixed 1024.
+    image_max_edge: int = 1024
     #: Plain-text notes about what shelving left out (a truncated comic,
     #: skipped images...), shown on the contents page and the first page.
     notices: list[str] = field(default_factory=list)
@@ -1367,6 +1370,7 @@ def _manifest_to_dict(manifest: Manifest) -> dict:
         "toc": [[d, t, i] for d, t, i in manifest.toc],
         "kind": manifest.kind,
         "notices": list(manifest.notices),
+        "image_max_edge": manifest.image_max_edge,
     }
 
 
@@ -1409,6 +1413,7 @@ def _manifest_from_dict(data: dict) -> Manifest:
         kind="comic" if data.get("kind") == "comic" else "book",
         # Additive: older manifests have none.
         notices=[str(n) for n in data.get("notices", []) if isinstance(n, str)][:10],
+        image_max_edge=int(data.get("image_max_edge", 1024)),
     )
 
 
@@ -1554,6 +1559,7 @@ def _extract_epub(spool_path: str, key: str, record: dict, tmp_dir: str) -> Mani
 
     manifest = Manifest(
         version=2,
+        image_max_edge=READER_IMAGE_MAX_EDGE,
         book_key=key,
         title=str(record.get("t") or "") or "Untitled",
         author=str(record.get("a") or ""),
@@ -2169,6 +2175,7 @@ async def _extract_html_book(
 
     manifest = Manifest(
         version=2,
+        image_max_edge=READER_IMAGE_MAX_EDGE,
         book_key=key,
         title=str(record.get("t") or "") or "Untitled",
         author=str(record.get("a") or ""),
@@ -2602,6 +2609,7 @@ def _extract_pdf(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
 
     manifest = Manifest(
         version=2,
+        image_max_edge=READER_IMAGE_MAX_EDGE,
         book_key=key,
         title=str(record.get("t") or "") or "Untitled",
         author=str(record.get("a") or ""),
@@ -2888,6 +2896,7 @@ def _extract_cbz(spool_path: str, key: str, record: dict, tmp_dir: str) -> Manif
 
     manifest = Manifest(
         version=2,
+        image_max_edge=READER_IMAGE_MAX_EDGE,
         book_key=key,
         title=str(record.get("t") or "") or comic_title or "Untitled",
         author=str(record.get("a") or ""),
@@ -2967,9 +2976,15 @@ def load_manifest(cache_dir: str, book_key: str) -> Manifest | None:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return _manifest_from_dict(data)
+        manifest = _manifest_from_dict(data)
     except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
         return None
+    # Images shelved at another READER_IMAGE_MAX_EDGE: treat as not shelved,
+    # so the next open rebuilds it (chapter numbering is unchanged, so saved
+    # positions and bookmarks still apply). Image-free books are kept.
+    if manifest.images and manifest.image_max_edge != READER_IMAGE_MAX_EDGE:
+        return None
+    return manifest
 
 
 def load_chapter(cache_dir: str, book_key: str, i: int) -> list[str]:
